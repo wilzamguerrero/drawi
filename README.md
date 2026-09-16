@@ -1,110 +1,148 @@
 # drawi
 
-A 2.5D visual creation lab. You draw; what you drew becomes matter.
+Laboratorio de dibujo generativo y **materia 2.5D**. Toma la idea de Alchemy y
+[Webchemy](https://webchemy.org/) —trazos que no buscan la precisión sino el
+descubrimiento— y le añade un lápiz que responde de verdad, simetría que se
+mueve por el lienzo y una física donde las formas se **funden como un metaball**
+conservando su silueta.
 
-Not another illustration editor: a stroke here keeps its pressure, its skeleton
-and its seed, so the same mark can be a line, a rope, an inflated body or a drop
-of liquid — and go back to being an editable outline afterwards. Nothing is
-rasterised, and nothing is consumed by the simulation.
+Sin framework de interfaz, sin dependencias en tiempo de ejecución: solo
+TypeScript, Canvas2D y WebGL2. El único paquete que se instala es la cadena de
+compilación (Vite + TypeScript).
 
-```
-DRAW  →  TRANSFORM  →  SIMULATE  →  VECTORIZE  →  EXPORT
-```
+---
 
-## Running it
+## Qué hace
+
+### Pincel — más modos que el original
+Webchemy mantiene la línea con un ancho constante. Aquí el ancho se puede derivar
+de cinco maneras (menú **Dinámica** del inspector):
+
+| Modo | Qué hace |
+|------|----------|
+| **Constante** | Ancho fijo. El trazo clásico de Alchemy. |
+| **Presión** | El ancho sigue la presión del lápiz (con ratón usa la velocidad como sustituto). |
+| **Velocidad** | Trazo de tinta: rápido adelgaza, lento engorda. Invertible. |
+| **Presión + velocidad** | Mezcla ambas; la que mejor imita un pincel real. |
+| **Inclinación** | Punta de cincel: ancho y ángulo dependen de cómo inclines el lápiz. |
+
+Se conservan los tres **modos de pincel** de Webchemy —**Trazo**, **Relleno** y
+**Arrastre** (*pull-shapes*, con siete familias: blob, hoja, astilla, pétalo,
+media luna, cinta, runa)— y sus dos modificadores, **Degradado** y **Splat**
+(contorno anguloso).
+
+### Lápiz que responde
+El fallo del original no era solo la falta de presión, sino la **latencia**. Aquí:
+
+- Se leen los **eventos coalescidos** del navegador, así que no se pierde
+  ninguna muestra entre fotogramas, y los **predichos** para adelantar la punta.
+- La entrada se suaviza con un filtro **One-Euro**, no con una media móvil: quita
+  el temblor fino sin añadir el retraso constante que hace sentir la línea
+  pegajosa (medido: temblor por debajo de 0,3 px, retraso por debajo de 12 px en
+  trazo rápido).
+- Se aprovecha todo lo que informa el dispositivo: **inclinación y azimut**,
+  **punta de goma**, **botón lateral**, giro del barril y rechazo de palma.
+
+### Simetría movible
+El eje es un objeto del lienzo, no un ajuste fijo. Con la herramienta de simetría
+(`S`) se **arrastra su origen** a donde quieras, se **gira** tirando del brazo y
+se cambia el número de sectores. Modos: **ninguno**, **espejo**, **radial** y
+**caleidoscopio**. Todo lo que dibujas se replica en vivo.
+
+### Física — formas que se funden
+Crea formas básicas (**círculo, caja, cápsula, polígono, estrella**) y suéltalas
+en el lienzo. Cada una aporta un **campo de distancia con signo** (SDF) y todas
+se unen con una **mezcla suave** (*smooth-min* polinómica): al acercarse generan
+el puente continuo de un metaball, pero conservando su silueta real —una caja
+sigue teniendo esquinas, una estrella sigue teniendo puntas.
+
+Debajo hay un motor de **cuerpos rígidos 2D** propio, sin dependencias: SAT +
+recorte para el contacto, impulsos secuenciales con corrección de Baumgarte,
+paso fijo a 1/120 s con acumulador, reposo de cuerpos, cohesión (la materia «se
+llama») y paredes de contenedor. La materia fundida se puede **hornear** a tinta
+editable.
+
+### Lo demás
+Deshacer/rehacer por instantáneas · zoom, desplazamiento y giro de cámara ·
+paletas de color y cuentagotas · exportar **PNG** (1×–4×, con margen y fondo
+configurables) y **SVG** · guardar/abrir proyecto `.drawi` · autoguardado en el
+navegador.
+
+---
+
+## Empezar
 
 ```bash
 npm install
-npm run dev        # http://localhost:5180
-npm run build
-npm run typecheck
-npm run smoke      # runs the DOM-free engine checks under Node
+npm run dev        # servidor de desarrollo (Vite)
+npm run build      # typecheck + build de producción
+npm run preview    # sirve el build
 ```
 
-## What is here
+### Comprobaciones
 
-**Drawing.** A streaming stroke engine in the spirit of `perfect-freehand`, but
-incremental: only the taper tail is ever rebuilt, so per-sample cost stays flat
-no matter how long the stroke gets. Pointer input recovers coalesced samples
-through `pointerrawupdate`, so a 240 Hz tablet is not quietly downsampled to
-frame rate.
+```bash
+npm run check      # tsc --noEmit (incluye scripts/)
+npm run smoke      # dos suites de humo sobre un DOM simulado
+npm test           # check + smoke
+```
 
-**Pressure that means something.** With a stylus, real pressure. Without one,
-pressure is synthesised from stroke speed — and the model detects mid-session
-which case it is in, including drivers that report a frozen `0.5` forever. The
-signal is recorded on every point, and you choose what it *drives*: width,
-opacity, mass, elasticity, density, gravity or field reach.
+No hay navegador sin cabeza en la CI. En su lugar, `scripts/dom-shim.mjs`
+implementa exactamente la superficie de DOM que la aplicación usa, y las suites
+se empaquetan con la propia API de Vite para probar el mismo grafo de módulos que
+se publica:
 
-**Symmetry.** Mirror, perpendicular mirror and up to 48-fold radial, composable,
-with a movable and rotatable axis. It is expressed as affine transforms, so one
-stroke is built once and instanced — a 16-fold mandala costs what one stroke
-costs, and every copy is exact.
+- **`smoke-engine`** (motor): mide magnitudes concretas —el ensanchado por
+  presión, la convergencia y el retraso del filtro, que el colisionador y el
+  contorno dibujado describan la misma forma, la fusión tipo metaball y la
+  estabilidad de una pila de cuerpos.
+- **`smoke-ui`** (interfaz): construye la aplicación entera sobre el DOM
+  simulado y la conduce como una persona —eventos de puntero reales, clic en
+  todos los botones, cambio en todos los controles— comprobando el cableado
+  entre UI, editor y herramientas.
 
-**Splat and fill.** Splat scatters droplets whose size and throw follow pressure
-and speed, then traces their contour out of an implicit field — so a splat is a
-real editable outline, not a texture. Fill is the same stroke engine with a wide,
-flat nib: you paint a mass directly instead of outlining and filling it.
+---
 
-**Liquid.** A GPU implicit-surface layer. Every drawable reduces to swept
-circles, so strokes, splats and blobs all fuse with each other. Sources can be
-negative, which means a shape can *carve* into its neighbours through the same
-proximity blend that fuses them. Vectorize traces the surface back into ordinary
-vector objects.
+## Atajos
 
-**Physics.** One Position Based Dynamics model with different coefficients:
-distance constraints, an internal pressure term and shape matching. A rope is
-that model with no area term; a jelly turns both partway up; a rigid body is
-shape matching at full strength. Behaviour switches without a rebuild, and
-grabbing a body moves particles directly, so manipulation resolves in the same
-frame.
+**Herramientas** · `B` pincel · `F` forma física · `M` mover materia · `S` eje de
+simetría · `I` cuentagotas · `H`/`Espacio` mano
 
-**2.5D.** Every object carries a `z`. Tilting the camera shears the stack —
-parallax and a slight scale, with paint order from depth. The projection stays
-affine, so a whole depth slice still draws in one `setTransform`.
+**Pincel** · `1`/`2`/`3` trazo/relleno/arrastre · `[`/`]` tamaño · `G` degradado ·
+`P` splat · botón lateral del lápiz borra o quita materia · punta de goma pinta
+con el color del fondo
 
-## Keys
+**Vista e historial** · rueda para desplazar (con `Ctrl`, zoom) · dos dedos para
+zoom y desplazamiento · `0` restablece la vista · `Ctrl+Z` / `Ctrl+Shift+Z`
+deshacer/rehacer · `Shift+Supr` limpiar todo · `Esc` cancelar el gesto en curso
 
-| | |
-|---|---|
-| `B` `F` `X` `O` | stroke, fill, splat, blob |
-| `V` `G` `E` `M` | select, grab, erase, symmetry axis |
-| space / middle drag | pan · wheel zooms · two fingers do both |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | undo / redo |
-| `Ctrl+S` | save project |
-| `Delete` | delete selection |
+---
 
-With the symmetry tool: drag places the axis origin, `Shift`-drag rotates it.
-
-## Structure
+## Arquitectura
 
 ```
 src/
-  core/       maths, 2D transforms, seeded noise, spatial index
-  input/      pointer events, coalescing, palm rejection, gestures
-  stroke/     pressure model, incremental outline builder, ribbon rebuild
-  symmetry/   mirror and radial transform generation
-  scene/      document, objects, geometry/transform/style/physics/field
-  physics/    PBD solver: ropes, soft bodies, rigid, collisions, attraction
-  field/      implicit sources, CPU evaluation, marching squares
-  render/     camera, Canvas2D scene renderer, WebGL2 field renderer
-  tools/      splat and blob generators
-  io/         project JSON, SVG and PNG export
-  state/      UI store
-  ui/         React panels
-  app/        editor orchestration, history
+  core/       matemáticas, matrices, color, RNG, emisor de eventos tipado
+  input/      eventos de puntero: coalescidos, predichos, tilt, goma, palma
+  stroke/     filtro One-Euro, dinámicas del trazo, contorno de ancho variable
+  symmetry/   ejes movibles y sus transformaciones
+  physics/    SDF, marching squares, formas, mundo de cuerpos rígidos
+  render/     capas: tinta (Canvas2D), campo (WebGL2 con respaldo 2D), overlay
+  scene/      documento y tipos de la escena
+  io/         exportación PNG/SVG, proyecto .drawi
+  app/        editor (estado) e historial
+  tools/      pincel, forma, materia, simetría, cuentagotas
+  ui/         interfaz a mano (sin framework): barras, inspector, popovers
 ```
 
-The document is deliberately outside React: geometry changes on every pointer
-sample, and the store carries only what the panels display.
+**Una regla que no se puede romper:** las SDF están duplicadas en GLSL
+(`render/field-gl.ts`) y en TypeScript (`physics/sdf.ts`) para pintar en la GPU y
+calcular en la CPU la misma forma. `shapeParams()` es la única fuente que
+alimenta a ambas; si cambia una, tiene que cambiar la otra, y la suite del motor
+lo verifica.
 
-## Requirements
+## Créditos
 
-WebGL2 with `EXT_color_buffer_float` for the liquid layer — without it the app
-runs normally and says so in a notice. Everything else is Canvas2D.
-
-## References
-
-Conceptual and technical references, not dependencies: `references/webchemy-master`
-for exploratory sketching, symmetry and splat; `references/perfect-freehand-main`
-for stroke outlining. Neither is copied; the design brief is in
-`references/info.md`.
+Inspirado en [Alchemy](http://al.chemy.org/) de Karl D.D. Willis y Jacob Hina, y
+en la recreación web [Webchemy](https://webchemy.org/) (incluida en `references/`
+como material de estudio). drawi es una implementación independiente.

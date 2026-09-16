@@ -1,97 +1,98 @@
-/**
- * Undo/redo.
- *
- * Commands rather than snapshots. A document is mostly typed arrays, and
- * snapshotting them on every stroke would copy megabytes per second; a command
- * only carries what actually changed, so history stays cheap even after an hour
- * of drawing.
- */
+import type { SceneDocument, SceneSnapshot } from "../scene/document";
 
-export interface Command {
-  label: string
-  undo(): void
-  redo(): void
+export interface HistoryEntry {
+  label: string;
+  snapshot: SceneSnapshot;
 }
 
+export interface HistoryStatus {
+  canUndo: boolean;
+  canRedo: boolean;
+  undoLabel: string | null;
+  redoLabel: string | null;
+  size: number;
+}
+
+/**
+ * Historial por instantaneas.
+ *
+ * Webchemy guardaba 10 pasos volcando el bitmap entero. Aqui una instantanea
+ * es la lista de items (compartidos por referencia, nunca mutados) mas un
+ * snapshot plano de los cuerpos: cuesta kilobytes, no megabytes, asi que se
+ * pueden guardar 80 pasos y ademas deshacer movimientos de materia y cambios
+ * de simetria, no solo trazos.
+ */
 export class History {
-  private readonly past: Command[] = []
-  private readonly future: Command[] = []
-  private readonly limit: number
-  private listeners = new Set<() => void>()
-  /** Suppresses recording while a command is being applied. */
-  private applying = false
+  private past: HistoryEntry[] = [];
+  private future: HistoryEntry[] = [];
+  private pending: SceneSnapshot | null = null;
+  private limit: number;
 
-  constructor(limit = 200) {
-    this.limit = limit
+  constructor(private doc: SceneDocument, limit = 80) {
+    this.limit = limit;
   }
 
-  get canUndo(): boolean {
-    return this.past.length > 0
+  get status(): HistoryStatus {
+    return {
+      canUndo: this.past.length > 0,
+      canRedo: this.future.length > 0,
+      undoLabel: this.past.length > 0 ? this.past[this.past.length - 1].label : null,
+      redoLabel: this.future.length > 0 ? this.future[this.future.length - 1].label : null,
+      size: this.past.length,
+    };
   }
 
-  get canRedo(): boolean {
-    return this.future.length > 0
+  /**
+   * Fotografia el estado ANTES de una accion.
+   *
+   * Se llama al empezar el gesto (bajar el lapiz, agarrar un cuerpo) y se
+   * confirma con `commit` al soltar. Si el gesto se cancela, `abort` lo
+   * descarta sin ensuciar el historial.
+   */
+  begin(): void {
+    this.pending = this.doc.snapshot();
   }
 
-  get undoLabel(): string | null {
-    return this.past.length > 0 ? this.past[this.past.length - 1].label : null
+  commit(label: string): void {
+    const snapshot = this.pending ?? this.doc.snapshot();
+    this.pending = null;
+    this.push(label, snapshot);
   }
 
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
+  abort(): void {
+    this.pending = null;
   }
 
-  private notify(): void {
-    for (const listener of this.listeners) listener()
+  /** Registra un cambio instantaneo (un boton, no un gesto). */
+  record(label: string, before?: SceneSnapshot): void {
+    this.push(label, before ?? this.doc.snapshot());
   }
 
-  /** Records a command that has already been applied. */
-  push(command: Command): void {
-    if (this.applying) return
-    this.past.push(command)
-    if (this.past.length > this.limit) this.past.shift()
-    this.future.length = 0
-    this.notify()
+  private push(label: string, snapshot: SceneSnapshot): void {
+    this.past.push({ label, snapshot });
+    if (this.past.length > this.limit) this.past.shift();
+    this.future.length = 0;
   }
 
-  /** Applies a command and records it. */
-  run(command: Command): void {
-    command.redo()
-    this.push(command)
+  undo(): string | null {
+    const entry = this.past.pop();
+    if (!entry) return null;
+    this.future.push({ label: entry.label, snapshot: this.doc.snapshot() });
+    this.doc.restore(entry.snapshot);
+    return entry.label;
   }
 
-  undo(): boolean {
-    const command = this.past.pop()
-    if (!command) return false
-    this.applying = true
-    try {
-      command.undo()
-    } finally {
-      this.applying = false
-    }
-    this.future.push(command)
-    this.notify()
-    return true
-  }
-
-  redo(): boolean {
-    const command = this.future.pop()
-    if (!command) return false
-    this.applying = true
-    try {
-      command.redo()
-    } finally {
-      this.applying = false
-    }
-    this.past.push(command)
-    this.notify()
-    return true
+  redo(): string | null {
+    const entry = this.future.pop();
+    if (!entry) return null;
+    this.past.push({ label: entry.label, snapshot: this.doc.snapshot() });
+    this.doc.restore(entry.snapshot);
+    return entry.label;
   }
 
   clear(): void {
-    this.past.length = 0
-    this.future.length = 0
-    this.notify()
+    this.past.length = 0;
+    this.future.length = 0;
+    this.pending = null;
   }
 }

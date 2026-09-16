@@ -1,171 +1,236 @@
-import { makeId, type Id } from '@/core/id'
-import { SpatialGrid } from '@/core/spatial'
-import { boundsIntersect, emptyBounds, growBounds, type Bounds } from '@/stroke/types'
-import { hitTestObject, objectWorldBounds } from './object'
-import type { Layer, SceneObject } from './types'
+import { uid } from "../core/rng";
+import { multiply, type Mat2d } from "../core/mat2d";
+import { polygonBounds } from "../stroke/outline";
+import type { Polygon } from "../stroke/types";
+import { boundingRadius, DEFAULT_SHAPE, type ShapeDef } from "../physics/shapes";
+import { createBody, PhysicsWorld, type Body, type WorldSettings } from "../physics/world";
+import { DEFAULT_SYMMETRY, symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
+import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
+import { EMPTY_RECT, unionRect, type InkItem, type Rect } from "./types";
+
+export interface DocumentMeta {
+  name: string;
+  background: string;
+  createdAt: number;
+}
+
+/** Instantanea serializable de un cuerpo (lo que guarda el historial). */
+export interface BodySnapshot {
+  id: string;
+  shape: ShapeDef;
+  x: number;
+  y: number;
+  angle: number;
+  vx: number;
+  vy: number;
+  av: number;
+  color: string;
+  group: number;
+  blend: number;
+  isStatic: boolean;
+  density: number;
+  restitution: number;
+  friction: number;
+}
+
+export interface SceneSnapshot {
+  items: InkItem[];
+  bodies: BodySnapshot[];
+  symmetry: SymmetryState;
+  world: WorldSettings;
+  field: FieldStyle;
+  background: string;
+}
+
+const cloneSymmetry = (s: SymmetryState): SymmetryState => ({ ...s });
+const cloneWorld = (w: WorldSettings): WorldSettings => ({ ...w, gravity: { ...w.gravity } });
+
+export function snapshotBody(b: Body): BodySnapshot {
+  return {
+    id: b.id,
+    shape: { ...b.shape },
+    x: b.pos.x,
+    y: b.pos.y,
+    angle: b.angle,
+    vx: b.vel.x,
+    vy: b.vel.y,
+    av: b.angVel,
+    color: b.color,
+    group: b.group,
+    blend: b.blend,
+    isStatic: b.isStatic,
+    density: b.density,
+    restitution: b.restitution,
+    friction: b.friction,
+  };
+}
+
+export function restoreBody(s: BodySnapshot): Body {
+  const body = createBody({ ...s.shape }, { x: s.x, y: s.y }, {
+    angle: s.angle,
+    color: s.color,
+    group: s.group,
+    blend: s.blend,
+    isStatic: s.isStatic,
+    density: s.density,
+    restitution: s.restitution,
+    friction: s.friction,
+  });
+  body.id = s.id;
+  body.vel.x = s.vx;
+  body.vel.y = s.vy;
+  body.angVel = s.av;
+  return body;
+}
 
 /**
- * The document.
+ * Documento: tinta + materia.
  *
- * Objects live in a map; paint order lives in a separate array. Keeping them
- * apart means reordering never touches the objects themselves, and an object
- * reference stays stable across every edit — which is what lets the physics
- * solver and the field renderer hold onto objects between frames.
+ * La tinta es una lista plana de `InkItem` inmutables (cada trazo se guarda
+ * con sus transformaciones de simetria ya congeladas). La materia vive en el
+ * mundo fisico y se mueve sola. El historial fotografia ambas: la tinta se
+ * comparte por referencia (nunca se muta un item) y de los cuerpos se guarda
+ * un snapshot plano, que es barato y exacto.
  */
 export class SceneDocument {
-  readonly objects = new Map<Id, SceneObject>()
-  /** Paint order, back to front, independent of layer grouping. */
-  readonly order: Id[] = []
-  readonly layers: Layer[] = []
+  meta: DocumentMeta = {
+    name: "Sin titulo",
+    background: "#f4f1ea",
+    createdAt: Date.now(),
+  };
 
-  /** Bumped on any structural or geometric change. Render caches compare it. */
-  revision = 1
+  items: InkItem[] = [];
+  readonly physics = new PhysicsWorld();
+  symmetry: SymmetryState = cloneSymmetry(DEFAULT_SYMMETRY);
+  field: FieldStyle = { ...DEFAULT_FIELD_STYLE };
+  shape: ShapeDef = { ...DEFAULT_SHAPE };
 
-  private readonly grid = new SpatialGrid(320)
-  private renderCache: SceneObject[] = []
-  private renderCacheRevision = -1
-  /** Paint-order position by id, rebuilt with the render cache. */
-  private orderIndex = new Map<Id, number>()
+  /** Cambia con cada modificacion; los renderizadores lo usan como cache key. */
+  inkRevision = 0;
 
-  constructor() {
-    this.addLayer('Layer 1')
+  get bodies(): Body[] {
+    return this.physics.bodies;
   }
 
-  get activeLayerId(): Id {
-    return this.layers[this.layers.length - 1].id
+  get isEmpty(): boolean {
+    return this.items.length === 0 && this.physics.bodies.length === 0;
   }
 
-  addLayer(name: string): Layer {
-    const layer: Layer = {
-      id: makeId('l'),
-      name,
-      visible: true,
-      locked: false,
-      opacity: 1,
+  addItem(item: InkItem): InkItem {
+    this.items.push(item);
+    this.inkRevision++;
+    return item;
+  }
+
+  removeItem(id: string): void {
+    const i = this.items.findIndex((it) => it.id === id);
+    if (i >= 0) {
+      this.items.splice(i, 1);
+      this.inkRevision++;
     }
-    this.layers.push(layer)
-    this.revision += 1
-    return layer
   }
 
-  add(object: SceneObject): SceneObject {
-    this.objects.set(object.id, object)
-    this.order.push(object.id)
-    this.grid.insert(object.id, objectWorldBounds(object))
-    this.revision += 1
-    return object
+  clearInk(): void {
+    if (this.items.length === 0) return;
+    this.items = [];
+    this.inkRevision++;
   }
 
-  remove(id: Id): SceneObject | undefined {
-    const object = this.objects.get(id)
-    if (!object) return undefined
-    this.objects.delete(id)
-    const i = this.order.indexOf(id)
-    if (i >= 0) this.order.splice(i, 1)
-    this.grid.remove(id)
-    this.revision += 1
-    return object
+  clearMatter(): void {
+    this.physics.clear();
   }
 
-  get(id: Id): SceneObject | undefined {
-    return this.objects.get(id)
+  clearAll(): void {
+    this.clearInk();
+    this.clearMatter();
   }
 
-  /** Re-indexes an object after its geometry or transform changed. */
-  reindex(id: Id): void {
-    const object = this.objects.get(id)
-    if (!object) return
-    this.grid.insert(id, objectWorldBounds(object))
-    this.revision += 1
-  }
+  /** Crea el item de tinta de un trazo aplicando la simetria vigente. */
+  buildItem(
+    polys: Polygon[],
+    color: string,
+    opacity: number,
+    smooth: boolean,
+    gradient: boolean,
+    extraTransform?: Mat2d,
+  ): InkItem | null {
+    if (polys.length === 0) return null;
+    let base = symmetryTransforms(this.symmetry);
+    if (extraTransform) base = base.map((m) => multiply(m, extraTransform));
 
-  /**
-   * Paint order: layer order first, then depth inside a layer. Sorting by z
-   * here is what gives the 2.5D stack its occlusion without a depth buffer.
-   */
-  renderList(): readonly SceneObject[] {
-    if (this.renderCacheRevision === this.revision) return this.renderCache
-    const layerIndex = new Map<Id, number>()
-    this.layers.forEach((l, i) => layerIndex.set(l.id, i))
-
-    // Insertion position is looked up from a map, not searched for. A linear
-    // scan inside the comparator would make this quadratic, and the simulation
-    // re-sorts on every frame.
-    this.orderIndex.clear()
-    this.order.forEach((id, i) => this.orderIndex.set(id, i))
-
-    const list: SceneObject[] = []
-    for (const id of this.order) {
-      const o = this.objects.get(id)
-      if (o) list.push(o)
+    let bounds: Rect | null = null;
+    for (const poly of polys) {
+      if (poly.length < 3) continue;
+      const b = polygonBounds(poly);
+      for (const m of base) {
+        bounds = unionRect(bounds, transformRect(b, m));
+      }
     }
-    list.sort((a, b) => {
-      const la = layerIndex.get(a.layerId) ?? 0
-      const lb = layerIndex.get(b.layerId) ?? 0
-      if (la !== lb) return la - lb
-      if (a.transform.z !== b.transform.z) return a.transform.z - b.transform.z
-      return (this.orderIndex.get(a.id) ?? 0) - (this.orderIndex.get(b.id) ?? 0)
-    })
+    if (!bounds) return null;
 
-    this.renderCache = list
-    this.renderCacheRevision = this.revision
-    return list
+    return {
+      id: uid(),
+      polys,
+      transforms: base,
+      color,
+      opacity,
+      smooth,
+      gradient,
+      gy0: bounds.y,
+      gy1: bounds.y + bounds.h,
+      bounds,
+    };
   }
 
-  /** Objects whose world bounds overlap `bounds`, in paint order. */
-  query(bounds: Bounds, pad = 0): SceneObject[] {
-    const candidates = this.grid.query(bounds)
-    const out: SceneObject[] = []
-    for (const id of candidates) {
-      const o = this.objects.get(id)
-      if (!o) continue
-      if (boundsIntersect(objectWorldBounds(o), bounds, pad)) out.push(o)
+  /** Caja de todo lo dibujado, tinta y materia. */
+  contentBounds(): Rect {
+    let r: Rect | null = null;
+    for (const item of this.items) r = unionRect(r, item.bounds);
+    for (const b of this.physics.bodies) {
+      const rad = boundingRadius(b.shape) + b.blend;
+      r = unionRect(r, { x: b.pos.x - rad, y: b.pos.y - rad, w: rad * 2, h: rad * 2 });
     }
-    // Paint order, so the caller can composite or pick without re-sorting.
-    const list = this.renderList()
-    const rank = new Map<Id, number>()
-    list.forEach((o, i) => rank.set(o.id, i))
-    out.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0))
-    return out
+    return r ?? { ...EMPTY_RECT };
   }
 
-  /** Topmost object under a world-space point, honouring locks and visibility. */
-  pick(x: number, y: number, tolerance = 2): SceneObject | undefined {
-    const probe: Bounds = {
-      minX: x - tolerance,
-      minY: y - tolerance,
-      maxX: x + tolerance,
-      maxY: y + tolerance,
-    }
-    const candidates = this.query(probe)
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      const o = candidates[i]
-      if (!o.visible || o.locked) continue
-      const layer = this.layers.find((l) => l.id === o.layerId)
-      if (layer && (!layer.visible || layer.locked)) continue
-      if (hitTestObject(o, x, y, tolerance)) return o
-    }
-    return undefined
+  snapshot(): SceneSnapshot {
+    return {
+      items: this.items.slice(),
+      bodies: this.physics.bodies.map(snapshotBody),
+      symmetry: cloneSymmetry(this.symmetry),
+      world: cloneWorld(this.physics.settings),
+      field: { ...this.field },
+      background: this.meta.background,
+    };
   }
 
-  /** Union of the world bounds of the given ids, or of the whole document. */
-  boundsOf(ids?: Iterable<Id>): Bounds {
-    const out = emptyBounds()
-    const source = ids ?? this.order
-    for (const id of source) {
-      const o = this.objects.get(id)
-      if (!o) continue
-      const b = objectWorldBounds(o)
-      growBounds(out, b.minX, b.minY)
-      growBounds(out, b.maxX, b.maxY)
-    }
-    return out
+  restore(snap: SceneSnapshot): void {
+    this.items = snap.items.slice();
+    this.symmetry = cloneSymmetry(snap.symmetry);
+    this.physics.settings = cloneWorld(snap.world);
+    this.field = { ...snap.field };
+    this.meta.background = snap.background;
+    this.physics.clear();
+    for (const b of snap.bodies) this.physics.add(restoreBody(b));
+    this.inkRevision++;
   }
+}
 
-  clear(): void {
-    this.objects.clear()
-    this.order.length = 0
-    this.grid.clear()
-    this.revision += 1
+/** Caja envolvente de un rect transformado (se transforman las 4 esquinas). */
+export function transformRect(r: Rect, m: Mat2d): Rect {
+  const xs = [r.x, r.x + r.w, r.x, r.x + r.w];
+  const ys = [r.y, r.y, r.y + r.h, r.y + r.h];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < 4; i++) {
+    const x = m.a * xs[i] + m.c * ys[i] + m.e;
+    const y = m.b * xs[i] + m.d * ys[i] + m.f;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
   }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }

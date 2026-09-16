@@ -1,322 +1,383 @@
-/**
- * Pointer input.
- *
- * Three things here matter more than they look:
- *
- *  - `pointerrawupdate` and `getCoalescedEvents` recover the samples the
- *    browser would otherwise throw away. A tablet reporting at 240 Hz into a
- *    60 Hz frame loop loses three quarters of the stroke without them, and that
- *    loss is exactly what makes a line look chunky at speed.
- *  - Palm rejection: while a pen is down, touch pointers are ignored entirely.
- *  - Two-finger gestures are handled here rather than in the tools, so every
- *    tool gets pan and zoom for free and none of them can break it.
- */
+import { clamp, clamp01, TAU } from "../core/math";
 
-export type PointerKind = 'mouse' | 'pen' | 'touch'
+export type PointerKind = "pen" | "touch" | "mouse";
 
-export interface PointerFrame {
-  pointerId: number
-  kind: PointerKind
-  /** Position in CSS pixels, relative to the element. */
-  x: number
-  y: number
-  pressure: number
-  tiltX: number
-  tiltY: number
-  twist: number
-  time: number
-  buttons: number
-  altKey: boolean
-  ctrlKey: boolean
-  metaKey: boolean
-  shiftKey: boolean
-  /** True for eraser-button or inverted-stylus input. */
-  eraser: boolean
+/** Muestra normalizada de entrada, en pixeles CSS relativos al lienzo. */
+export interface InputSample {
+  x: number;
+  y: number;
+  /** 0..1 ya normalizada. -1 significa "el dispositivo no informa presion". */
+  pressure: number;
+  /** Inclinacion en radianes: 0 = perpendicular al plano. */
+  tilt: number;
+  /** Azimut de la inclinacion en radianes. */
+  azimuth: number;
+  /** Rotacion del barril (radianes). */
+  twist: number;
+  /** Lado mayor del area de contacto en px CSS (0 si se desconoce). */
+  contact: number;
+  t: number;
+  kind: PointerKind;
+  predicted: boolean;
+  /** Boton lateral del lapiz pulsado. */
+  barrel: boolean;
+  /** Punta de goma del lapiz. */
+  eraser: boolean;
+}
+
+export interface GestureState {
+  cx: number;
+  cy: number;
+  /** Escala relativa al inicio del gesto. */
+  scale: number;
+  /** Rotacion acumulada en radianes. */
+  rotation: number;
+  /** Desplazamiento del centro desde el inicio del gesto. */
+  dx: number;
+  dy: number;
+  pointers: number;
 }
 
 export interface PointerHandlers {
-  onDown(frame: PointerFrame): void
-  /** Called once per coalesced sample, so it can fire several times a frame. */
-  onMove(frame: PointerFrame): void
-  onUp(frame: PointerFrame): void
-  onCancel(): void
-  onHover(frame: PointerFrame): void
-  onLeave(): void
-  /** Scroll or trackpad zoom. `scale` is 1 for pure panning. */
-  onWheel(deltaX: number, deltaY: number, x: number, y: number, zoom: boolean): void
-  /** Two-finger gesture update. */
-  onGesture(
-    panX: number,
-    panY: number,
-    scale: number,
-    centerX: number,
-    centerY: number
-  ): void
-  onGestureEnd(): void
+  onStart?(s: InputSample, ev: PointerEvent): void;
+  onMove?(samples: InputSample[], predicted: InputSample[], ev: PointerEvent): void;
+  onEnd?(s: InputSample, ev: PointerEvent): void;
+  onCancel?(): void;
+  onHover?(s: InputSample | null): void;
+  onGestureStart?(g: GestureState): void;
+  onGestureMove?(g: GestureState): void;
+  onGestureEnd?(): void;
+  onWheel?(ev: WheelEvent, x: number, y: number): void;
 }
 
-interface TouchPoint {
-  x: number
-  y: number
+export interface PointerConfig {
+  /** Usa getPredictedEvents() para adelantar la punta del trazo. */
+  prediction: boolean;
+  /** Ignora el tactil mientras el lapiz esta en uso. */
+  palmRejection: boolean;
+  /** Area de contacto (px) por encima de la cual un toque se considera palma. */
+  palmContactPx: number;
+  /** Permite dibujar con el dedo cuando no hay lapiz presente. */
+  touchDraw: boolean;
 }
 
+interface TrackedPointer {
+  id: number;
+  kind: PointerKind;
+  x: number;
+  y: number;
+}
+
+const DEFAULT_CONFIG: PointerConfig = {
+  prediction: true,
+  palmRejection: true,
+  palmContactPx: 42,
+  touchDraw: true,
+};
+
+/**
+ * Capa de entrada de alta fidelidad.
+ *
+ * Decisiones que importan para que el lapiz responda de verdad:
+ * - touch-action:none + setPointerCapture para que el navegador no robe el gesto.
+ * - getCoalescedEvents() en cada pointermove: recupera TODAS las muestras del
+ *   digitalizador (120-240 Hz) en vez de una sola por frame.
+ * - getPredictedEvents() opcional: dibuja hacia donde va la punta y cancela
+ *   latencia percibida; el tramo predicho nunca se consolida.
+ * - Rechazo de palma por tipo de puntero y por area de contacto.
+ * - Gestos de 2 dedos resueltos aqui, nunca confundidos con un trazo.
+ */
 export class PointerInput {
-  private element: HTMLElement | null = null
-  private handlers: PointerHandlers | null = null
+  readonly config: PointerConfig;
 
-  private activePointerId: number | null = null
-  private penActive = false
-  private readonly touches = new Map<number, TouchPoint>()
+  private el: HTMLElement;
+  private handlers: PointerHandlers;
+  private rect: DOMRect;
+  private active: number | null = null;
+  private pointers = new Map<number, TrackedPointer>();
+  private lastPenTime = 0;
+  private gesture: {
+    startDist: number;
+    startCx: number;
+    startCy: number;
+    lastAngle: number;
+    rotation: number;
+  } | null = null;
+  private disposers: Array<() => void> = [];
+  /** Presion cruda maxima observada: calibra lapices que no llegan a 1.0. */
+  private pressureCeiling = 0.62;
+  private sawRealPressure = false;
 
-  private gestureActive = false
-  private lastGestureDistance = 0
-  private lastGestureCenterX = 0
-  private lastGestureCenterY = 0
-
-  private readonly boundDown = (e: PointerEvent) => this.handleDown(e)
-  private readonly boundMove = (e: PointerEvent) => this.handleMove(e)
-  private readonly boundRaw = (e: PointerEvent) => this.handleRaw(e)
-  private readonly boundUp = (e: PointerEvent) => this.handleUp(e)
-  private readonly boundCancel = (e: PointerEvent) => this.handleCancel(e)
-  private readonly boundEnter = (e: PointerEvent) => this.handleHover(e)
-  private readonly boundLeave = () => this.handlers?.onLeave()
-  private readonly boundWheel = (e: WheelEvent) => this.handleWheel(e)
-  private readonly boundContext = (e: Event) => e.preventDefault()
-
-  attach(element: HTMLElement, handlers: PointerHandlers): void {
-    this.detach()
-    this.element = element
-    this.handlers = handlers
-
-    element.style.touchAction = 'none'
-    element.addEventListener('pointerdown', this.boundDown)
-    element.addEventListener('pointermove', this.boundMove)
-    // Not in every browser's typings, but widely shipped and worth the latency.
-    element.addEventListener(
-      'pointerrawupdate' as 'pointermove',
-      this.boundRaw
-    )
-    element.addEventListener('pointerup', this.boundUp)
-    element.addEventListener('pointercancel', this.boundCancel)
-    element.addEventListener('pointerenter', this.boundEnter)
-    element.addEventListener('pointerleave', this.boundLeave)
-    element.addEventListener('wheel', this.boundWheel, { passive: false })
-    element.addEventListener('contextmenu', this.boundContext)
+  constructor(el: HTMLElement, handlers: PointerHandlers, config?: Partial<PointerConfig>) {
+    this.el = el;
+    this.handlers = handlers;
+    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.rect = el.getBoundingClientRect();
+    el.style.touchAction = "none";
+    el.style.userSelect = "none";
+    this.attach();
   }
 
-  detach(): void {
-    const element = this.element
-    if (!element) return
-    element.removeEventListener('pointerdown', this.boundDown)
-    element.removeEventListener('pointermove', this.boundMove)
-    element.removeEventListener(
-      'pointerrawupdate' as 'pointermove',
-      this.boundRaw
-    )
-    element.removeEventListener('pointerup', this.boundUp)
-    element.removeEventListener('pointercancel', this.boundCancel)
-    element.removeEventListener('pointerenter', this.boundEnter)
-    element.removeEventListener('pointerleave', this.boundLeave)
-    element.removeEventListener('wheel', this.boundWheel)
-    element.removeEventListener('contextmenu', this.boundContext)
-    this.element = null
-    this.handlers = null
-    this.touches.clear()
-    this.activePointerId = null
-    this.penActive = false
-    this.gestureActive = false
+  refreshRect(): void {
+    this.rect = this.el.getBoundingClientRect();
   }
 
-  private frame(e: PointerEvent): PointerFrame {
-    const rect = this.element!.getBoundingClientRect()
-    const kind = (e.pointerType || 'mouse') as PointerKind
+  dispose(): void {
+    for (const d of this.disposers) d();
+    this.disposers = [];
+    this.pointers.clear();
+  }
+
+  private listen(
+    target: HTMLElement | Window,
+    type: string,
+    fn: (ev: Event) => void,
+    opts?: AddEventListenerOptions,
+  ): void {
+    target.addEventListener(type, fn, opts);
+    this.disposers.push(() => target.removeEventListener(type, fn, opts));
+  }
+
+  private attach(): void {
+    this.listen(this.el, "pointerdown", (e) => this.onDown(e as PointerEvent));
+    this.listen(this.el, "pointermove", (e) => this.onMove(e as PointerEvent), { passive: false });
+    this.listen(this.el, "pointerup", (e) => this.onUp(e as PointerEvent));
+    this.listen(this.el, "pointercancel", (e) => this.onUp(e as PointerEvent, true));
+    this.listen(this.el, "pointerleave", (e) => {
+      if ((e as PointerEvent).pointerId !== this.active) this.handlers.onHover?.(null);
+    });
+    this.listen(this.el, "lostpointercapture", (e) => {
+      const pe = e as PointerEvent;
+      if (pe.pointerId === this.active) this.onUp(pe, true);
+    });
+    this.listen(
+      this.el,
+      "wheel",
+      (e) => {
+        const we = e as WheelEvent;
+        we.preventDefault();
+        const p = this.local(we.clientX, we.clientY);
+        this.handlers.onWheel?.(we, p.x, p.y);
+      },
+      { passive: false },
+    );
+    this.listen(this.el, "contextmenu", (e) => e.preventDefault());
+    this.listen(window, "resize", () => this.refreshRect());
+    this.listen(window, "scroll", () => this.refreshRect(), { passive: true });
+  }
+
+  private local(clientX: number, clientY: number): { x: number; y: number } {
+    return { x: clientX - this.rect.left, y: clientY - this.rect.top };
+  }
+
+  /** Convierte tiltX/tiltY (o altitude/azimuth cuando existen) a tilt+azimut. */
+  private tiltOf(e: PointerEvent): { tilt: number; azimuth: number } {
+    const anyE = e as PointerEvent & { altitudeAngle?: number; azimuthAngle?: number };
+    if (typeof anyE.altitudeAngle === "number" && typeof anyE.azimuthAngle === "number") {
+      return { tilt: Math.PI / 2 - anyE.altitudeAngle, azimuth: anyE.azimuthAngle };
+    }
+    const tx = ((e.tiltX || 0) * Math.PI) / 180;
+    const ty = ((e.tiltY || 0) * Math.PI) / 180;
+    if (tx === 0 && ty === 0) return { tilt: 0, azimuth: 0 };
+    const tanX = Math.tan(tx);
+    const tanY = Math.tan(ty);
+    const tilt = Math.atan(Math.hypot(tanX, tanY));
+    let azimuth = Math.atan2(tanY, tanX);
+    if (azimuth < 0) azimuth += TAU;
+    return { tilt, azimuth };
+  }
+
+  private normalizePressure(e: PointerEvent, kind: PointerKind): number {
+    if (kind === "mouse") return -1;
+    const raw = e.pressure;
+    if (kind === "touch") {
+      // Muchas pantallas devuelven 1.0 fijo: eso no es presion real.
+      return raw > 0 && raw < 0.999 ? clamp01(raw) : -1;
+    }
+    if (raw <= 0.0001) return this.sawRealPressure ? 0 : -1;
+    this.sawRealPressure = true;
+    // Auto-calibracion: casi ningun lapiz llega a 1.0, el techo se adapta.
+    if (raw > this.pressureCeiling) this.pressureCeiling += (raw - this.pressureCeiling) * 0.5;
+    return clamp01(raw / Math.max(0.25, this.pressureCeiling));
+  }
+
+  private sample(e: PointerEvent, predicted = false): InputSample {
+    const kind = (e.pointerType || "mouse") as PointerKind;
+    const p = this.local(e.clientX, e.clientY);
+    const { tilt, azimuth } = this.tiltOf(e);
     return {
-      pointerId: e.pointerId,
+      x: p.x,
+      y: p.y,
+      pressure: this.normalizePressure(e, kind),
+      tilt,
+      azimuth,
+      twist: ((e.twist || 0) * Math.PI) / 180,
+      contact: Math.max(e.width || 0, e.height || 0),
+      t: e.timeStamp,
       kind,
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-      // A pen at rest reports 0; the pressure model treats that as "no signal".
-      pressure: e.pressure,
-      tiltX: e.tiltX ?? 0,
-      tiltY: e.tiltY ?? 0,
-      twist: e.twist ?? 0,
-      time: e.timeStamp,
-      buttons: e.buttons,
-      altKey: e.altKey,
-      ctrlKey: e.ctrlKey,
-      metaKey: e.metaKey,
-      shiftKey: e.shiftKey,
-      eraser: e.buttons === 32,
-    }
+      predicted,
+      barrel: (e.buttons & 2) !== 0,
+      eraser: e.button === 5 || (e.buttons & 32) !== 0,
+    };
   }
 
-  private handleDown(e: PointerEvent): void {
-    if (!this.handlers || !this.element) return
+  /** Palma o dedo espurio mientras se usa el lapiz. */
+  private isRejected(e: PointerEvent): boolean {
+    if (e.pointerType !== "touch") return false;
+    if (!this.config.touchDraw) return true;
+    if (!this.config.palmRejection) return false;
+    if (performance.now() - this.lastPenTime < 1200) return true;
+    const contact = Math.max(e.width || 0, e.height || 0);
+    return contact > this.config.palmContactPx;
+  }
 
-    if (e.pointerType === 'touch') {
-      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY })
-      // A second finger cancels drawing and becomes a navigation gesture.
-      if (this.touches.size >= 2) {
-        if (this.activePointerId !== null) {
-          this.handlers.onCancel()
-          this.activePointerId = null
-        }
-        this.beginGesture()
-        return
+  private onDown(e: PointerEvent): void {
+    if (e.pointerType === "pen") this.lastPenTime = performance.now();
+    this.refreshRect();
+
+    this.pointers.set(e.pointerId, {
+      id: e.pointerId,
+      kind: (e.pointerType || "mouse") as PointerKind,
+      x: e.clientX,
+      y: e.clientY,
+    });
+
+    // Dos o mas dedos: gesto de navegacion, se cancela el trazo en curso.
+    const touches = [...this.pointers.values()].filter((p) => p.kind === "touch");
+    if (touches.length >= 2) {
+      if (this.active !== null) {
+        this.handlers.onCancel?.();
+        this.releaseActive();
       }
-      // Ignore the palm resting on the glass while the pen is down.
-      if (this.penActive) return
+      this.beginGesture(touches);
+      return;
     }
 
-    if (e.pointerType === 'pen') this.penActive = true
-    if (this.activePointerId !== null) return
+    if (this.active !== null || this.isRejected(e)) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
 
-    this.activePointerId = e.pointerId
-    this.element.setPointerCapture(e.pointerId)
-    this.handlers.onDown(this.frame(e))
+    this.active = e.pointerId;
+    try {
+      this.el.setPointerCapture(e.pointerId);
+    } catch {
+      /* el puntero ya se solto */
+    }
+    e.preventDefault();
+    this.handlers.onStart?.(this.sample(e), e);
   }
 
-  private handleRaw(e: PointerEvent): void {
-    // Raw updates arrive ahead of pointermove; the coalesced list is the same
-    // data, so taking it here and ignoring the later pointermove avoids
-    // processing every sample twice.
-    if (e.pointerId !== this.activePointerId) return
-    this.emitSamples(e)
+  private onMove(e: PointerEvent): void {
+    if (e.pointerType === "pen") this.lastPenTime = performance.now();
+    const tracked = this.pointers.get(e.pointerId);
+    if (tracked) {
+      tracked.x = e.clientX;
+      tracked.y = e.clientY;
+    }
+
+    if (this.gesture) {
+      this.updateGesture();
+      return;
+    }
+
+    if (this.active === null) {
+      if (!this.isRejected(e)) this.handlers.onHover?.(this.sample(e));
+      return;
+    }
+    if (e.pointerId !== this.active) return;
+    e.preventDefault();
+
+    const coalesced = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+    const samples: InputSample[] =
+      coalesced.length > 0 ? coalesced.map((c) => this.sample(c)) : [this.sample(e)];
+
+    let predicted: InputSample[] = [];
+    if (this.config.prediction && typeof e.getPredictedEvents === "function") {
+      predicted = e.getPredictedEvents().map((c) => this.sample(c, true));
+    }
+
+    this.handlers.onMove?.(samples, predicted, e);
   }
 
-  private handleMove(e: PointerEvent): void {
-    if (!this.handlers) return
+  private onUp(e: PointerEvent, cancel = false): void {
+    this.pointers.delete(e.pointerId);
 
-    if (e.pointerType === 'touch' && this.touches.has(e.pointerId)) {
-      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY })
-      if (this.gestureActive) {
-        this.updateGesture()
-        return
+    if (this.gesture) {
+      const touches = [...this.pointers.values()].filter((p) => p.kind === "touch");
+      if (touches.length < 2) {
+        this.gesture = null;
+        this.handlers.onGestureEnd?.();
+      } else {
+        this.beginGesture(touches);
       }
+      return;
     }
 
-    if (e.pointerId !== this.activePointerId) {
-      if (this.activePointerId === null) this.handleHover(e)
-      return
+    if (e.pointerId !== this.active) return;
+    this.releaseActive();
+    if (cancel) this.handlers.onCancel?.();
+    else this.handlers.onEnd?.(this.sample(e), e);
+  }
+
+  private releaseActive(): void {
+    if (this.active === null) return;
+    try {
+      this.el.releasePointerCapture(this.active);
+    } catch {
+      /* ya liberado */
     }
-    // If rawupdate is unavailable this is the only sample source.
-    if (!('onpointerrawupdate' in window)) this.emitSamples(e)
+    this.active = null;
   }
 
-  private emitSamples(e: PointerEvent): void {
-    const handlers = this.handlers
-    if (!handlers || !this.element) return
-    const rect = this.element.getBoundingClientRect()
-    const coalesced =
-      typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : []
-    const list = coalesced.length > 0 ? coalesced : [e]
-
-    for (const sample of list) {
-      handlers.onMove({
-        pointerId: e.pointerId,
-        kind: (e.pointerType || 'mouse') as PointerKind,
-        x: sample.clientX - rect.left,
-        y: sample.clientY - rect.top,
-        pressure: sample.pressure,
-        tiltX: sample.tiltX ?? 0,
-        tiltY: sample.tiltY ?? 0,
-        twist: sample.twist ?? 0,
-        time: sample.timeStamp,
-        buttons: e.buttons,
-        altKey: e.altKey,
-        ctrlKey: e.ctrlKey,
-        metaKey: e.metaKey,
-        shiftKey: e.shiftKey,
-        eraser: e.buttons === 32,
-      })
-    }
-  }
-
-  private handleHover(e: PointerEvent): void {
-    if (!this.handlers || !this.element) return
-    this.handlers.onHover(this.frame(e))
-  }
-
-  private handleUp(e: PointerEvent): void {
-    if (!this.handlers) return
-
-    if (e.pointerType === 'touch') {
-      this.touches.delete(e.pointerId)
-      if (this.gestureActive && this.touches.size < 2) this.endGesture()
-    }
-    if (e.pointerType === 'pen') this.penActive = false
-
-    if (e.pointerId !== this.activePointerId) return
-    this.activePointerId = null
-    this.element?.releasePointerCapture(e.pointerId)
-    this.handlers.onUp(this.frame(e))
-  }
-
-  private handleCancel(e: PointerEvent): void {
-    if (!this.handlers) return
-    if (e.pointerType === 'touch') this.touches.delete(e.pointerId)
-    if (e.pointerType === 'pen') this.penActive = false
-    if (e.pointerId !== this.activePointerId) return
-    this.activePointerId = null
-    this.handlers.onCancel()
-  }
-
-  private handleWheel(e: WheelEvent): void {
-    if (!this.handlers || !this.element) return
-    e.preventDefault()
-    const rect = this.element.getBoundingClientRect()
-    // ctrlKey on a wheel event is how trackpad pinch arrives on every platform.
-    this.handlers.onWheel(
-      e.deltaX,
-      e.deltaY,
-      e.clientX - rect.left,
-      e.clientY - rect.top,
-      e.ctrlKey || e.metaKey
-    )
-  }
-
-  private beginGesture(): void {
-    this.gestureActive = true
-    const state = this.gestureState()
-    this.lastGestureDistance = state.distance
-    this.lastGestureCenterX = state.cx
-    this.lastGestureCenterY = state.cy
+  private beginGesture(touches: TrackedPointer[]): void {
+    const [a, b] = touches;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const angle = Math.atan2(dy, dx);
+    this.gesture = {
+      startDist: Math.max(1, Math.hypot(dx, dy)),
+      startCx: (a.x + b.x) / 2,
+      startCy: (a.y + b.y) / 2,
+      lastAngle: angle,
+      rotation: 0,
+    };
+    const c = this.local(this.gesture.startCx, this.gesture.startCy);
+    this.handlers.onGestureStart?.({
+      cx: c.x,
+      cy: c.y,
+      scale: 1,
+      rotation: 0,
+      dx: 0,
+      dy: 0,
+      pointers: touches.length,
+    });
   }
 
   private updateGesture(): void {
-    if (!this.handlers || !this.element) return
-    const state = this.gestureState()
-    if (state.distance <= 0) return
-    const scale =
-      this.lastGestureDistance > 0
-        ? state.distance / this.lastGestureDistance
-        : 1
-    const rect = this.element.getBoundingClientRect()
-    this.handlers.onGesture(
-      state.cx - this.lastGestureCenterX,
-      state.cy - this.lastGestureCenterY,
-      scale,
-      state.cx - rect.left,
-      state.cy - rect.top
-    )
-    this.lastGestureDistance = state.distance
-    this.lastGestureCenterX = state.cx
-    this.lastGestureCenterY = state.cy
-  }
-
-  private endGesture(): void {
-    this.gestureActive = false
-    this.handlers?.onGestureEnd()
-  }
-
-  private gestureState(): { distance: number; cx: number; cy: number } {
-    const points = [...this.touches.values()]
-    if (points.length < 2) return { distance: 0, cx: 0, cy: 0 }
-    const [a, b] = points
-    return {
-      distance: Math.hypot(b.x - a.x, b.y - a.y),
-      cx: (a.x + b.x) * 0.5,
-      cy: (a.y + b.y) * 0.5,
-    }
+    const g = this.gesture;
+    if (!g) return;
+    const touches = [...this.pointers.values()].filter((p) => p.kind === "touch");
+    if (touches.length < 2) return;
+    const [a, b] = touches;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.max(1, Math.hypot(dx, dy));
+    const angle = Math.atan2(dy, dx);
+    let delta = angle - g.lastAngle;
+    if (delta > Math.PI) delta -= TAU;
+    if (delta < -Math.PI) delta += TAU;
+    g.rotation += delta;
+    g.lastAngle = angle;
+    const cx = (a.x + b.x) / 2;
+    const cy = (a.y + b.y) / 2;
+    const c = this.local(cx, cy);
+    this.handlers.onGestureMove?.({
+      cx: c.x,
+      cy: c.y,
+      scale: clamp(dist / g.startDist, 0.05, 40),
+      rotation: g.rotation,
+      dx: cx - g.startCx,
+      dy: cy - g.startCy,
+      pointers: touches.length,
+    });
   }
 }

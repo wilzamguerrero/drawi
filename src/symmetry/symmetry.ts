@@ -1,126 +1,120 @@
-import {
-  identity,
-  multiply,
-  reflectionAcross,
-  rotationAround,
-  type Mat2D,
-} from '@/core/mat2d'
+import { identity, multiply, reflectionAbout, rotationAround, type Mat2d } from "../core/mat2d";
+import { clamp, TAU } from "../core/math";
+
+export type SymmetryMode = "none" | "mirror" | "radial" | "kaleido";
+
+export interface SymmetryState {
+  mode: SymmetryMode;
+  /** Origen del eje, en coordenadas de mundo: se puede arrastrar a cualquier sitio. */
+  x: number;
+  y: number;
+  /** Angulo del eje en radianes. */
+  angle: number;
+  /** Numero de sectores para radial/caleidoscopio. */
+  count: number;
+  /** Muestra el gizmo sobre el lienzo. */
+  visible: boolean;
+  /** Bloquea el gizmo para que no se mueva sin querer. */
+  locked: boolean;
+}
+
+export const DEFAULT_SYMMETRY: SymmetryState = {
+  mode: "none",
+  x: 0,
+  y: 0,
+  angle: 0,
+  count: 6,
+  visible: true,
+  locked: false,
+};
+
+export const SYMMETRY_LABELS: Record<SymmetryMode, string> = {
+  none: "Sin simetria",
+  mirror: "Espejo",
+  radial: "Radial",
+  kaleido: "Caleidoscopio",
+};
 
 /**
- * Symmetry is expressed as a set of affine transforms rather than as a special
- * drawing mode. One stroke is built once, then instanced through every
- * transform — so a 16-fold mandala costs the same geometry work as a single
- * stroke, and every copy is exact rather than approximately mirrored.
- *
- * The axis has a movable origin and a free rotation, so the mirror line can sit
- * anywhere on the canvas at any angle, not just on the centre of the viewport.
+ * Lista de transformaciones que genera la simetria activa.
+ * La primera siempre es la identidad (el trazo que realmente dibujas).
  */
-export interface SymmetrySettings {
-  enabled: boolean
-  /** Axis origin in document space. */
-  originX: number
-  originY: number
-  /** Axis rotation in radians. 0 means the primary axis is horizontal. */
-  angle: number
-  /** Reflect across the primary axis. */
-  mirror: boolean
-  /** Also reflect across the perpendicular axis — together these give 4-way. */
-  mirrorPerpendicular: boolean
-  /** Rotational copies around the origin. 1 disables rotation. */
-  radial: number
-  /** Draw the axis guides on the canvas. */
-  showGuides: boolean
+export function symmetryTransforms(s: SymmetryState): Mat2d[] {
+  const out: Mat2d[] = [identity()];
+  if (s.mode === "none") return out;
+
+  const n = clamp(Math.round(s.count), 2, 64);
+
+  if (s.mode === "mirror") {
+    out.push(reflectionAbout(s.angle, s.x, s.y));
+    return out;
+  }
+
+  if (s.mode === "radial") {
+    for (let i = 1; i < n; i++) {
+      out.push(rotationAround((TAU * i) / n, s.x, s.y));
+    }
+    return out;
+  }
+
+  // Caleidoscopio: cada sector rotado y su reflejo. Genera 2n copias.
+  const mirror = reflectionAbout(s.angle, s.x, s.y);
+  out.push(mirror);
+  for (let i = 1; i < n; i++) {
+    const rot = rotationAround((TAU * i) / n, s.x, s.y);
+    out.push(rot);
+    out.push(multiply(rot, mirror));
+  }
+  return out;
 }
 
-export const defaultSymmetry = (): SymmetrySettings => ({
-  enabled: false,
-  originX: 0,
-  originY: 0,
-  angle: Math.PI / 2,
-  mirror: true,
-  mirrorPerpendicular: false,
-  radial: 1,
-  showGuides: true,
-})
-
-export const MAX_RADIAL = 48
-
-const IDENTITY_ONLY: readonly Mat2D[] = [identity()]
-
-/**
- * Builds the instance transforms for the current settings.
- *
- * Order matters: mirrors are composed first so each rotational copy carries the
- * mirrored pair with it. That produces a true kaleidoscope instead of a ring of
- * unrelated reflections.
- */
-export const buildSymmetryTransforms = (
-  s: SymmetrySettings
-): readonly Mat2D[] => {
-  if (!s.enabled) return IDENTITY_ONLY
-
-  const radial = Math.max(1, Math.min(MAX_RADIAL, Math.round(s.radial)))
-  if (!s.mirror && !s.mirrorPerpendicular && radial === 1) return IDENTITY_ONLY
-
-  let base: Mat2D[] = [identity()]
-
-  if (s.mirror) {
-    const m = reflectionAcross(s.angle, s.originX, s.originY)
-    base = base.concat(base.map((t) => multiply(m, t)))
-  }
-
-  if (s.mirrorPerpendicular) {
-    const m = reflectionAcross(
-      s.angle + Math.PI / 2,
-      s.originX,
-      s.originY
-    )
-    base = base.concat(base.map((t) => multiply(m, t)))
-  }
-
-  if (radial === 1) return base
-
-  const out: Mat2D[] = []
-  const step = (Math.PI * 2) / radial
-  for (let k = 0; k < radial; k++) {
-    const r = rotationAround(step * k, s.originX, s.originY)
-    for (const t of base) out.push(k === 0 ? t : multiply(r, t))
-  }
-  return out
+export function symmetryCopies(s: SymmetryState): number {
+  if (s.mode === "none") return 1;
+  if (s.mode === "mirror") return 2;
+  const n = clamp(Math.round(s.count), 2, 64);
+  return s.mode === "radial" ? n : n * 2;
 }
 
-/** How many copies the current settings produce. */
-export const symmetryInstanceCount = (s: SymmetrySettings): number => {
-  if (!s.enabled) return 1
-  const radial = Math.max(1, Math.min(MAX_RADIAL, Math.round(s.radial)))
-  let n = 1
-  if (s.mirror) n *= 2
-  if (s.mirrorPerpendicular) n *= 2
-  return n * radial
+/** Partes del gizmo que el usuario puede agarrar. */
+export type SymmetryHandle = "origin" | "axis" | "count" | null;
+
+export interface GizmoGeometry {
+  /** Radio del disco central en px de pantalla. */
+  originRadius: number;
+  /** Distancia del tirador de angulo, en px de pantalla. */
+  axisRadius: number;
+  /** Distancia del tirador de sectores. */
+  countRadius: number;
 }
 
-/** Screen-space guide lines for the axis overlay, in document space. */
-export const symmetryGuideLines = (
-  s: SymmetrySettings,
-  extent: number
-): Array<[number, number, number, number]> => {
-  const lines: Array<[number, number, number, number]> = []
-  const push = (angle: number): void => {
-    const dx = Math.cos(angle) * extent
-    const dy = Math.sin(angle) * extent
-    lines.push([
-      s.originX - dx,
-      s.originY - dy,
-      s.originX + dx,
-      s.originY + dy,
-    ])
+export const GIZMO: GizmoGeometry = {
+  originRadius: 13,
+  axisRadius: 84,
+  countRadius: 120,
+};
+
+/** Devuelve que tirador del gizmo cae bajo un punto de pantalla. */
+export function hitSymmetryHandle(
+  screenX: number,
+  screenY: number,
+  originScreen: { x: number; y: number },
+  axisScreenAngle: number,
+  mode: SymmetryMode,
+): SymmetryHandle {
+  const dx = screenX - originScreen.x;
+  const dy = screenY - originScreen.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= GIZMO.originRadius + 6) return "origin";
+  if (mode === "none") return null;
+
+  const hx = originScreen.x + Math.cos(axisScreenAngle) * GIZMO.axisRadius;
+  const hy = originScreen.y + Math.sin(axisScreenAngle) * GIZMO.axisRadius;
+  if (Math.hypot(screenX - hx, screenY - hy) <= 14) return "axis";
+
+  if (mode === "radial" || mode === "kaleido") {
+    const cx = originScreen.x + Math.cos(axisScreenAngle + Math.PI / 2) * GIZMO.countRadius;
+    const cy = originScreen.y + Math.sin(axisScreenAngle + Math.PI / 2) * GIZMO.countRadius;
+    if (Math.hypot(screenX - cx, screenY - cy) <= 14) return "count";
   }
-  if (s.mirror) push(s.angle)
-  if (s.mirrorPerpendicular) push(s.angle + Math.PI / 2)
-  const radial = Math.max(1, Math.round(s.radial))
-  if (radial > 1) {
-    const step = Math.PI / radial
-    for (let k = 0; k < radial; k++) push(s.angle + step * k)
-  }
-  return lines
+  return null;
 }
