@@ -69,6 +69,7 @@ class El {
   setAttribute(k, v) { this.attributes[k] = String(v); }
   getAttribute(k) { return this.attributes[k] ?? null; }
   removeAttribute(k) { delete this.attributes[k]; }
+  toggleAttribute(k, force) { const on = force === undefined ? !(k in this.attributes) : force; if (on) this.attributes[k] = ""; else delete this.attributes[k]; return on; }
   addEventListener(t, fn) { listeners.push([this, t, fn]); }
   removeEventListener() {}
   dispatchEvent() { return true; }
@@ -86,6 +87,7 @@ class TextNode { constructor(t) { this.textContent = String(t); } }
 globalThis.document = {
   title: "", body: new El("body"), documentElement: new El("html"), activeElement: null,
   createElement: (t) => new El(t),
+  createElementNS: (_ns, t) => new El(t),
   createTextNode: (t) => new TextNode(t),
   getElementById: () => null,
   addEventListener: (t, fn) => listeners.push([globalThis.document, t, fn]),

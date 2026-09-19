@@ -2,6 +2,7 @@ import type { Editor, EditorState } from "../app/editor";
 import { DEFAULT_PALETTES } from "../core/color";
 import { TOOL_LABELS, type ToolId } from "../tools/types";
 import { ColorPicker } from "./color-picker";
+import { PantoneWheel } from "./pantone-wheel";
 import { button, segmented, swatches, type Control } from "./controls";
 import { blurSoon, el, setClass } from "./dom";
 import { icon } from "./icons";
@@ -32,6 +33,7 @@ export class ToolRail {
   private bgWell: HTMLButtonElement;
   private picker: ColorPicker;
   private bgPicker: ColorPicker;
+  private pantone: PantoneWheel;
   private paletteSwatches: Control<{ colors: readonly string[]; value: string }>;
   private paletteTabs: Control<string>;
   private colorPopover: Popover;
@@ -66,6 +68,12 @@ export class ToolRail {
     }
 
     this.picker = new ColorPicker(editor.color, (hex) => editor.setColor(hex));
+    // Rueda Pantone flotante: sistema de color aparte, mismo comportamiento que
+    // el del estudio de referencia. Se muestra/oculta desde el popover de color.
+    this.pantone = new PantoneWheel((hex) => {
+      editor.setColor(hex);
+      this.picker.set(hex);
+    });
     this.paletteTabs = segmented({
       options: DEFAULT_PALETTES.map((p, i) => ({ value: String(i), label: p.name })),
       value: "0",
@@ -83,6 +91,12 @@ export class ToolRail {
     const colorPanel = el("div", { class: "popover-body" }, [
       el("h3", { class: "popover-title", text: "Color" }),
       this.picker.el,
+      button({
+        iconName: "wheel",
+        label: "Rueda Pantone",
+        title: "Rueda de color flotante (sistema aparte)",
+        onClick: () => this.pantone.toggle(),
+      }).el,
       el("div", { class: "popover-divider" }),
       this.paletteTabs.el,
       this.paletteSwatches.el,
@@ -163,5 +177,6 @@ export class ToolRail {
   dispose(): void {
     this.colorPopover.dispose();
     this.bgPopover.dispose();
+    this.pantone.dispose();
   }
 }
