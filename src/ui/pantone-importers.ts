@@ -1,4 +1,5 @@
 import type { ImportedColor } from "./pantone-palettes";
+import { colorsFromPixels } from "./pantone-kmeans";
 
 /**
  * Importadores de color para la rueda Pantone.
@@ -11,7 +12,13 @@ import type { ImportedColor } from "./pantone-palettes";
 
 // ------------------------------------------------------------ extraer de imagen
 
-export const extractColorsFromImage = (file: File, numColors = 12): Promise<ImportedColor[]> =>
+/**
+ * Decodifica la imagen a un buffer RGBA reducido (max 300px de lado).
+ *
+ * Necesita el canvas del DOM, asi que corre en el hilo principal; es rapido. El
+ * k-means, que es lo caro, se hace aparte (worker o fallback) sobre este buffer.
+ */
+export const decodeImagePixels = (file: File): Promise<{ data: Uint8ClampedArray }> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -19,7 +26,17 @@ export const extractColorsFromImage = (file: File, numColors = 12): Promise<Impo
       img.crossOrigin = "Anonymous";
       img.onload = () => {
         try {
-          resolve(getImageColors(img, numColors));
+          const maxSize = 300;
+          const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
+          const width = Math.floor(img.width * scale);
+          const height = Math.floor(img.height * scale);
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("No hay contexto 2D disponible");
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve({ data: ctx.getImageData(0, 0, width, height).data });
         } catch (err) {
           reject(err);
         }
@@ -31,161 +48,10 @@ export const extractColorsFromImage = (file: File, numColors = 12): Promise<Impo
     reader.readAsDataURL(file);
   });
 
-const getImageColors = (img: HTMLImageElement, numColors: number): ImportedColor[] => {
-  // Se reduce la imagen: para sacar los colores dominantes no hace falta el
-  // detalle, y muestrear 300px de lado es mucho mas rapido que la original.
-  const maxSize = 300;
-  const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
-  const width = Math.floor(img.width * scale);
-  const height = Math.floor(img.height * scale);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("No hay contexto 2D disponible");
-
-  ctx.drawImage(img, 0, 0, width, height);
-  const pixels = ctx.getImageData(0, 0, width, height).data;
-
-  const sample: RGB[] = [];
-  for (let i = 0; i < pixels.length; i += 4) {
-    if (pixels[i + 3] < 128) continue; // salta transparentes
-    if ((i / 4) % 2 === 0) sample.push([pixels[i], pixels[i + 1], pixels[i + 2]]);
-  }
-  if (sample.length === 0) throw new Error("La imagen no tiene pixeles validos");
-
-  const clusters = kMeans(sample, numColors, 20);
-  clusters.sort((a, b) => b.count - a.count);
-  return clusters.map((c, i) => ({
-    r: Math.round(c.center[0]),
-    g: Math.round(c.center[1]),
-    b: Math.round(c.center[2]),
-    name: colorName(c.center[0], c.center[1], c.center[2], i + 1),
-  }));
-};
-
-type RGB = [number, number, number];
-
-interface Cluster {
-  center: RGB;
-  pixels: RGB[];
-  count: number;
-}
-
-const dist = (a: RGB, b: RGB): number => {
-  const dr = a[0] - b[0];
-  const dg = a[1] - b[1];
-  const db = a[2] - b[2];
-  return Math.sqrt(dr * dr + dg * dg + db * db);
-};
-
-const kMeans = (pixels: RGB[], k: number, maxIter: number): Cluster[] => {
-  // Semillas por k-means++: dispersa los centros iniciales para no arrancar con
-  // dos casi encima y perder un color.
-  const centroids: RGB[] = [pixels[Math.floor(Math.random() * pixels.length)]];
-  for (let i = 1; i < k; i++) {
-    const d2 = pixels.map((p) => {
-      const m = Math.min(...centroids.map((c) => dist(p, c)));
-      return m * m;
-    });
-    const sum = d2.reduce((a, b) => a + b, 0);
-    let target = Math.random() * sum;
-    let picked = false;
-    for (let j = 0; j < pixels.length; j++) {
-      target -= d2[j];
-      if (target <= 0) {
-        centroids.push([...pixels[j]]);
-        picked = true;
-        break;
-      }
-    }
-    if (!picked) centroids.push(pixels[Math.floor(Math.random() * pixels.length)]);
-  }
-
-  let clusters: Cluster[] = [];
-  for (let iter = 0; iter < maxIter; iter++) {
-    clusters = centroids.map((c) => ({ center: [...c] as RGB, pixels: [], count: 0 }));
-    for (const p of pixels) {
-      let min = Infinity;
-      let idx = 0;
-      for (let i = 0; i < centroids.length; i++) {
-        const d = dist(p, centroids[i]);
-        if (d < min) {
-          min = d;
-          idx = i;
-        }
-      }
-      clusters[idx].pixels.push(p);
-      clusters[idx].count++;
-    }
-
-    let converged = true;
-    for (let i = 0; i < clusters.length; i++) {
-      if (clusters[i].pixels.length === 0) continue;
-      const c: RGB = [0, 0, 0];
-      for (const p of clusters[i].pixels) {
-        c[0] += p[0];
-        c[1] += p[1];
-        c[2] += p[2];
-      }
-      c[0] /= clusters[i].pixels.length;
-      c[1] /= clusters[i].pixels.length;
-      c[2] /= clusters[i].pixels.length;
-      if (dist(centroids[i], c) > 1) converged = false;
-      centroids[i] = c;
-      clusters[i].center = c;
-    }
-    if (converged) break;
-  }
-  return clusters.filter((c) => c.count > 0);
-};
-
-/** Nombre descriptivo del color a partir de su HSL. */
-const colorName = (r: number, g: number, b: number, index: number): string => {
-  const rn = r / 255;
-  const gn = g / 255;
-  const bn = b / 255;
-  const max = Math.max(rn, gn, bn);
-  const min = Math.min(rn, gn, bn);
-  const l = (max + min) / 2;
-  let h = 0;
-  let s = 0;
-  if (max !== min) {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) / 6;
-    else if (max === gn) h = ((bn - rn) / d + 2) / 6;
-    else h = ((rn - gn) / d + 4) / 6;
-  }
-  h *= 360;
-  s *= 100;
-  const lp = l * 100;
-
-  if (s < 10) {
-    if (lp < 15) return `Negro ${index}`;
-    if (lp < 35) return `Gris osc ${index}`;
-    if (lp < 65) return `Gris ${index}`;
-    if (lp < 85) return `Gris cl ${index}`;
-    return `Blanco ${index}`;
-  }
-
-  let hue = "";
-  if (h < 15 || h >= 345) hue = "Rojo";
-  else if (h < 45) hue = "Naranja";
-  else if (h < 75) hue = "Amaril";
-  else if (h < 105) hue = "Lima";
-  else if (h < 135) hue = "Verde";
-  else if (h < 165) hue = "Teal";
-  else if (h < 195) hue = "Cian";
-  else if (h < 225) hue = "Cielo";
-  else if (h < 255) hue = "Azul";
-  else if (h < 285) hue = "Purpura";
-  else if (h < 315) hue = "Magenta";
-  else hue = "Rosa";
-
-  const lm = lp < 25 ? "Osc " : lp > 75 ? "Cl " : "";
-  return `${lm}${hue} ${index}`;
+/** Extrae los colores dominantes en el hilo principal (fallback sin worker). */
+export const extractColorsFromImage = async (file: File, numColors = 12): Promise<ImportedColor[]> => {
+  const { data } = await decodeImagePixels(file);
+  return colorsFromPixels(data, numColors);
 };
 
 // ---------------------------------------------------------------- ASE / ACO

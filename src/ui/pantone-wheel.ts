@@ -1,7 +1,14 @@
 import { el } from "./dom";
 import { icon } from "./icons";
-import { createPaletteFromColors, getPalette, PANTONE_PALETTES, type Palette, type Swatch } from "./pantone-palettes";
-import { extractColorsFromImage, parseACO, parseASE } from "./pantone-importers";
+import {
+  createPaletteFromColors,
+  getPalette,
+  PANTONE_PALETTES,
+  type ImportedColor,
+  type Palette,
+  type Swatch,
+} from "./pantone-palettes";
+import { decodeImagePixels, extractColorsFromImage, parseACO, parseASE } from "./pantone-importers";
 
 /**
  * Rueda de color Pantone flotante.
@@ -145,6 +152,7 @@ export class PantoneWheel {
   private customPalettes: Palette[] = [];
   private collapseTimer = 0;
   private hideTimer = 0;
+  private worker: Worker | null = null;
 
   private active: Swatch | null = null;
 
@@ -311,7 +319,29 @@ export class PantoneWheel {
     grid.appendChild(this.importButton("wheel", "Imagen", "image/*", (f) => this.importImage(f)));
 
     this.library.appendChild(grid);
+    this.library.appendChild(el("div", { class: "pw-lib-status", id: "pw-lib-status" }));
     this.markLibrary();
+  }
+
+  private get statusEl(): HTMLElement | null {
+    return this.library.querySelector(".pw-lib-status");
+  }
+
+  /** Muestra el estado de importacion (cargando / error) bajo la rejilla. */
+  private setStatus(text: string, kind: "busy" | "error" | "" = ""): void {
+    const s = this.statusEl;
+    if (!s) return;
+    s.textContent = "";
+    s.className = `pw-lib-status${kind ? ` is-${kind}` : ""}`;
+    if (kind === "busy") s.appendChild(el("span", { class: "pw-spinner" }));
+    if (text) s.appendChild(el("span", { text }));
+  }
+
+  /** Espera dos fotogramas para que el navegador pinte el estado "cargando". */
+  private nextPaint(): Promise<void> {
+    return new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
   }
 
   private importButton(iconName: string, label: string, accept: string, onFile: (f: File) => void): HTMLElement {
@@ -340,40 +370,90 @@ export class PantoneWheel {
     this.paletteId = pal.id;
     this.palette = pal;
     localStorage.setItem(PAL_KEY, pal.id);
+    this.setStatus("");
     this.buildLibrary();
-    this.buildRings();
     this.library.hidden = true;
+    // Muestra la paleta recien cargada con la misma animacion de entrada que al
+    // elegir una del listado: si la rueda estaba plegada se despliega (lo que ya
+    // reinicia la animacion), y si estaba abierta se re-lanza a mano.
+    if (this.expanded) {
+      this.buildRings();
+      this.replayEntrance();
+    } else {
+      this.setExpanded(true);
+    }
   }
 
   private importSwatchFile(file: File): void {
+    this.setStatus("Leyendo archivo…", "busy");
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onerror = () => this.setStatus("No se pudo leer el archivo.", "error");
+    reader.onload = async (e) => {
       const buffer = e.target?.result as ArrayBuffer;
+      await this.nextPaint(); // deja que se pinte el "cargando" antes de parsear
       try {
         const lower = file.name.toLowerCase();
         const colors = lower.endsWith(".ase") ? parseASE(buffer) : lower.endsWith(".aco") ? parseACO(buffer) : [];
         if (colors.length === 0) {
-          alert("No se encontraron colores compatibles en el archivo.");
+          this.setStatus("Sin colores compatibles en el archivo.", "error");
           return;
         }
         this.addCustomPalette(createPaletteFromColors(file.name.replace(/\.[^/.]+$/, ""), colors));
       } catch {
-        alert("No se pudo leer el archivo. Debe ser un .ase o .aco valido.");
+        this.setStatus("Archivo .ase/.aco invalido.", "error");
       }
     };
     reader.readAsArrayBuffer(file);
   }
 
   private async importImage(file: File): Promise<void> {
+    this.setStatus("Leyendo imagen…", "busy");
     try {
-      const colors = await extractColorsFromImage(file, 72);
+      const { data } = await decodeImagePixels(file);
+      // El k-means es lo caro: se manda a un worker para que la rueda y el
+      // spinner sigan animando en vez de quedarse congelados.
+      this.setStatus("Extrayendo colores…", "busy");
+      const colors = await this.clusterColors(data, 72, file);
       if (colors.length === 0) {
-        alert("No se pudieron extraer colores de la imagen.");
+        this.setStatus("No se pudieron extraer colores.", "error");
         return;
       }
       this.addCustomPalette(createPaletteFromColors(file.name.replace(/\.[^/.]+$/, ""), colors));
     } catch {
-      alert("Error al extraer colores. Prueba con otra imagen.");
+      this.setStatus("Error al procesar la imagen.", "error");
+    }
+  }
+
+  /** Corre el k-means en un worker; si no hay Worker, cae al hilo principal. */
+  private clusterColors(data: Uint8ClampedArray, numColors: number, file: File): Promise<ImportedColor[]> {
+    if (typeof Worker === "undefined") return extractColorsFromImage(file, numColors);
+    try {
+      if (!this.worker) {
+        this.worker = new Worker(new URL("./pantone-kmeans.worker.ts", import.meta.url), { type: "module" });
+      }
+      const worker = this.worker;
+      return new Promise<ImportedColor[]>((resolve, reject) => {
+        const onMessage = (e: MessageEvent<{ colors?: ImportedColor[]; error?: string }>) => {
+          cleanup();
+          if (e.data.error) reject(new Error(e.data.error));
+          else resolve(e.data.colors ?? []);
+        };
+        const onError = (err: ErrorEvent) => {
+          cleanup();
+          reject(err.error ?? new Error("Worker fallo"));
+        };
+        const cleanup = () => {
+          worker.removeEventListener("message", onMessage as EventListener);
+          worker.removeEventListener("error", onError as EventListener);
+        };
+        worker.addEventListener("message", onMessage as EventListener);
+        worker.addEventListener("error", onError as EventListener);
+        // Se transfiere el buffer: no se copia, pasa de dueno al worker.
+        const buffer = data.buffer.slice(0);
+        worker.postMessage({ data: buffer, numColors }, [buffer]);
+      });
+    } catch {
+      return extractColorsFromImage(file, numColors);
     }
   }
 
@@ -562,8 +642,27 @@ export class PantoneWheel {
     this.palette = this.resolvePalette(id);
     localStorage.setItem(PAL_KEY, id);
     this.buildRings();
+    this.replayEntrance();
     this.markLibrary();
     this.library.hidden = true;
+  }
+
+  /**
+   * Vuelve a lanzar la animacion de entrada de los anillos.
+   *
+   * La animacion `-in` solo corre al aparecer el elemento; al cambiar de paleta
+   * el SVG ya esta en pantalla, asi que se reinicia a mano: se quita la
+   * animacion, se fuerza un reflow y se restaura, para que la nueva paleta entre
+   * escalando desde el centro igual que la primera vez.
+   */
+  private replayEntrance(): void {
+    if (!this.expanded) return;
+    for (const svg of [this.ringsSvg, this.gradientSvg]) {
+      svg.classList.remove("is-leaving");
+      svg.style.animation = "none";
+      void svg.getBoundingClientRect(); // fuerza reflow para reiniciar la animacion
+      svg.style.animation = "";
+    }
   }
 
   private toggleLibrary(): void {
@@ -625,6 +724,8 @@ export class PantoneWheel {
     window.clearTimeout(this.collapseTimer);
     window.clearTimeout(this.hideTimer);
     document.removeEventListener("pointerdown", this.onDocDown, true);
+    this.worker?.terminate();
+    this.worker = null;
     this.el.remove();
   }
 }
