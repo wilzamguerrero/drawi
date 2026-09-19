@@ -29,6 +29,13 @@ export interface Palette {
   preview: string[];
 }
 
+export interface ImportedColor {
+  r: number;
+  g: number;
+  b: number;
+  name: string;
+}
+
 // Geometria de los anillos (px, en el espacio local de la rueda).
 const START_RADIUS = 95;
 const RING_DEPTH = 52;
@@ -159,6 +166,86 @@ const generateSpectrum = (
   }
 
   return { id, name, preview, rings };
+};
+
+const rgbToHsl = (r: number, g: number, b: number): { h: number; s: number; l: number } => {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  return { h: h * 360, s: s * 100, l: l * 100 };
+};
+
+/**
+ * Construye una paleta de rueda a partir de una lista de colores sueltos
+ * (importados de .ase/.aco o extraidos de una imagen).
+ *
+ * Reparte los colores en radios (spokes): primero los grises ordenados por tono
+ * y luego los cromaticos, cada radio con la altura del patron, y dentro de cada
+ * radio ordenados de oscuro a claro. Asi el import se ve como una rueda de
+ * verdad y no como una lista pegada de cualquier manera.
+ */
+export const createPaletteFromColors = (name: string, imported: ImportedColor[]): Palette => {
+  const rings = emptyRings();
+  const colors = imported.map((c) => {
+    const hsl = rgbToHsl(c.r, c.g, c.b);
+    const hex = `#${((1 << 24) + (c.r << 16) + (c.g << 8) + c.b).toString(16).slice(1).toUpperCase()}`;
+    return { ...c, ...hsl, hex };
+  });
+
+  const grays = colors.filter((c) => c.s < 12).sort((a, b) => a.h - b.h);
+  const chromatics = colors.filter((c) => c.s >= 12).sort((a, b) => a.h - b.h);
+  const sorted = [...grays, ...chromatics];
+
+  const spokes: (typeof sorted)[] = [];
+  let ci = 0;
+  let si = 0;
+  while (ci < sorted.length) {
+    const height = HEIGHT_PATTERN[si % HEIGHT_PATTERN.length];
+    const chunk = sorted.slice(ci, ci + height);
+    ci += height;
+    if (chunk.length === 0) break;
+    chunk.sort((a, b) => a.l - b.l);
+    spokes.push(chunk);
+    si++;
+  }
+
+  const total = Math.max(12, spokes.length);
+  const wedge = 360 / total;
+  spokes.forEach((spoke, sIndex) => {
+    const start = sIndex * wedge;
+    spoke.forEach((color, rIndex) => {
+      if (rIndex >= MAX_RINGS) return;
+      rings[rIndex].items.push({
+        id: `imp-${sIndex}-${rIndex}`,
+        hex: color.hex,
+        name: color.name.slice(0, 8),
+        family: "Importado",
+        ringIndex: rIndex,
+        startAngle: start,
+        endAngle: start + wedge,
+      });
+    });
+  });
+
+  return {
+    id: `custom-${Date.now()}`,
+    name,
+    rings,
+    preview: colors.slice(0, 4).map((c) => c.hex),
+  };
 };
 
 export const PANTONE_PALETTES: Palette[] = [

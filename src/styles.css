@@ -1018,6 +1018,10 @@ body {
   pointer-events: auto;
   cursor: grab;
   transition: filter 0.12s ease;
+  /* Escala desde el centro de la rueda (origen del viewBox). */
+  transform-box: view-box;
+  transform-origin: center;
+  animation: pw-swatch-in 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
 }
 
 .pw-swatch:hover {
@@ -1034,6 +1038,38 @@ body {
   letter-spacing: -0.03em;
   pointer-events: none;
   user-select: none;
+  transform-box: view-box;
+  transform-origin: center;
+  animation: pw-swatch-in 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+}
+
+/* Salida: al plegar, las muestras se encogen rapido (sin escalonar). */
+.pw-rings.is-leaving .pw-swatch,
+.pw-rings.is-leaving .pw-label {
+  animation: pw-swatch-out 0.15s ease-in both;
+  animation-delay: 0s !important;
+}
+
+@keyframes pw-swatch-in {
+  from {
+    opacity: 0;
+    transform: scale(0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes pw-swatch-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0);
+  }
 }
 
 .pw-gradient {
@@ -1077,6 +1113,37 @@ body {
   box-shadow: var(--shadow-2);
   cursor: grab;
   pointer-events: auto;
+  transition: transform 0.12s ease;
+}
+
+.pw-hub.is-entering {
+  animation: pw-hub-in 0.22s ease-out both;
+}
+
+.pw-hub.is-leaving {
+  animation: pw-hub-out 0.2s ease-in both;
+}
+
+@keyframes pw-hub-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes pw-hub-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+  }
   overflow: hidden;
 }
 
@@ -1134,17 +1201,31 @@ body {
   transform: translate(-50%, -50%);
   z-index: 10000;
   display: grid;
-  grid-template-columns: repeat(4, 44px);
-  gap: 5px;
-  padding: 8px;
+  padding: 10px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-2);
   pointer-events: auto;
+  animation: pw-hub-in 0.18s ease-out both;
+}
+
+.pw-lib-title {
+  font: 600 11px/1 var(--font);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 9px;
+}
+
+.pw-lib-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 44px);
+  gap: 5px;
 }
 
 .pw-lib-item {
+  position: relative;
   width: 44px;
   height: 44px;
   padding: 3px;
@@ -1176,6 +1257,43 @@ body {
 
 .pw-lib-preview i {
   display: block;
+}
+
+.pw-lib-import {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-style: dashed;
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.pw-lib-import:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.pw-lib-icon {
+  display: inline-flex;
+  width: 17px;
+  height: 17px;
+}
+
+.pw-lib-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.pw-lib-tag {
+  font: 700 6.5px/1 var(--font);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pw-lib-file {
+  display: none;
 }
 
 /* ------------------------------------------------------------- statusbar */

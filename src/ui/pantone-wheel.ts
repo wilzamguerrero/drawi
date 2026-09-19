@@ -1,5 +1,7 @@
 import { el } from "./dom";
-import { getPalette, PANTONE_PALETTES, type Palette, type Swatch } from "./pantone-palettes";
+import { icon } from "./icons";
+import { createPaletteFromColors, getPalette, PANTONE_PALETTES, type Palette, type Swatch } from "./pantone-palettes";
+import { extractColorsFromImage, parseACO, parseASE } from "./pantone-importers";
 
 /**
  * Rueda de color Pantone flotante.
@@ -140,6 +142,9 @@ export class PantoneWheel {
   private rotation = Number(localStorage.getItem(ROT_KEY)) || 0;
   private paletteId = localStorage.getItem(PAL_KEY) || "universal";
   private palette: Palette;
+  private customPalettes: Palette[] = [];
+  private collapseTimer = 0;
+  private hideTimer = 0;
 
   private active: Swatch | null = null;
 
@@ -153,7 +158,7 @@ export class PantoneWheel {
 
   constructor(onColorSelect: (hex: string) => void) {
     this.onColorSelect = onColorSelect;
-    this.palette = getPalette(this.paletteId);
+    this.palette = this.resolvePalette(this.paletteId);
 
     this.rotGroup = svgEl("g");
     this.ringsSvg = svgEl("svg", {
@@ -216,6 +221,12 @@ export class PantoneWheel {
     for (const ring of this.palette.rings) {
       const outer = ring.radius + RING_THICKNESS;
       for (const item of ring.items) {
+        const mid = (item.startAngle + item.endAngle) / 2;
+        // Retardo escalonado (por angulo y anillo) como en el original: las
+        // muestras brotan en cascada desde el centro en vez de aparecer de golpe.
+        const delay = ((mid / 360) * 0.12 + item.ringIndex * 0.03).toFixed(3);
+        const cen = polar(ring.radius + RING_THICKNESS / 2, mid);
+
         const path = svgEl("path", {
           class: "pw-swatch",
           d: annularSector(ring.radius, outer, item.startAngle, item.endAngle, GAP),
@@ -224,22 +235,24 @@ export class PantoneWheel {
           "stroke-width": 4,
           "stroke-linejoin": "round",
         });
+        // El retardo escalona el brote; el origen (centro de la rueda) lo pone
+        // el CSS con transform-box, asi que aqui solo hace falta el delay.
+        path.style.animationDelay = `${delay}s`;
         path.addEventListener("pointerdown", (e) => this.onSwatchDown(e, item));
         path.addEventListener("pointerenter", () => this.updateHub(item));
         path.addEventListener("pointerleave", () => this.updateHub());
         this.rotGroup.appendChild(path);
 
         // Etiqueta en el centro del sector.
-        const mid = (item.startAngle + item.endAngle) / 2;
-        const p = polar(ring.radius + RING_THICKNESS / 2, mid);
         const label = svgEl("text", {
           class: "pw-label",
-          x: p.x,
-          y: p.y,
-          transform: `rotate(${textRotation(mid)} ${p.x} ${p.y})`,
+          x: cen.x,
+          y: cen.y,
+          transform: `rotate(${textRotation(mid)} ${cen.x} ${cen.y})`,
           "text-anchor": "middle",
           "dominant-baseline": "central",
         });
+        label.style.animationDelay = `${delay}s`;
         label.textContent = item.name;
         this.rotGroup.appendChild(label);
       }
@@ -283,26 +296,102 @@ export class PantoneWheel {
 
   private buildLibrary(): void {
     this.library.textContent = "";
-    for (const pal of PANTONE_PALETTES) {
+    this.library.appendChild(el("div", { class: "pw-lib-title", text: "Presets de color" }));
+
+    const grid = el("div", { class: "pw-lib-grid" });
+    for (const pal of [...PANTONE_PALETTES, ...this.customPalettes]) {
       const preview = [...pal.preview];
       while (preview.length < 4) preview.push(preview[preview.length - 1] ?? "#333");
-      const grid = el("span", { class: "pw-lib-preview" }, preview.slice(0, 4).map((c) => el("i", { style: { background: c } })));
+      const swatches = el("span", { class: "pw-lib-preview" }, preview.slice(0, 4).map((c) => el("i", { style: { background: c } })));
       const btn = el("button", {
         class: "pw-lib-item",
         type: "button",
         title: pal.name,
         on: { click: () => this.setPalette(pal.id) },
-      }, [grid]);
+      }, [swatches]);
       btn.dataset.pal = pal.id;
-      this.library.appendChild(btn);
+      grid.appendChild(btn);
     }
+
+    // Cargar Pantones (.ase / .aco) y extraer paleta de una imagen.
+    grid.appendChild(this.importButton("upload", "ASE / ACO", ".ase,.aco", (f) => this.importSwatchFile(f)));
+    grid.appendChild(this.importButton("wheel", "Imagen", "image/*", (f) => this.importImage(f)));
+
+    this.library.appendChild(grid);
     this.markLibrary();
   }
 
-  private markLibrary(): void {
-    for (const b of Array.from(this.library.children) as HTMLElement[]) {
-      b.classList.toggle("is-active", b.dataset.pal === this.paletteId);
+  private importButton(iconName: string, label: string, accept: string, onFile: (f: File) => void): HTMLElement {
+    const input = el("input", { class: "pw-lib-file", type: "file" }) as HTMLInputElement;
+    input.accept = accept;
+    input.addEventListener("change", () => {
+      const f = input.files?.[0];
+      if (f) onFile(f);
+      input.value = "";
+    });
+    const btn = el("button", {
+      class: "pw-lib-item pw-lib-import",
+      type: "button",
+      title: `Cargar ${label}`,
+      on: { click: () => input.click() },
+    }, [
+      el("span", { class: "pw-lib-icon", html: icon(iconName) }),
+      el("span", { class: "pw-lib-tag", text: label }),
+      input,
+    ]);
+    return btn;
+  }
+
+  private addCustomPalette(pal: Palette): void {
+    this.customPalettes.push(pal);
+    this.paletteId = pal.id;
+    this.palette = pal;
+    localStorage.setItem(PAL_KEY, pal.id);
+    this.buildLibrary();
+    this.buildRings();
+    this.library.hidden = true;
+  }
+
+  private importSwatchFile(file: File): void {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const buffer = e.target?.result as ArrayBuffer;
+      try {
+        const lower = file.name.toLowerCase();
+        const colors = lower.endsWith(".ase") ? parseASE(buffer) : lower.endsWith(".aco") ? parseACO(buffer) : [];
+        if (colors.length === 0) {
+          alert("No se encontraron colores compatibles en el archivo.");
+          return;
+        }
+        this.addCustomPalette(createPaletteFromColors(file.name.replace(/\.[^/.]+$/, ""), colors));
+      } catch {
+        alert("No se pudo leer el archivo. Debe ser un .ase o .aco valido.");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  private async importImage(file: File): Promise<void> {
+    try {
+      const colors = await extractColorsFromImage(file, 72);
+      if (colors.length === 0) {
+        alert("No se pudieron extraer colores de la imagen.");
+        return;
+      }
+      this.addCustomPalette(createPaletteFromColors(file.name.replace(/\.[^/.]+$/, ""), colors));
+    } catch {
+      alert("Error al extraer colores. Prueba con otra imagen.");
     }
+  }
+
+  private markLibrary(): void {
+    for (const b of Array.from(this.library.querySelectorAll(".pw-lib-item")) as HTMLElement[]) {
+      if (b.dataset.pal) b.classList.toggle("is-active", b.dataset.pal === this.paletteId);
+    }
+  }
+
+  private resolvePalette(id: string): Palette {
+    return this.customPalettes.find((p) => p.id === id) ?? getPalette(id);
   }
 
   // --------------------------------------------------------------- seleccion
@@ -451,15 +540,30 @@ export class PantoneWheel {
 
   private setExpanded(on: boolean): void {
     this.expanded = on;
+    window.clearTimeout(this.collapseTimer);
     // SVGSVGElement no tipa `hidden`; el atributo cae bajo [hidden] en el CSS.
-    this.ringsSvg.toggleAttribute("hidden", !on);
-    this.gradientSvg.toggleAttribute("hidden", !on);
-    this.container.classList.toggle("is-expanded", on);
+    if (on) {
+      this.ringsSvg.toggleAttribute("hidden", false);
+      this.gradientSvg.toggleAttribute("hidden", false);
+      this.ringsSvg.classList.remove("is-leaving");
+      // Reconstruir reinicia la animacion de brote escalonado de las muestras.
+      this.buildRings();
+      this.container.classList.add("is-expanded");
+    } else {
+      // Deja correr la animacion de salida antes de esconder los anillos.
+      this.ringsSvg.classList.add("is-leaving");
+      this.container.classList.remove("is-expanded");
+      this.collapseTimer = window.setTimeout(() => {
+        this.ringsSvg.toggleAttribute("hidden", true);
+        this.gradientSvg.toggleAttribute("hidden", true);
+        this.ringsSvg.classList.remove("is-leaving");
+      }, 180);
+    }
   }
 
   private setPalette(id: string): void {
     this.paletteId = id;
-    this.palette = getPalette(id);
+    this.palette = this.resolvePalette(id);
     localStorage.setItem(PAL_KEY, id);
     this.buildRings();
     this.markLibrary();
@@ -478,6 +582,7 @@ export class PantoneWheel {
 
   show(): void {
     if (this.visible) return;
+    window.clearTimeout(this.hideTimer);
     this.visible = true;
     this.el.hidden = false;
     // Si quedo fuera de pantalla (cambio de resolucion), recentrar.
@@ -488,6 +593,11 @@ export class PantoneWheel {
       this.position = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
       this.applyPosition();
     }
+    // Reinicia la animacion de entrada del nucleo (quitar/forzar reflow/poner).
+    this.hubBtn.classList.remove("is-leaving");
+    this.hubBtn.classList.remove("is-entering");
+    void this.hubBtn.offsetWidth;
+    this.hubBtn.classList.add("is-entering");
     this.setExpanded(true);
     document.addEventListener("pointerdown", this.onDocDown, true);
   }
@@ -495,10 +605,18 @@ export class PantoneWheel {
   hide(): void {
     if (!this.visible) return;
     this.visible = false;
-    this.el.hidden = true;
     this.library.hidden = true;
     this.stopMomentum();
     document.removeEventListener("pointerdown", this.onDocDown, true);
+    // Anima la salida (muestras y nucleo) y esconde al terminar.
+    this.setExpanded(false);
+    this.hubBtn.classList.remove("is-entering");
+    this.hubBtn.classList.add("is-leaving");
+    window.clearTimeout(this.hideTimer);
+    this.hideTimer = window.setTimeout(() => {
+      this.el.hidden = true;
+      this.hubBtn.classList.remove("is-leaving");
+    }, 260);
   }
 
   toggle(): void {
@@ -508,6 +626,8 @@ export class PantoneWheel {
 
   dispose(): void {
     this.stopMomentum();
+    window.clearTimeout(this.collapseTimer);
+    window.clearTimeout(this.hideTimer);
     document.removeEventListener("pointerdown", this.onDocDown, true);
     this.el.remove();
   }
