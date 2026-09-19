@@ -222,9 +222,6 @@ export class PantoneWheel {
       const outer = ring.radius + RING_THICKNESS;
       for (const item of ring.items) {
         const mid = (item.startAngle + item.endAngle) / 2;
-        // Retardo escalonado (por angulo y anillo) como en el original: las
-        // muestras brotan en cascada desde el centro en vez de aparecer de golpe.
-        const delay = ((mid / 360) * 0.12 + item.ringIndex * 0.03).toFixed(3);
         const cen = polar(ring.radius + RING_THICKNESS / 2, mid);
 
         const path = svgEl("path", {
@@ -235,9 +232,6 @@ export class PantoneWheel {
           "stroke-width": 4,
           "stroke-linejoin": "round",
         });
-        // El retardo escalona el brote; el origen (centro de la rueda) lo pone
-        // el CSS con transform-box, asi que aqui solo hace falta el delay.
-        path.style.animationDelay = `${delay}s`;
         path.addEventListener("pointerdown", (e) => this.onSwatchDown(e, item));
         path.addEventListener("pointerenter", () => this.updateHub(item));
         path.addEventListener("pointerleave", () => this.updateHub());
@@ -252,7 +246,6 @@ export class PantoneWheel {
           "text-anchor": "middle",
           "dominant-baseline": "central",
         });
-        label.style.animationDelay = `${delay}s`;
         label.textContent = item.name;
         this.rotGroup.appendChild(label);
       }
@@ -543,21 +536,24 @@ export class PantoneWheel {
     window.clearTimeout(this.collapseTimer);
     // SVGSVGElement no tipa `hidden`; el atributo cae bajo [hidden] en el CSS.
     if (on) {
+      this.ringsSvg.classList.remove("is-leaving");
+      this.gradientSvg.classList.remove("is-leaving");
+      // Quitar `hidden` (display: none -> visible) reinicia la animacion -in.
       this.ringsSvg.toggleAttribute("hidden", false);
       this.gradientSvg.toggleAttribute("hidden", false);
-      this.ringsSvg.classList.remove("is-leaving");
-      // Reconstruir reinicia la animacion de brote escalonado de las muestras.
       this.buildRings();
       this.container.classList.add("is-expanded");
     } else {
       // Deja correr la animacion de salida antes de esconder los anillos.
       this.ringsSvg.classList.add("is-leaving");
+      this.gradientSvg.classList.add("is-leaving");
       this.container.classList.remove("is-expanded");
       this.collapseTimer = window.setTimeout(() => {
         this.ringsSvg.toggleAttribute("hidden", true);
         this.gradientSvg.toggleAttribute("hidden", true);
         this.ringsSvg.classList.remove("is-leaving");
-      }, 180);
+        this.gradientSvg.classList.remove("is-leaving");
+      }, 160);
     }
   }
 

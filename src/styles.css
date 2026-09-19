@@ -1018,10 +1018,6 @@ body {
   pointer-events: auto;
   cursor: grab;
   transition: filter 0.12s ease;
-  /* Escala desde el centro de la rueda (origen del viewBox). */
-  transform-box: view-box;
-  transform-origin: center;
-  animation: pw-swatch-in 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
 }
 
 .pw-swatch:hover {
@@ -1038,37 +1034,53 @@ body {
   letter-spacing: -0.03em;
   pointer-events: none;
   user-select: none;
-  transform-box: view-box;
-  transform-origin: center;
-  animation: pw-swatch-in 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
 }
 
-/* Salida: al plegar, las muestras se encogen rapido (sin escalonar). */
-.pw-rings.is-leaving .pw-swatch,
-.pw-rings.is-leaving .pw-label {
-  animation: pw-swatch-out 0.15s ease-in both;
-  animation-delay: 0s !important;
+/*
+ * Entrada/salida: se anima el SVG entero como una sola pieza (un transform
+ * compuesto en GPU, no 230 paths en el hilo principal). El centro del SVG
+ * coincide con el centro de la rueda, asi que crece y encoge desde ahi —igual
+ * que el original— sin el "desde un lado" ni el tiron de animar cada muestra.
+ */
+.pw-rings,
+.pw-gradient {
+  transform-origin: center center;
+  will-change: transform, opacity;
 }
 
-@keyframes pw-swatch-in {
+.pw-rings {
+  animation: pw-rings-in 0.28s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+}
+
+.pw-gradient {
+  animation: pw-rings-in 0.24s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+}
+
+.pw-rings.is-leaving,
+.pw-gradient.is-leaving {
+  animation: pw-rings-out 0.16s ease-in both;
+}
+
+/* La traslacion -50% centra el SVG sobre el nucleo; se conserva al escalar. */
+@keyframes pw-rings-in {
   from {
     opacity: 0;
-    transform: scale(0);
+    transform: translate(-50%, -50%) scale(0.2);
   }
   to {
     opacity: 1;
-    transform: scale(1);
+    transform: translate(-50%, -50%) scale(1);
   }
 }
 
-@keyframes pw-swatch-out {
+@keyframes pw-rings-out {
   from {
     opacity: 1;
-    transform: scale(1);
+    transform: translate(-50%, -50%) scale(1);
   }
   to {
     opacity: 0;
-    transform: scale(0);
+    transform: translate(-50%, -50%) scale(0.2);
   }
 }
 
