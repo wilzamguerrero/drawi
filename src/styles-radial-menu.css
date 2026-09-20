@@ -107,6 +107,31 @@
   stroke: rgba(90, 159, 212, 0.6);
 }
 
+/* Sectores en el camino recorrido (ancestros del sector bajo el cursor):
+   tinte de acento suave para marcar por dónde se bajó de nivel. */
+.rm-sector.is-onpath {
+  fill: rgba(90, 159, 212, 0.28);
+  stroke: rgba(90, 159, 212, 0.55);
+}
+
+/* Rastro de migas: línea de acento desde el centro que sigue el camino. Va bajo
+   los sectores; se ve en el hueco central y en los espacios entre anillos. */
+.rm-trail {
+  fill: none;
+  stroke: rgba(90, 159, 212, 0.9);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 4px rgba(90, 159, 212, 0.5));
+  pointer-events: none;
+}
+
+.rm-trail-dot {
+  fill: rgba(90, 159, 212, 1);
+  filter: drop-shadow(0 0 3px rgba(90, 159, 212, 0.6));
+  pointer-events: none;
+}
+
 .rm-sector.is-disabled {
   fill: rgba(55, 55, 55, 0.5);
   stroke: rgba(90, 159, 212, 0.1);

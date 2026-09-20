@@ -21,41 +21,45 @@ const CONFIG = {
   // mismo en el borde interior y en el exterior. El desfase angular se calcula
   // por radio en createArc (arco = radio × ángulo).
   gapPx: 3,
-  submenuArc: 0.35, // 35% del círculo = ~126 grados
+  submenuArc: 0.42, // fracción del círculo que ocupa el abanico de un submenú
 
   // Tamaños de iconos
   iconSize: 28,
   iconSizeSub: 24,
 
-  // Padding
+  // Padding alrededor del anillo más externo
   padding: 40,
 
   get outerRadius() { return this.innerRadius + this.ringThickness; },
-  get submenuInner() { return this.outerRadius + this.submenuGap; },
-  get submenuOuter() { return this.submenuInner + this.submenuThickness; },
-  get svgSize() { return 2 * (this.submenuOuter + this.padding); },
-  get center() { return this.svgSize / 2; },
 };
 
 interface RadialSector {
   node: HotNode;
-  level: 1 | 2;
+  ringLevel: number; // 1 = círculo central, 2+ = anillos concéntricos
   index: number;
-  path: SVGPathElement;
+  /** Camino de índices desde la raíz hasta este sector. */
+  path: number[];
+  path_el: SVGPathElement;
   icon: HTMLElement;
   angleStart: number;
   angleEnd: number;
   angleMid: number;
 }
 
+/** Distribución calculada de un anillo antes de dibujarlo. */
+interface RingLayout {
+  nodes: HotNode[];
+  ringLevel: number;
+  parentPath: number[];
+  sectors: Array<{ node: HotNode; index: number; a0: number; a1: number; amid: number }>;
+}
+
 /**
- * Menú Radial Profesional - Versión 2
+ * Menú Radial Profesional
  *
- * Sistema completamente reescrito con:
- * - Código limpio y modular
- * - Posicionamiento preciso
- * - Responsivo y escalable
- * - Basado en el estilo de Godot
+ * Los submenús no reemplazan la vista: se despliegan como anillos concéntricos
+ * hacia afuera al pasar el cursor, y se puede seguir bajando de nivel (Simetría
+ * → Modo → ...). Un rastro de acento desde el centro marca el camino recorrido.
  */
 export class RadialMenu {
   readonly el: HTMLElement;
@@ -74,17 +78,24 @@ export class RadialMenu {
   private posX = 0;
   private posY = 0;
 
-  private menuStack: Array<{ nodes: HotNode[]; title: string }> = [];
+  // Geometría dinámica según la profundidad del árbol.
+  private maxRings = 3;
+  private svgSize = 610;
+  private center = 305;
+
+  private rootNodes: HotNode[] = [];
+  /** Cadena de submenús expandidos: openIndices[k] = índice expandido en el anillo k+1. */
+  private openIndices: number[] = [];
+  /** Camino completo hasta el sector bajo el cursor (para el rastro y el resaltado). */
+  private hoveredPath: number[] | null = null;
+
   private sectors: RadialSector[] = [];
-  private expandedIndex = -1;
-  private hoveredSector: RadialSector | null = null;
 
   constructor(editor: Editor, hooks: MenuHooks, panels: Panels) {
     this.editor = editor;
     this.hooks = hooks;
     this.panels = panels;
 
-    // Crear estructura DOM
     this.svg = this.createSVG();
     this.iconsContainer = el("div", { class: "rm-icons" });
     this.centerLabel = el("span", { class: "rm-center-label", text: "drawi" });
@@ -111,25 +122,54 @@ export class RadialMenu {
   private createSVG(): SVGSVGElement {
     const svg = document.createElementNS(NS, "svg") as SVGSVGElement;
     svg.setAttribute("class", "rm-svg");
-    svg.setAttribute("viewBox", `0 0 ${CONFIG.svgSize} ${CONFIG.svgSize}`);
-    svg.setAttribute("width", String(CONFIG.svgSize));
-    svg.setAttribute("height", String(CONFIG.svgSize));
+    this.applySvgSize(svg);
     return svg;
+  }
+
+  private applySvgSize(svg: SVGSVGElement = this.svg): void {
+    svg.setAttribute("viewBox", `0 0 ${this.svgSize} ${this.svgSize}`);
+    svg.setAttribute("width", String(this.svgSize));
+    svg.setAttribute("height", String(this.svgSize));
+  }
+
+  // ---------------------------------------------------------------- geometría
+
+  /** Radio interior del anillo de nivel L (1 = círculo central). */
+  private ringInner(level: number): number {
+    if (level <= 1) return CONFIG.innerRadius;
+    return CONFIG.outerRadius + (level - 1) * CONFIG.submenuGap + (level - 2) * CONFIG.submenuThickness;
+  }
+
+  /** Radio exterior del anillo de nivel L. */
+  private ringOuter(level: number): number {
+    if (level <= 1) return CONFIG.outerRadius;
+    return this.ringInner(level) + CONFIG.submenuThickness;
+  }
+
+  /** Radio medio (donde van los iconos) del anillo de nivel L. */
+  private ringMid(level: number): number {
+    return (this.ringInner(level) + this.ringOuter(level)) / 2;
+  }
+
+  /** Profundidad máxima del árbol (cuántos anillos concéntricos puede haber). */
+  private treeDepth(nodes: HotNode[]): number {
+    let max = 1;
+    for (const n of nodes) {
+      if (n.kind === "submenu") max = Math.max(max, 1 + this.treeDepth(n.children));
+    }
+    return max;
   }
 
   private setupEvents(): void {
     this.container.addEventListener("pointermove", (e) => this.onPointerMove(e));
     this.container.addEventListener("pointerdown", (e) => this.onPointerDown(e));
-    this.centerButton.addEventListener("click", () => this.navigateBack());
+    this.centerButton.addEventListener("click", () => this.close());
 
-    // Clic fuera del contenedor (en el backdrop de pantalla completa): cerrar.
-    // El evento en el contenedor no se propaga aquí porque onPointerDown ya lo
-    // maneja; este solo se dispara en el área vacía alrededor del menú.
+    // Clic en el backdrop (área vacía de pantalla completa): cerrar.
     this.el.addEventListener("pointerdown", (e) => {
       if (e.target === this.el) this.close();
     });
 
-    // Prevenir menú contextual
     this.el.addEventListener("contextmenu", (e) => e.preventDefault());
   }
 
@@ -142,29 +182,30 @@ export class RadialMenu {
   }
 
   show(x: number, y: number): void {
-    // Clamp position para que el menú siempre esté visible
-    const margin = CONFIG.submenuOuter + CONFIG.padding + 20;
+    this.rootNodes = buildRoot(this.editor, this.editor.state, this.hooks);
+
+    // Dimensionar el SVG para la profundidad real del árbol.
+    this.maxRings = this.treeDepth(this.rootNodes);
+    this.svgSize = 2 * (this.ringOuter(this.maxRings) + CONFIG.padding);
+    this.center = this.svgSize / 2;
+    this.applySvgSize();
+
+    // Clamp para que el menú siempre quede visible.
+    const margin = this.ringOuter(this.maxRings) + CONFIG.padding + 10;
     this.posX = clamp(x, margin, window.innerWidth - margin);
     this.posY = clamp(y, margin, window.innerHeight - margin);
 
     this.isOpen = true;
     this.el.hidden = false;
 
-    // Posicionar el contenedor
     this.container.style.left = `${this.posX}px`;
     this.container.style.top = `${this.posY}px`;
 
-    // Inicializar menú
-    this.menuStack = [{
-      nodes: buildRoot(this.editor, this.editor.state, this.hooks),
-      title: "drawi"
-    }];
-    this.expandedIndex = -1;
-    this.hoveredSector = null;
+    this.openIndices = [];
+    this.hoveredPath = null;
 
     this.rebuild();
 
-    // Animación de entrada
     this.container.classList.remove("is-closing");
     this.container.classList.add("is-opening");
   }
@@ -188,147 +229,163 @@ export class RadialMenu {
     this.el.remove();
   }
 
-  private get currentLevel(): { nodes: HotNode[]; title: string } {
-    return this.menuStack[this.menuStack.length - 1];
+  // ------------------------------------------------------------ construcción
+
+  /**
+   * Calcula la distribución de todos los anillos visibles a partir de
+   * openIndices. El anillo 1 es el círculo completo; cada submenú expandido
+   * añade un anillo concéntrico centrado en la mitad del sector padre.
+   */
+  private computeLayout(): RingLayout[] {
+    const layouts: RingLayout[] = [];
+    let nodes = this.rootNodes;
+    let parentPath: number[] = [];
+    let centerAngle = 0; // solo relevante a partir del anillo 2
+
+    for (let level = 1; ; level++) {
+      const count = nodes.length;
+      if (count === 0) break;
+
+      const sectors: RingLayout["sectors"] = [];
+
+      if (level === 1) {
+        // Círculo completo, empezando arriba (norte).
+        const step = TAU / count;
+        const start = -Math.PI / 2;
+        for (let i = 0; i < count; i++) {
+          const a0 = start + i * step;
+          const a1 = start + (i + 1) * step;
+          sectors.push({ node: nodes[i], index: i, a0, a1, amid: (a0 + a1) / 2 });
+        }
+      } else {
+        // Abanico centrado en la mitad del sector padre.
+        const arcSpan = TAU * CONFIG.submenuArc;
+        const step = arcSpan / count;
+        const start = centerAngle - arcSpan / 2;
+        for (let i = 0; i < count; i++) {
+          const a0 = start + i * step;
+          const a1 = start + (i + 1) * step;
+          sectors.push({ node: nodes[i], index: i, a0, a1, amid: (a0 + a1) / 2 });
+        }
+      }
+
+      layouts.push({ nodes, ringLevel: level, parentPath: [...parentPath], sectors });
+
+      // ¿Hay un submenú expandido en este nivel? Si sí, prepara el siguiente.
+      const openIdx = this.openIndices[level - 1];
+      if (openIdx === undefined) break;
+      const openNode = nodes[openIdx];
+      if (!openNode || openNode.kind !== "submenu") break;
+
+      centerAngle = sectors[openIdx].amid;
+      parentPath = [...parentPath, openIdx];
+      nodes = openNode.children;
+    }
+
+    return layouts;
   }
 
   private rebuild(): void {
-    // Limpiar
     while (this.svg.firstChild) this.svg.removeChild(this.svg.firstChild);
     this.iconsContainer.innerHTML = "";
     this.sectors = [];
 
-    const { nodes } = this.currentLevel;
+    const layouts = this.computeLayout();
 
-    // Dibujar nivel principal (círculo completo)
-    this.drawMainLevel(nodes);
+    // El rastro va PRIMERO para quedar por debajo de los sectores (se ve en el
+    // hueco central y en los espacios entre anillos).
+    this.drawTrail(layouts);
 
-    // Dibujar submenú si hay uno expandido
-    if (this.expandedIndex >= 0 && this.expandedIndex < nodes.length) {
-      const parent = nodes[this.expandedIndex];
-      if (parent.kind === "submenu") {
-        this.drawSubmenu(parent.children, this.expandedIndex, nodes.length);
-      }
+    for (const ring of layouts) {
+      this.drawRing(ring);
     }
 
-    // Actualizar botón central
     this.updateCenterButton();
+    this.updateHover();
   }
 
-  private drawMainLevel(nodes: HotNode[]): void {
-    const count = nodes.length;
-    const angleStep = TAU / count;
-    const startAngle = -Math.PI / 2; // Empezar arriba
+  private drawRing(ring: RingLayout): void {
+    const innerR = this.ringInner(ring.ringLevel);
+    const outerR = this.ringOuter(ring.ringLevel);
+    const midR = this.ringMid(ring.ringLevel);
+    const iconSize = ring.ringLevel === 1 ? CONFIG.iconSize : CONFIG.iconSizeSub;
+    const isSub = ring.ringLevel > 1;
 
-    for (let i = 0; i < count; i++) {
-      const node = nodes[i];
-      // Ángulos completos del sector (sin hueco): sirven para el hover, así no
-      // quedan zonas muertas entre sectores. El hueco visual lo aplica
-      // createArc por radio.
-      const a0 = startAngle + i * angleStep;
-      const a1 = startAngle + (i + 1) * angleStep;
-      const amid = (a0 + a1) / 2;
+    for (const s of ring.sectors) {
+      const path = this.createArc(innerR, outerR, s.a0, s.a1);
+      const sectorPath = [...ring.parentPath, s.index];
+      this.styleSector(path, s.node, isSub, sectorPath);
 
-      // Crear sector
-      const path = this.createArc(
-        CONFIG.innerRadius,
-        CONFIG.outerRadius,
-        a0,
-        a1
-      );
-
-      this.styleMainSector(path, node);
+      // Escalonar la entrada de los anillos que no son el central.
+      if (isSub) path.style.animationDelay = `${(s.index * 0.03).toFixed(3)}s`;
       this.svg.appendChild(path);
 
-      // Crear icono
-      const iconEl = this.createIcon(node, amid,
-        CONFIG.innerRadius + CONFIG.ringThickness / 2,
-        CONFIG.iconSize,
-        false
-      );
-
+      const iconEl = this.createIcon(s.node, s.amid, midR, iconSize, isSub);
+      if (isSub) iconEl.style.animationDelay = `${(s.index * 0.03).toFixed(3)}s`;
       this.iconsContainer.appendChild(iconEl);
 
       this.sectors.push({
-        node,
-        level: 1,
-        index: i,
-        path,
+        node: s.node,
+        ringLevel: ring.ringLevel,
+        index: s.index,
+        path: sectorPath,
+        path_el: path,
         icon: iconEl,
-        angleStart: a0,
-        angleEnd: a1,
-        angleMid: amid,
+        angleStart: s.a0,
+        angleEnd: s.a1,
+        angleMid: s.amid,
       });
     }
   }
 
-  private drawSubmenu(nodes: HotNode[], parentIndex: number, parentCount: number): void {
-    const count = nodes.length;
+  /**
+   * Rastro de migas: una línea de acento desde el centro que recorre el camino
+   * hovered (Simetría → Modo → ...). Se dibuja bajo los sectores, así se ve en
+   * el hueco central y en los espacios entre anillos.
+   */
+  private drawTrail(layouts: RingLayout[]): void {
+    const path = this.hoveredPath;
+    if (!path || path.length === 0) return;
 
-    // Ángulo de la MITAD del sector padre. El sector i va de i*step a
-    // (i+1)*step, así que su centro está en (i + 0.5)*step. Usar el borde
-    // (parentIndex*step) descentraba el submenú hacia un lado; con la mitad
-    // el abanico queda simétrico respecto al elemento del que sale.
-    const parentAngleStep = TAU / parentCount;
-    const parentAngle = -Math.PI / 2 + (parentIndex + 0.5) * parentAngleStep;
+    const c = this.center;
+    const points: Array<{ x: number; y: number }> = [{ x: c, y: c }];
 
-    // El submenú se abre en un arco centrado en la mitad del padre.
-    const arcSpan = TAU * CONFIG.submenuArc;
-    const angleStep = arcSpan / count;
-    const startAngle = parentAngle - arcSpan / 2;
-
-    for (let i = 0; i < count; i++) {
-      const node = nodes[i];
-      // Ángulos completos (sin hueco) para el hover; el hueco lo pone createArc.
-      const a0 = startAngle + i * angleStep;
-      const a1 = startAngle + (i + 1) * angleStep;
-      const amid = (a0 + a1) / 2;
-
-      // Crear sector
-      const path = this.createArc(
-        CONFIG.submenuInner,
-        CONFIG.submenuOuter,
-        a0,
-        a1
-      );
-
-      this.styleSubmenuSector(path, node);
-      // Retardo escalonado: cada sector entra un pelín después que el anterior,
-      // así el submenú se "despliega" en abanico en vez de aparecer entero.
-      const delay = `${(i * 0.03).toFixed(3)}s`;
-      path.style.animationDelay = delay;
-      this.svg.appendChild(path);
-
-      // Crear icono
-      const iconEl = this.createIcon(node, amid,
-        CONFIG.submenuInner + CONFIG.submenuThickness / 2,
-        CONFIG.iconSizeSub,
-        true
-      );
-      iconEl.style.animationDelay = delay;
-
-      this.iconsContainer.appendChild(iconEl);
-
-      this.sectors.push({
-        node,
-        level: 2,
-        index: i,
-        path,
-        icon: iconEl,
-        angleStart: a0,
-        angleEnd: a1,
-        angleMid: amid,
+    for (let level = 1; level <= path.length; level++) {
+      const ring = layouts[level - 1];
+      if (!ring) break;
+      const idx = path[level - 1];
+      const sector = ring.sectors.find((s) => s.index === idx);
+      if (!sector) break;
+      const r = this.ringMid(level);
+      points.push({
+        x: c + Math.cos(sector.amid) * r,
+        y: c + Math.sin(sector.amid) * r,
       });
+    }
+
+    if (points.length < 2) return;
+
+    const d = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
+    const line = document.createElementNS(NS, "path") as SVGPathElement;
+    line.setAttribute("d", d);
+    line.setAttribute("class", "rm-trail");
+    this.svg.appendChild(line);
+
+    // Nodos del rastro (puntos de acento en cada parada del camino).
+    for (let i = 1; i < points.length; i++) {
+      const dot = document.createElementNS(NS, "circle") as SVGCircleElement;
+      dot.setAttribute("cx", points[i].x.toFixed(2));
+      dot.setAttribute("cy", points[i].y.toFixed(2));
+      dot.setAttribute("r", "4");
+      dot.setAttribute("class", "rm-trail-dot");
+      this.svg.appendChild(dot);
     }
   }
 
   private createArc(innerR: number, outerR: number, startA: number, endA: number): SVGPathElement {
-    const c = CONFIG.center;
+    const c = this.center;
 
     // Hueco de ancho constante: el desfase angular en cada borde es gapPx/radio.
-    // Como el arco crece con el radio, un ángulo fijo dejaría el hueco más ancho
-    // por fuera; dividiendo entre el radio, el separador mide gapPx tanto en el
-    // borde interior como en el exterior. Se usa medio hueco por lado.
     const halfGap = CONFIG.gapPx / 2;
     const outGap = halfGap / outerR;
     const inGap = halfGap / innerR;
@@ -338,7 +395,6 @@ export class RadialMenu {
     const startIn = startA + inGap;
     const endIn = endA - inGap;
 
-    // Puntos del arco
     const x1 = c + Math.cos(startOut) * outerR;
     const y1 = c + Math.sin(startOut) * outerR;
     const x2 = c + Math.cos(endOut) * outerR;
@@ -360,12 +416,11 @@ export class RadialMenu {
 
     const path = document.createElementNS(NS, "path") as SVGPathElement;
     path.setAttribute("d", d);
-
     return path;
   }
 
   private createIcon(node: HotNode, angle: number, radius: number, size: number, isSub: boolean): HTMLElement {
-    const c = CONFIG.center;
+    const c = this.center;
     const x = c + Math.cos(angle) * radius;
     const y = c + Math.sin(angle) * radius;
 
@@ -379,148 +434,147 @@ export class RadialMenu {
       },
     });
 
-    // Contenido del icono
     if (node.accent && node.id.startsWith("swatch-")) {
-      // Muestra de color
       iconEl.style.background = node.accent;
       iconEl.classList.add("rm-icon-swatch");
     } else if (node.icon) {
-      // Icono SVG
       iconEl.innerHTML = icon(node.icon);
     } else if (node.accent) {
-      // Punto de color
       iconEl.style.background = node.accent;
       iconEl.classList.add("rm-icon-color");
     } else {
-      // Fallback: mostrar texto (label corto) cuando no hay icono
       iconEl.classList.add("rm-icon-text");
       iconEl.textContent = this.shortLabel(node.label);
     }
 
+    // Indicador de que el nodo tiene más niveles (submenú).
+    if (node.kind === "submenu") iconEl.classList.add("rm-icon-has-children");
+
     return iconEl;
   }
 
-  /** Genera una etiqueta corta para items sin icono. */
   private shortLabel(label: string): string {
-    // Si es un número (como sectores), mostrarlo completo si es corto
     if (/^\d+$/.test(label) && label.length <= 3) return label;
-    // Tomar las primeras letras significativas
     const words = label.split(/\s+/);
-    if (words.length >= 2) {
-      return (words[0][0] + words[1][0]).toUpperCase();
-    }
+    if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
     return label.slice(0, 3);
   }
 
-  private styleMainSector(path: SVGPathElement, node: HotNode): void {
-    path.setAttribute("class", "rm-sector rm-sector-main");
+  private styleSector(path: SVGPathElement, node: HotNode, isSub: boolean, sectorPath: number[]): void {
+    path.setAttribute("class", isSub ? "rm-sector rm-sector-sub" : "rm-sector rm-sector-main");
     if (node.active) path.classList.add("is-active");
     if (node.disabled) path.classList.add("is-disabled");
     if (node.kind === "submenu") path.classList.add("has-submenu");
+    // Marcar los sectores que forman parte del camino recorrido (ancestros del
+    // sector bajo el cursor): así el rastro se ve también en los botones.
+    if (this.isOnPath(sectorPath)) path.classList.add("is-onpath");
   }
 
-  private styleSubmenuSector(path: SVGPathElement, node: HotNode): void {
-    path.setAttribute("class", "rm-sector rm-sector-sub");
-    if (node.active) path.classList.add("is-active");
-    if (node.disabled) path.classList.add("is-disabled");
+  /** ¿Este sector es un ancestro (prefijo estricto) del camino hovered? */
+  private isOnPath(sectorPath: number[]): boolean {
+    const hp = this.hoveredPath;
+    if (!hp || sectorPath.length >= hp.length) return false;
+    for (let i = 0; i < sectorPath.length; i++) {
+      if (sectorPath[i] !== hp[i]) return false;
+    }
+    return true;
   }
+
+  // -------------------------------------------------------------- interacción
 
   private onPointerMove(e: PointerEvent): void {
     const rect = this.container.getBoundingClientRect();
-    const dx = e.clientX - rect.left - CONFIG.center;
-    const dy = e.clientY - rect.top - CONFIG.center;
+    const dx = e.clientX - rect.left - this.center;
+    const dy = e.clientY - rect.top - this.center;
     const dist = Math.hypot(dx, dy);
     let angle = Math.atan2(dy, dx);
-
-    // Normalizar ángulo a [0, TAU)
     if (angle < 0) angle += TAU;
 
-    // Buscar sector bajo el cursor
+    // En el hueco central: no hay sector, pero se mantiene la expansión actual.
+    if (dist < CONFIG.innerRadius) {
+      if (this.hoveredPath !== null) {
+        this.hoveredPath = null;
+        this.updateHover();
+      }
+      return;
+    }
+
     let found: RadialSector | null = null;
-
     for (const sector of this.sectors) {
-      // Verificar radio
-      const inRadius = sector.level === 1
-        ? (dist >= CONFIG.innerRadius && dist <= CONFIG.outerRadius)
-        : (dist >= CONFIG.submenuInner && dist <= CONFIG.submenuOuter);
-
+      const inRadius = dist >= this.ringInner(sector.ringLevel) && dist <= this.ringOuter(sector.ringLevel);
       if (!inRadius) continue;
 
-      // Normalizar ángulos del sector
       let start = sector.angleStart;
       let end = sector.angleEnd;
-      let testAngle = angle;
-
-      // Normalizar todo a [0, TAU)
       while (start < 0) start += TAU;
       while (end < 0) end += TAU;
       while (start >= TAU) start -= TAU;
       while (end >= TAU) end -= TAU;
 
-      // Caso especial: el sector cruza el punto 0
       if (end < start) {
-        if (testAngle >= start || testAngle <= end) {
-          found = sector;
-          break;
-        }
+        if (angle >= start || angle <= end) { found = sector; break; }
       } else {
-        if (testAngle >= start && testAngle <= end) {
-          found = sector;
-          break;
-        }
+        if (angle >= start && angle <= end) { found = sector; break; }
       }
     }
 
-    // Actualizar hover
-    if (found !== this.hoveredSector) {
-      this.hoveredSector = found;
-      this.updateHover();
+    const newHoveredPath = found ? found.path : null;
+    if (pathEq(newHoveredPath, this.hoveredPath)) return;
 
-      // Expandir/contraer submenú
-      if (found && found.level === 1 && found.node.kind === "submenu") {
-        if (this.expandedIndex !== found.index) {
-          this.expandedIndex = found.index;
-          this.rebuild();
-        }
-      } else if (!found || found.level === 2) {
-        // Mantener expandido si estamos en nivel 2
-      } else {
-        if (this.expandedIndex !== -1) {
-          this.expandedIndex = -1;
-          this.rebuild();
-        }
-      }
+    this.hoveredPath = newHoveredPath;
+
+    // La cadena de expansión es: si el sector es submenú, se expande él mismo
+    // (su camino); si es una hoja, se mantiene expandido su padre.
+    const newOpen = found
+      ? (found.node.kind === "submenu" ? [...found.path] : found.path.slice(0, -1))
+      : this.openIndices;
+
+    if (!pathEq(newOpen, this.openIndices)) {
+      this.openIndices = newOpen;
+      this.rebuild(); // rebuild vuelve a resolver el hover por camino
+    } else {
+      this.updateHover();
     }
   }
 
   private updateHover(): void {
-    // Actualizar clases
+    const hp = this.hoveredPath;
+    let hoveredNode: HotNode | null = null;
+
     for (const sector of this.sectors) {
-      const isHovered = sector === this.hoveredSector;
-      setClass(sector.path, "is-hover", isHovered);
+      const isHovered = hp !== null && pathEq(sector.path, hp);
+      setClass(sector.path_el, "is-hover", isHovered);
       setClass(sector.icon, "is-hover", isHovered);
+      if (isHovered) hoveredNode = sector.node;
     }
 
-    // Actualizar label central
-    if (this.hoveredSector) {
-      this.centerLabel.textContent = this.hoveredSector.node.label;
-    } else {
-      this.centerLabel.textContent = this.currentLevel.title;
-    }
+    this.centerLabel.textContent = hoveredNode ? hoveredNode.label : "drawi";
   }
 
   private onPointerDown(e: PointerEvent): void {
     e.preventDefault();
 
-    if (!this.hoveredSector) {
+    const hovered = this.hoveredPath ? this.findSector(this.hoveredPath) : null;
+    if (!hovered) {
       this.close();
       return;
     }
 
-    const node = this.hoveredSector.node;
+    const node = hovered.node;
     if (node.disabled) return;
 
+    // Los submenús ya se expanden al pasar el cursor; el clic no reemplaza nada.
+    if (node.kind === "submenu") {
+      this.openIndices = [...hovered.path];
+      this.rebuild();
+      return;
+    }
+
     this.executeNode(node);
+  }
+
+  private findSector(path: number[]): RadialSector | null {
+    return this.sectors.find((s) => pathEq(s.path, path)) ?? null;
   }
 
   private executeNode(node: HotNode): void {
@@ -528,14 +582,9 @@ export class RadialMenu {
       case "action": {
         const action = node as Extract<HotNode, { kind: "action" }>;
 
-        // Si tiene panel flotante, abrirlo
         if (action.canFloat && action.buildPanel) {
           this.panels.toggle(
-            {
-              id: action.id,
-              title: action.label,
-              build: action.buildPanel,
-            },
+            { id: action.id, title: action.label, build: action.buildPanel },
             this.posX,
             this.posY
           );
@@ -551,40 +600,28 @@ export class RadialMenu {
         }
         break;
       }
-      case "submenu": {
-        const submenu = node as Extract<HotNode, { kind: "submenu" }>;
-        this.menuStack.push({ nodes: submenu.children, title: submenu.label });
-        this.expandedIndex = -1;
-        this.hoveredSector = null;
-        this.rebuild();
-        break;
-      }
       case "dial":
-        // TODO: Implementar dial mode
+        // TODO: modo dial (ajuste por arrastre). Por ahora no hace nada.
         break;
-    }
-  }
-
-  private navigateBack(): void {
-    if (this.menuStack.length > 1) {
-      this.menuStack.pop();
-      this.expandedIndex = -1;
-      this.hoveredSector = null;
-      this.rebuild();
-    } else {
-      this.close();
     }
   }
 
   private updateCenterButton(): void {
-    const canGoBack = this.menuStack.length > 1;
-    setClass(this.centerButton, "can-back", canGoBack);
-    this.centerLabel.textContent = this.currentLevel.title;
+    // El botón central siempre cierra; se muestra el título de la raíz.
+    setClass(this.centerButton, "can-back", false);
+    if (this.hoveredPath === null) this.centerLabel.textContent = "drawi";
   }
 
   private refresh(): void {
-    const root = buildRoot(this.editor, this.editor.state, this.hooks);
-    this.menuStack = [{ nodes: root, title: "drawi" }];
+    this.rootNodes = buildRoot(this.editor, this.editor.state, this.hooks);
     this.rebuild();
   }
+}
+
+/** Igualdad de caminos (arrays de índices), tolerante a null. */
+function pathEq(a: number[] | null, b: number[] | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
