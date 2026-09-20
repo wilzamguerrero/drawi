@@ -10,9 +10,299 @@
       content="drawi: dibujo generativo con lapiz de alta respuesta, simetria movil y materia que se funde."
     />
     <title>drawi</title>
+
+    <!--
+      Splash de arranque.
+
+      Vive aqui, en el documento, y no en la hoja del editor a proposito: asi se pinta
+      con el primer frame, mientras el navegador todavia esta bajando el bundle y la
+      app no existe. Si estuviera en un modulo aparaceria justo cuando ya no hace falta.
+
+      `main.ts` lo retira cuando el editor esta montado. El concepto es la herramienta
+      de materia: las cinco figuras (circulo, caja, capsula, ngon, estrella) flotan y
+      se van conectando con hilos mientras carga. Materia negra sobre hoja blanca.
+    -->
+    <style>
+      #splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #ffffff;
+        font: 13px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        transition: opacity 420ms ease;
+      }
+
+      #splash.is-gone {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      /* El lienzo donde flota y se conecta la materia. Ocupa todo el fondo. */
+      #splash-canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      /* --------------------------------------------------------------- la marca
+       *
+       * El nombre del producto, centrado y por delante de la materia. Negro pleno,
+       * con tracking amplio para que respire como una portada.
+       */
+      .splash-name {
+        position: relative;
+        margin: 0;
+        font-size: clamp(28px, 8vw, 52px);
+        font-weight: 800;
+        letter-spacing: .18em;
+        text-indent: .18em;
+        text-transform: lowercase;
+        color: #0a0a0a;
+        /* Nace invisible: aparece cuando la materia ya se ha fundido. */
+        opacity: 0;
+        transform: translateY(6px);
+        transition: opacity 800ms ease, transform 800ms ease;
+      }
+
+      /* La revelacion la dispara el script cuando las metaballs se han fundido. */
+      #splash.reveal .splash-name {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      /* --------------------------------------------------------------- la firma
+       *
+       * En la esquina y no debajo de la marca: el centro es del nombre. Negro sobre
+       * blanco, con la etiqueta DEV invertida para que sea el unico bloque solido.
+       */
+      .splash-dev {
+        position: absolute;
+        right: 18px;
+        bottom: 16px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: 0;
+        font-size: 11px;
+        color: #4a4a4a;
+      }
+
+      .splash-dev-tag {
+        padding: 0 6px;
+        border-radius: 4px;
+        background: #0a0a0a;
+        color: #ffffff;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: .12em;
+        line-height: 17px;
+      }
+
+      /*
+       * Con el movimiento reducido la materia se dibuja fundida de una sola vez, el
+       * nombre aparece sin desplazarse y el splash se va de golpe.
+       */
+      @media (prefers-reduced-motion: reduce) {
+        #splash { transition: none; }
+        .splash-name { transition: none; transform: none; }
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
+
+    <div id="splash" role="status" aria-label="Cargando drawi">
+      <canvas id="splash-canvas" aria-hidden="true"></canvas>
+      <h1 class="splash-name">drawi</h1>
+      <p class="splash-dev"><span class="splash-dev-tag">DEV</span>wilzamguerrero</p>
+    </div>
+
+    <!--
+      Metaballs de arranque. Inline y sin modulos: corre en el primer frame, antes de
+      que el bundle exista. Es el mismo campo escalar que funde la materia en el editor
+      (marching squares por umbral): varias gotas negras aparecen al azar, se mueven y
+      se funden en una sola masa. Cuando ya estan fundidas, el script revela el logo.
+
+      El campo se evalua a resolucion completa pero solo dentro del recuadro que ocupan
+      las gotas (que van agrupadas al centro): el borde sale limpio, sin pixelado ni
+      blur, y el coste por frame se queda acotado a esa region pequena.
+    -->
+    <script>
+      (function () {
+        var view = document.getElementById("splash-canvas");
+        var splash = document.getElementById("splash");
+        if (!view || !view.getContext) {
+          if (splash) splash.classList.add("reveal");
+          return;
+        }
+
+        var reduce =
+          window.matchMedia &&
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+        var vctx = view.getContext("2d");
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var W = 0, H = 0;
+
+        function resize() {
+          W = window.innerWidth;
+          H = window.innerHeight;
+          view.width = Math.round(W * dpr);
+          view.height = Math.round(H * dpr);
+          view.style.width = W + "px";
+          view.style.height = H + "px";
+        }
+        resize();
+        window.addEventListener("resize", resize);
+
+        function rand(a, b) { return a + Math.random() * (b - a); }
+
+        // Las gotas viven en pixeles CSS. Se atraen suavemente al centro para acabar
+        // en una sola masa fundida. El campo se evalua a resolucion completa (solo en
+        // el recuadro que ocupan), asi el borde sale limpio, sin pixelado ni blur.
+        var unit = Math.min(W, H);
+        var N = 7;
+        var balls = [];
+        for (var i = 0; i < N; i++) {
+          var ang = rand(0, Math.PI * 2);
+          var sp = rand(0.25, 0.7);
+          balls.push({
+            x: rand(0.4, 0.6) * W,
+            y: rand(0.38, 0.62) * H,
+            vx: Math.cos(ang) * sp,
+            vy: Math.sin(ang) * sp,
+            r: rand(unit * 0.018, unit * 0.032),
+            born: i * 150, // aparecen escalonadas, al azar
+          });
+        }
+
+        var THRESH = 1.0; // umbral del campo: dentro = materia
+        // Borde muy estrecho: negro plano con apenas un pixel de antialias en el filo.
+        var EDGE = 0.06;
+        var start = null;
+        var revealed = false;
+        var raf = 0;
+
+        function step(t) {
+          if (start === null) start = t;
+          var elapsed = t - start;
+
+          // Mover y atraer al centro; rebotar en los bordes.
+          if (!reduce) {
+            var cx = W / 2, cy = H / 2;
+            for (var i = 0; i < balls.length; i++) {
+              var b = balls[i];
+              if (elapsed < b.born) continue;
+              b.vx += (cx - b.x) * 0.00045;
+              b.vy += (cy - b.y) * 0.00045;
+              b.vx *= 0.99;
+              b.vy *= 0.99;
+              b.x += b.vx;
+              b.y += b.vy;
+              var m = b.r;
+              if (b.x < m) { b.x = m; b.vx = Math.abs(b.vx); }
+              if (b.x > W - m) { b.x = W - m; b.vx = -Math.abs(b.vx); }
+              if (b.y < m) { b.y = m; b.vy = Math.abs(b.vy); }
+              if (b.y > H - m) { b.y = H - m; b.vy = -Math.abs(b.vy); }
+            }
+          }
+
+          // Cuando el logo ya salio, la materia se desvanece a un fantasma gris para
+          // que el negro del nombre lea limpio encima.
+          var fade = 1;
+          if (elapsed > 1900) {
+            fade = Math.max(0.12, 1 - (elapsed - 1900) / 900);
+          }
+
+          vctx.setTransform(1, 0, 0, 1, 0, 0);
+          vctx.clearRect(0, 0, view.width, view.height);
+
+          // Recuadro que ocupan las gotas activas (en px CSS), con margen para las
+          // protuberancias del campo al fundirse.
+          var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          var any = false;
+          for (var g = 0; g < balls.length; g++) {
+            var bg = balls[g];
+            if (elapsed < bg.born) continue;
+            any = true;
+            var ext = bg.r * 1.8 + 4;
+            if (bg.x - ext < minX) minX = bg.x - ext;
+            if (bg.y - ext < minY) minY = bg.y - ext;
+            if (bg.x + ext > maxX) maxX = bg.x + ext;
+            if (bg.y + ext > maxY) maxY = bg.y + ext;
+          }
+
+          if (any) {
+            // A pixeles de dispositivo, recortado al lienzo.
+            var x0 = Math.max(0, Math.floor(minX * dpr));
+            var y0 = Math.max(0, Math.floor(minY * dpr));
+            var x1 = Math.min(view.width, Math.ceil(maxX * dpr));
+            var y1 = Math.min(view.height, Math.ceil(maxY * dpr));
+            var rw = x1 - x0, rh = y1 - y0;
+
+            if (rw > 0 && rh > 0) {
+              var img = vctx.createImageData(rw, rh);
+              var data = img.data;
+              var lo = THRESH - EDGE;
+              var span = 2 * EDGE;
+              for (var py = 0; py < rh; py++) {
+                var wy = (y0 + py) / dpr; // px CSS
+                for (var px = 0; px < rw; px++) {
+                  var wx = (x0 + px) / dpr;
+                  var f = 0;
+                  for (var k = 0; k < balls.length; k++) {
+                    var bb = balls[k];
+                    if (elapsed < bb.born) continue;
+                    var grow = Math.min(1, (elapsed - bb.born) / 500);
+                    var dx = wx - bb.x;
+                    var dy = wy - bb.y;
+                    var rr = bb.r * grow;
+                    f += (rr * rr) / (dx * dx + dy * dy + 0.0001);
+                  }
+                  var a = (f - lo) / span;
+                  if (a < 0) a = 0; else if (a > 1) a = 1;
+                  var idx = (py * rw + px) * 4;
+                  data[idx] = 10;
+                  data[idx + 1] = 10;
+                  data[idx + 2] = 10;
+                  data[idx + 3] = Math.round(a * 255 * fade);
+                }
+              }
+              vctx.putImageData(img, x0, y0);
+            }
+          }
+
+          // Fundidas: revelar el logo una sola vez.
+          if (!revealed && (elapsed > 1650 || reduce)) {
+            revealed = true;
+            if (splash) splash.classList.add("reveal");
+          }
+
+          if (reduce) return; // un solo fotograma y quieto
+          raf = window.requestAnimationFrame(step);
+        }
+
+        raf = window.requestAnimationFrame(step);
+
+        // Si `main.ts` retira el splash, paramos el bucle para no gastar frames.
+        if (splash && window.MutationObserver) {
+          var mo = new MutationObserver(function () {
+            if (splash.classList.contains("is-gone")) {
+              window.cancelAnimationFrame(raf);
+              window.removeEventListener("resize", resize);
+              mo.disconnect();
+            }
+          });
+          mo.observe(splash, { attributes: true, attributeFilter: ["class"] });
+        }
+      })();
+    </script>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
