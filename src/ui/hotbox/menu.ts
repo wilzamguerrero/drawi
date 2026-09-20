@@ -4,7 +4,8 @@ import { DYNAMICS_INFO, type BrushMode, type StrokeDynamics } from "../../stroke
 import { SYMMETRY_LABELS, type SymmetryMode } from "../../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../../tools/pull-shapes";
 import { TOOL_LABELS, type ToolId } from "../../tools/types";
-import { button, section, segmented, slider, toggle } from "../controls";
+import { el } from "../dom";
+import { button, section, segmented, slider, toggle, type Control } from "../controls";
 
 /**
  * Modelo declarativo del hotbox.
@@ -87,210 +88,245 @@ const MODE_LABELS: Record<BrushMode, string> = {
  */
 function buildBrushPanel(editor: Editor): (host: HTMLElement) => (() => void) | void {
   return (host: HTMLElement) => {
-    const render = (state: EditorState): void => {
-      host.textContent = "";
+    const b0 = editor.state.brush;
+
+    const modeCtl = segmented<BrushMode>({
+      label: "Modo",
+      value: b0.mode,
+      options: [
+        { value: "stroke", label: "Trazo" },
+        { value: "fill", label: "Relleno" },
+        { value: "pull", label: "Arrastre" },
+      ],
+      onChange: (v) => editor.setBrush({ mode: v }),
+    });
+    const sizeCtl = slider({
+      label: "Tamaño", min: 0.5, max: 400, step: 0.5, gamma: 2.2, unit: "px",
+      value: b0.size, onInput: (v) => editor.setBrush({ size: v }),
+    });
+    const opacityCtl = slider({
+      label: "Opacidad", min: 0.02, max: 1, step: 0.01, decimals: 2,
+      value: b0.opacity, onInput: (v) => editor.setBrush({ opacity: v }),
+    });
+    const smoothCtl = slider({
+      label: "Suavizado", min: 0, max: 1, step: 0.01, decimals: 2,
+      value: b0.smoothing, onInput: (v) => editor.setBrush({ smoothing: v }),
+    });
+    const dynCtl = segmented<StrokeDynamics>({
+      label: "Dinámica",
+      value: b0.dynamics,
+      options: (Object.keys(DYNAMICS_INFO) as StrokeDynamics[]).map((k) => ({
+        value: k, label: DYNAMICS_INFO[k].label,
+      })),
+      onChange: (v) => editor.setBrush({ dynamics: v }),
+    });
+    const gradCtl = toggle({
+      label: "Degradado", value: b0.gradient,
+      onChange: (v) => editor.setBrush({ gradient: v }),
+    });
+    const splatCtl = toggle({
+      label: "Splat", value: b0.splat,
+      onChange: (v) => editor.setBrush({ splat: v }),
+    });
+
+    host.appendChild(section("Pincel", [
+      modeCtl.el, sizeCtl.el, opacityCtl.el, smoothCtl.el, dynCtl.el, gradCtl.el, splatCtl.el,
+    ]));
+
+    // Sincroniza los controles sin reconstruir el DOM (así el slider no se
+    // destruye mientras se arrastra). Cada control ignora el set si está en foco.
+    const off = editor.events.on("state", (state) => {
       const b = state.brush;
-
-      const modeCtl = segmented<BrushMode>({
-        label: "Modo",
-        value: b.mode,
-        options: [
-          { value: "stroke", label: "Trazo" },
-          { value: "fill", label: "Relleno" },
-          { value: "pull", label: "Arrastre" },
-        ],
-        onChange: (v) => editor.setBrush({ mode: v }),
-      });
-
-      const sizeCtl = slider({
-        label: "Tamaño", min: 0.5, max: 400, step: 0.5, gamma: 2.2, unit: "px",
-        value: b.size, onInput: (v) => editor.setBrush({ size: v }),
-      });
-      const opacityCtl = slider({
-        label: "Opacidad", min: 0.02, max: 1, step: 0.01, decimals: 2,
-        value: b.opacity, onInput: (v) => editor.setBrush({ opacity: v }),
-      });
-      const smoothCtl = slider({
-        label: "Suavizado", min: 0, max: 1, step: 0.01, decimals: 2,
-        value: b.smoothing, onInput: (v) => editor.setBrush({ smoothing: v }),
-      });
-
-      const dynCtl = segmented<StrokeDynamics>({
-        label: "Dinámica",
-        value: b.dynamics,
-        options: (Object.keys(DYNAMICS_INFO) as StrokeDynamics[]).map((k) => ({
-          value: k, label: DYNAMICS_INFO[k].label,
-        })),
-        onChange: (v) => editor.setBrush({ dynamics: v }),
-      });
-
-      const gradCtl = toggle({
-        label: "Degradado", value: b.gradient,
-        onChange: (v) => editor.setBrush({ gradient: v }),
-      });
-      const splatCtl = toggle({
-        label: "Splat", value: b.splat,
-        onChange: (v) => editor.setBrush({ splat: v }),
-      });
-
-      host.appendChild(section("Pincel", [
-        modeCtl.el, sizeCtl.el, opacityCtl.el, smoothCtl.el, dynCtl.el, gradCtl.el, splatCtl.el,
-      ]));
-    };
-
-    render(editor.state);
-    const off = editor.events.on("state", render);
+      modeCtl.set(b.mode);
+      sizeCtl.set(b.size);
+      opacityCtl.set(b.opacity);
+      smoothCtl.set(b.smoothing);
+      dynCtl.set(b.dynamics);
+      gradCtl.set(b.gradient);
+      splatCtl.set(b.splat);
+    });
     return () => off();
   };
 }
 
 function buildSymmetryPanel(editor: Editor): (host: HTMLElement) => (() => void) | void {
   return (host: HTMLElement) => {
-    const render = (state: EditorState): void => {
-      host.textContent = "";
+    const s0 = editor.state.symmetry;
+
+    const modeCtl = segmented<SymmetryMode>({
+      label: "Modo",
+      value: s0.mode,
+      options: (Object.keys(SYMMETRY_LABELS) as SymmetryMode[]).map((k) => ({
+        value: k, label: SYMMETRY_LABELS[k],
+      })),
+      onChange: (v) => editor.setSymmetry({ mode: v }),
+    });
+    const countCtl = slider({
+      label: "Sectores", min: 2, max: 64, step: 1, gamma: 1.4,
+      value: s0.count, onInput: (v) => editor.setSymmetry({ count: Math.round(v) }),
+    });
+    const angleCtl = slider({
+      label: "Ángulo", min: -180, max: 180, step: 1, unit: "°",
+      value: (s0.angle * 180) / Math.PI,
+      onInput: (v) => editor.setSymmetry({ angle: (v * Math.PI) / 180 }),
+    });
+    const guideCtl = toggle({
+      label: "Guía", value: s0.visible,
+      onChange: (v) => editor.setSymmetry({ visible: v }),
+    });
+    const centerBtn = button({
+      label: "Centrar", variant: "ghost",
+      onClick: () => editor.setSymmetry({ x: editor.camera.x, y: editor.camera.y }),
+    });
+
+    host.appendChild(section("Simetría", [
+      modeCtl.el, countCtl.el, angleCtl.el, guideCtl.el, centerBtn.el,
+    ]));
+
+    const off = editor.events.on("state", (state) => {
       const sym = state.symmetry;
-
-      const modeCtl = segmented<SymmetryMode>({
-        label: "Modo",
-        value: sym.mode,
-        options: (Object.keys(SYMMETRY_LABELS) as SymmetryMode[]).map((k) => ({
-          value: k, label: SYMMETRY_LABELS[k],
-        })),
-        onChange: (v) => editor.setSymmetry({ mode: v }),
-      });
-      const countCtl = slider({
-        label: "Sectores", min: 2, max: 64, step: 1, gamma: 1.4,
-        value: sym.count, onInput: (v) => editor.setSymmetry({ count: Math.round(v) }),
-      });
-      const angleCtl = slider({
-        label: "Ángulo", min: -180, max: 180, step: 1, unit: "°",
-        value: (sym.angle * 180) / Math.PI,
-        onInput: (v) => editor.setSymmetry({ angle: (v * Math.PI) / 180 }),
-      });
-      const guideCtl = toggle({
-        label: "Guía", value: sym.visible,
-        onChange: (v) => editor.setSymmetry({ visible: v }),
-      });
-      const centerBtn = button({
-        label: "Centrar", variant: "ghost",
-        onClick: () => editor.setSymmetry({ x: editor.camera.x, y: editor.camera.y }),
-      });
-
-      host.appendChild(section("Simetría", [
-        modeCtl.el, countCtl.el, angleCtl.el, guideCtl.el, centerBtn.el,
-      ]));
-    };
-
-    render(editor.state);
-    const off = editor.events.on("state", render);
+      modeCtl.set(sym.mode);
+      countCtl.set(sym.count);
+      angleCtl.set((sym.angle * 180) / Math.PI);
+      guideCtl.set(sym.visible);
+    });
     return () => off();
   };
 }
 
 function buildMatterPanel(editor: Editor): (host: HTMLElement) => (() => void) | void {
   return (host: HTMLElement) => {
-    const render = (state: EditorState): void => {
-      host.textContent = "";
-      const w = state.world;
-      const f = state.field;
+    const st0 = editor.state;
+    const w0 = st0.world;
+    const f0 = st0.field;
 
-      const runBtn = button({
-        label: state.running ? "Pausar" : "Reanudar",
-        iconName: state.running ? "pause" : "play",
-        variant: "solid",
-        onClick: () => editor.setRunning(!state.running),
-      });
-      const seedBtn = button({
-        label: "Sembrar", iconName: "seed", variant: "ghost",
-        onClick: () => editor.seedMatter(8),
-      });
-      const bakeBtn = button({
-        label: "Hornear", iconName: "bake", variant: "ghost",
-        onClick: () => editor.bakeMatter(),
-      });
-      const gravityCtl = slider({
-        label: "Gravedad", min: -2000, max: 2000, step: 10,
-        value: w.gravity.y, onInput: (v) => editor.setWorld({ gravity: { x: w.gravity.x, y: v } }),
-      });
-      const cohesionCtl = slider({
-        label: "Cohesión", min: 0, max: 1, step: 0.01, decimals: 2,
-        value: w.cohesion, onInput: (v) => editor.setWorld({ cohesion: v }),
-      });
-      const blendCtl = slider({
-        label: "Fusión", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px",
-        value: f.blend, onInput: (v) => { editor.setField({ blend: v }); editor.setWorld({ blend: v }); },
-      });
-      const wallsCtl = toggle({
-        label: "Paredes", value: state.showWalls,
-        onChange: () => editor.toggleWalls(),
-      });
-      const clearBtn = button({
-        label: "Vaciar", iconName: "trash", variant: "danger",
-        onClick: () => editor.clearMatter(),
-      });
+    const runBtn = button({
+      label: st0.running ? "Pausar" : "Reanudar",
+      iconName: st0.running ? "pause" : "play",
+      variant: "solid",
+      onClick: () => editor.setRunning(!editor.state.running),
+    });
+    const seedBtn = button({
+      label: "Sembrar", iconName: "seed", variant: "ghost",
+      onClick: () => editor.seedMatter(8),
+    });
+    const bakeBtn = button({
+      label: "Hornear", iconName: "bake", variant: "ghost",
+      onClick: () => editor.bakeMatter(),
+    });
+    const gravityCtl = slider({
+      label: "Gravedad", min: -2000, max: 2000, step: 10,
+      value: w0.gravity.y, onInput: (v) => editor.setWorld({ gravity: { x: editor.state.world.gravity.x, y: v } }),
+    });
+    const cohesionCtl = slider({
+      label: "Cohesión", min: 0, max: 1, step: 0.01, decimals: 2,
+      value: w0.cohesion, onInput: (v) => editor.setWorld({ cohesion: v }),
+    });
+    const blendCtl = slider({
+      label: "Fusión", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px",
+      value: f0.blend, onInput: (v) => { editor.setField({ blend: v }); editor.setWorld({ blend: v }); },
+    });
+    const wallsCtl = toggle({
+      label: "Paredes", value: st0.showWalls,
+      onChange: () => editor.toggleWalls(),
+    });
+    const clearBtn = button({
+      label: "Vaciar", iconName: "trash", variant: "danger",
+      onClick: () => editor.clearMatter(),
+    });
 
-      host.appendChild(section("Materia", [
-        runBtn.el, seedBtn.el, bakeBtn.el, gravityCtl.el, cohesionCtl.el, blendCtl.el, wallsCtl.el, clearBtn.el,
-      ]));
-    };
+    host.appendChild(section("Materia", [
+      runBtn.el, seedBtn.el, bakeBtn.el, gravityCtl.el, cohesionCtl.el, blendCtl.el, wallsCtl.el, clearBtn.el,
+    ]));
 
-    render(editor.state);
-    const off = editor.events.on("state", render);
+    const off = editor.events.on("state", (state) => {
+      runBtn.el.querySelector(".btn-label")!.textContent = state.running ? "Pausar" : "Reanudar";
+      gravityCtl.set(state.world.gravity.y);
+      cohesionCtl.set(state.world.cohesion);
+      blendCtl.set(state.field.blend);
+      wallsCtl.set(state.showWalls);
+    });
     return () => off();
   };
 }
 
 function buildShapePanel(editor: Editor): (host: HTMLElement) => (() => void) | void {
   return (host: HTMLElement) => {
-    const render = (state: EditorState): void => {
-      host.textContent = "";
-      const s = state.shape;
+    // Controles fijos (siempre presentes): se crean una vez.
+    const kindCtl = segmented<ShapeKind>({
+      label: "Tipo",
+      value: editor.state.shape.kind,
+      options: (Object.keys(SHAPE_LABELS) as ShapeKind[]).map((k) => ({
+        value: k, label: SHAPE_LABELS[k],
+      })),
+      onChange: (v) => editor.setShape({ kind: v }),
+    });
+    const sizeCtl = slider({
+      label: "Tamaño", min: 4, max: 300, step: 1, gamma: 1.6, unit: "px",
+      value: editor.state.shape.size, onInput: (v) => editor.setShape({ size: v }),
+    });
 
-      const kindCtl = segmented<ShapeKind>({
-        label: "Tipo",
-        value: s.kind,
-        options: (Object.keys(SHAPE_LABELS) as ShapeKind[]).map((k) => ({
-          value: k, label: SHAPE_LABELS[k],
-        })),
-        onChange: (v) => editor.setShape({ kind: v }),
-      });
-      const sizeCtl = slider({
-        label: "Tamaño", min: 4, max: 300, step: 1, gamma: 1.6, unit: "px",
-        value: s.size, onInput: (v) => editor.setShape({ size: v }),
-      });
+    // Contenedor de controles que dependen del tipo de forma.
+    const variableHost = el("div", { class: "shape-variable" });
+    const wrap = section("Forma", [kindCtl.el, sizeCtl.el, variableHost]);
+    host.appendChild(wrap);
 
-      const controls: HTMLElement[] = [kindCtl.el, sizeCtl.el];
+    // Diccionario de controles variables activos, para poder actualizarlos.
+    let variable: Record<string, Control<number>> = {};
+    let currentKind: ShapeKind | null = null;
 
-      if (s.kind === "box" || s.kind === "capsule") {
-        controls.push(slider({
+    const buildVariable = (kind: ShapeKind): void => {
+      variableHost.textContent = "";
+      variable = {};
+      const s = editor.state.shape;
+
+      if (kind === "box" || kind === "capsule") {
+        variable.aspect = slider({
           label: "Proporción", min: 0.25, max: 4, step: 0.05, decimals: 2,
           value: s.aspect, onInput: (v) => editor.setShape({ aspect: v }),
-        }).el);
+        });
+        variableHost.appendChild(variable.aspect.el);
       }
-      if (s.kind === "ngon" || s.kind === "star") {
-        controls.push(slider({
+      if (kind === "ngon" || kind === "star") {
+        variable.sides = slider({
           label: "Lados", min: 3, max: 12, step: 1,
           value: s.sides, onInput: (v) => editor.setShape({ sides: Math.round(v) }),
-        }).el);
+        });
+        variableHost.appendChild(variable.sides.el);
       }
-      if (s.kind === "star") {
-        controls.push(slider({
+      if (kind === "star") {
+        variable.inner = slider({
           label: "Radio interior", min: 0.15, max: 0.9, step: 0.01, decimals: 2,
           value: s.inner, onInput: (v) => editor.setShape({ inner: v }),
-        }).el);
+        });
+        variableHost.appendChild(variable.inner.el);
       }
-      if (s.kind === "box" || s.kind === "ngon") {
-        controls.push(slider({
+      if (kind === "box" || kind === "ngon") {
+        variable.round = slider({
           label: "Redondeo", min: 0, max: 60, step: 0.5, unit: "px",
           value: s.round, onInput: (v) => editor.setShape({ round: v }),
-        }).el);
+        });
+        variableHost.appendChild(variable.round.el);
       }
-
-      host.appendChild(section("Forma", controls));
+      currentKind = kind;
     };
 
-    render(editor.state);
-    const off = editor.events.on("state", render);
+    buildVariable(editor.state.shape.kind);
+
+    const off = editor.events.on("state", (state) => {
+      const s = state.shape;
+      kindCtl.set(s.kind);
+      sizeCtl.set(s.size);
+      // Solo reconstruye los controles variables si cambió el tipo de forma.
+      if (s.kind !== currentKind) {
+        buildVariable(s.kind);
+      } else {
+        variable.aspect?.set(s.aspect);
+        variable.sides?.set(s.sides);
+        variable.inner?.set(s.inner);
+        variable.round?.set(s.round);
+      }
+    });
     return () => off();
   };
 }

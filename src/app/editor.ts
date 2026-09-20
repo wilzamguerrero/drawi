@@ -653,7 +653,11 @@ export class Editor {
     };
   }
 
-  private sampleScreenColor(x: number, y: number): string | null {
+  /**
+   * Muestrea el color compuesto del lienzo (fondo + capas) en un punto de
+   * pantalla. Usado por el picker y por el HUD para adaptar su contraste.
+   */
+  sampleScreenColor(x: number, y: number): string | null {
     const ctx = this.pickCtx;
     const sx = Math.round(x * this.dpr);
     const sy = Math.round(y * this.dpr);

@@ -55,13 +55,13 @@ export class StatusBar {
       this.penRate,
     ]);
 
+    // El zoom ya se muestra en la barra de acciones (topbar), así que aquí no
+    // se repite para no duplicar información en la misma línea del HUD.
     this.el = el("footer", { class: "statusbar" }, [
       this.message,
-      el("span", { class: "statusbar-spacer" }),
       this.penBox,
       this.toolName,
       this.counts,
-      this.zoom,
       this.fps,
       this.engine,
     ]);

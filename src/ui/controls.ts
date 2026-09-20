@@ -105,13 +105,20 @@ export function slider(options: SliderOptions): Control<number> {
     range.style.setProperty("--fill", `${t}%`);
   };
 
+  // Mientras se arrastra el range, ignoramos los `set()` externos para que el
+  // valor recalculado (toSlider(fromSlider(v))) no pelee contra el arrastre.
+  let dragging = false;
+
   range.addEventListener("input", () => {
     const v = fromSlider(Number(range.value));
     field.value = num(v, decimals);
     paint(v);
     options.onInput(v);
   });
-  range.addEventListener("pointerup", () => blurSoon(range));
+  range.addEventListener("pointerdown", () => { dragging = true; });
+  const endDrag = (): void => { dragging = false; };
+  range.addEventListener("pointerup", () => { endDrag(); blurSoon(range); });
+  range.addEventListener("pointercancel", endDrag);
 
   const commitField = (): void => {
     const raw = Number.parseFloat(field.value.replace(",", "."));
@@ -146,7 +153,7 @@ export function slider(options: SliderOptions): Control<number> {
   return {
     el: node,
     set(value: number) {
-      if (document.activeElement === field) return;
+      if (dragging || document.activeElement === field) return;
       range.value = String(toSlider(value));
       field.value = num(value, decimals);
       paint(value);

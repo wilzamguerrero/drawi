@@ -58,10 +58,9 @@ export class TopBar {
         this.nameInput,
       ]),
       el("div", { class: "topbar-group" }, [this.undoBtn.el, this.redoBtn.el]),
-      el("div", { class: "topbar-spacer" }),
       el("div", { class: "topbar-group" }, [
         this.zoomLabel,
-        button({ iconName: "info", title: "Atajos y ayuda", onClick: () => this.onHelp() }).el,
+        button({ iconName: "help", title: "Atajos y ayuda", onClick: () => this.onHelp() }).el,
       ]),
     ]);
   }

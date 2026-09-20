@@ -65,8 +65,12 @@ export class App {
       exportSvg: () => this.editor.status(exportVector(this.editor)),
     }, this.panels);
 
-    this.stage.appendChild(this.statusBar.el);
-    this.chrome = el("div", { class: "chrome" }, [this.topBar.el]);
+    // HUD superior derecho: barra de acciones + información de estado. La
+    // legibilidad sobre cualquier fondo la da mix-blend-mode: difference en el
+    // CSS (invierte cada píxel del texto contra el color del lienzo debajo);
+    // por eso .chrome no lleva z-index, para no aislar el HUD del lienzo.
+    const hud = el("div", { class: "hud" }, [this.topBar.el, this.statusBar.el]);
+    this.chrome = el("div", { class: "chrome" }, [hud]);
     root.appendChild(this.pantone.el);
 
     const shell = el("div", { class: "shell" }, [this.stage, this.chrome]);
@@ -105,11 +109,15 @@ export class App {
         this.hotbox.show(p.x || window.innerWidth / 2, p.y || window.innerHeight / 2);
         return;
       }
-      if (e.key === "x" && !e.ctrlKey && !e.metaKey) {
+      if ((e.key === "x" || e.key === "X") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
         const ink = this.editor.color;
         const bg = this.editor.doc.meta.background;
         this.editor.setColor(bg);
         this.editor.setBackground(ink);
+        this.editor.status(`Intercambio color ⇄ fondo`);
+        this.wake();
+        return;
       }
     };
     window.addEventListener("keydown", this.keyHandler);
