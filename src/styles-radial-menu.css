@@ -152,6 +152,24 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
 }
 
+/* Iconos de texto (fallback cuando no hay SVG) */
+.rm-icon-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.rm-icon-text.is-hover {
+  color: rgba(255, 255, 255, 1);
+  transform: translate(-50%, -50%) scale(1.1);
+}
+
+.rm-icon-sub.rm-icon-text {
+  font-size: 11px;
+}
+
 /* Botón central */
 .rm-center-btn {
   position: absolute;

@@ -37,6 +37,7 @@ const VIEW = 460; // medio lado del viewBox del SVG de anillos
 const POS_KEY = "drawi.pantone.pos";
 const ROT_KEY = "drawi.pantone.rot";
 const PAL_KEY = "drawi.pantone.palette";
+const PIN_KEY = "drawi.pantone.pinned";
 
 // --------------------------------------------------------------- geometria
 
@@ -122,7 +123,8 @@ const loadPos = (): Pt => {
   } catch {
     /* valor por defecto abajo */
   }
-  return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+  // Posición por defecto: esquina inferior derecha
+  return { x: window.innerWidth - 140, y: window.innerHeight - 140 };
 };
 
 // -------------------------------------------------------------------- clase
@@ -144,7 +146,7 @@ export class PantoneWheel {
 
   private visible = false;
   private expanded = false;
-  private pinned = false;
+  private pinned = localStorage.getItem(PIN_KEY) !== "false"; // activado por defecto
   private position: Pt = loadPos();
   private rotation = Number(localStorage.getItem(ROT_KEY)) || 0;
   private paletteId = localStorage.getItem(PAL_KEY) || "universal";
@@ -219,6 +221,22 @@ export class PantoneWheel {
     this.renderGradient();
     this.updateHub();
     this.setExpanded(false);
+
+    // Reflejar estado inicial del pin (activado por defecto)
+    this.pinDot.classList.toggle("is-pinned", this.pinned);
+    this.pinDot.title = this.pinned ? "Fijada (clic para soltar)" : "Fijar (que no se cierre al hacer clic fuera)";
+
+    // Mostrar la rueda al iniciar (colapsada, en su posición por defecto)
+    this.showCollapsed();
+  }
+
+  /** Muestra el núcleo de la rueda sin expandir los anillos (estado inicial). */
+  private showCollapsed(): void {
+    this.visible = true;
+    this.el.hidden = false;
+    this.hubBtn.classList.add("is-entering");
+    this.setExpanded(false);
+    document.addEventListener("pointerdown", this.onDocDown, true);
   }
 
   // ------------------------------------------------------------- construccion
@@ -599,6 +617,7 @@ export class PantoneWheel {
       this.pinned = !this.pinned;
       this.pinDot.classList.toggle("is-pinned", this.pinned);
       this.pinDot.title = this.pinned ? "Fijada (clic para soltar)" : "Fijar (que no se cierre al hacer clic fuera)";
+      localStorage.setItem(PIN_KEY, String(this.pinned));
     });
   }
 

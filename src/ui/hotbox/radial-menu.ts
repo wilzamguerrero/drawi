@@ -59,6 +59,7 @@ export class RadialMenu {
 
   private editor: Editor;
   private hooks: MenuHooks;
+  private panels: Panels;
 
   private container: HTMLElement;
   private svg: SVGSVGElement;
@@ -75,9 +76,10 @@ export class RadialMenu {
   private expandedIndex = -1;
   private hoveredSector: RadialSector | null = null;
 
-  constructor(editor: Editor, hooks: MenuHooks, _panels: Panels) {
+  constructor(editor: Editor, hooks: MenuHooks, panels: Panels) {
     this.editor = editor;
     this.hooks = hooks;
+    this.panels = panels;
 
     // Crear estructura DOM
     this.svg = this.createSVG();
@@ -344,16 +346,35 @@ export class RadialMenu {
 
     // Contenido del icono
     if (node.accent && node.id.startsWith("swatch-")) {
+      // Muestra de color
       iconEl.style.background = node.accent;
       iconEl.classList.add("rm-icon-swatch");
     } else if (node.icon) {
+      // Icono SVG
       iconEl.innerHTML = icon(node.icon);
     } else if (node.accent) {
+      // Punto de color
       iconEl.style.background = node.accent;
       iconEl.classList.add("rm-icon-color");
+    } else {
+      // Fallback: mostrar texto (label corto) cuando no hay icono
+      iconEl.classList.add("rm-icon-text");
+      iconEl.textContent = this.shortLabel(node.label);
     }
 
     return iconEl;
+  }
+
+  /** Genera una etiqueta corta para items sin icono. */
+  private shortLabel(label: string): string {
+    // Si es un número (como sectores), mostrarlo completo si es corto
+    if (/^\d+$/.test(label) && label.length <= 3) return label;
+    // Tomar las primeras letras significativas
+    const words = label.split(/\s+/);
+    if (words.length >= 2) {
+      return (words[0][0] + words[1][0]).toUpperCase();
+    }
+    return label.slice(0, 3);
   }
 
   private styleMainSector(path: SVGPathElement, node: HotNode): void {
@@ -471,6 +492,22 @@ export class RadialMenu {
     switch (node.kind) {
       case "action": {
         const action = node as Extract<HotNode, { kind: "action" }>;
+
+        // Si tiene panel flotante, abrirlo
+        if (action.canFloat && action.buildPanel) {
+          this.panels.toggle(
+            {
+              id: action.id,
+              title: action.label,
+              build: action.buildPanel,
+            },
+            this.posX,
+            this.posY
+          );
+          this.close();
+          return;
+        }
+
         action.run();
         if (!action.keepOpen) {
           this.close();

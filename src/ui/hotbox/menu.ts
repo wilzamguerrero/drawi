@@ -4,6 +4,7 @@ import { DYNAMICS_INFO, type BrushMode, type StrokeDynamics } from "../../stroke
 import { SYMMETRY_LABELS, type SymmetryMode } from "../../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../../tools/pull-shapes";
 import { TOOL_LABELS, type ToolId } from "../../tools/types";
+import { button, section, segmented, slider, toggle } from "../controls";
 
 /**
  * Modelo declarativo del hotbox.
@@ -37,7 +38,7 @@ export interface ActionNode extends NodeBase {
   /** Permite abrir este item como panel flotante con pin. */
   canFloat?: boolean;
   /** Función para construir el contenido del panel flotante. */
-  buildPanel?: (host: HTMLElement) => () => void;
+  buildPanel?: (host: HTMLElement) => (() => void) | void;
 }
 
 export interface SubmenuNode extends NodeBase {
@@ -75,6 +76,224 @@ const MODE_LABELS: Record<BrushMode, string> = {
   fill: "Relleno",
   pull: "Arrastre",
 };
+
+// ------------------------------------------------------------ funciones de construcción de paneles
+
+/**
+ * Cada panel flotante se reconstruye cuando cambia el estado del editor, de modo
+ * que refleje siempre la configuración vigente aunque se ajuste desde el menú
+ * circular u otro sitio. Devuelve una función de limpieza que desengancha el
+ * listener de estado al cerrar el panel.
+ */
+function buildBrushPanel(editor: Editor): (host: HTMLElement) => (() => void) | void {
+  return (host: HTMLElement) => {
+    const render = (state: EditorState): void => {
+      host.textContent = "";
+      const b = state.brush;
+
+      const modeCtl = segmented<BrushMode>({
+        label: "Modo",
+        value: b.mode,
+        options: [
+          { value: "stroke", label: "Trazo" },
+          { value: "fill", label: "Relleno" },
+          { value: "pull", label: "Arrastre" },
+        ],
+        onChange: (v) => editor.setBrush({ mode: v }),
+      });
+
+      const sizeCtl = slider({
+        label: "Tamaño", min: 0.5, max: 400, step: 0.5, gamma: 2.2, unit: "px",
+        value: b.size, onInput: (v) => editor.setBrush({ size: v }),
+      });
+      const opacityCtl = slider({
+        label: "Opacidad", min: 0.02, max: 1, step: 0.01, decimals: 2,
+        value: b.opacity, onInput: (v) => editor.setBrush({ opacity: v }),
+      });
+      const smoothCtl = slider({
+        label: "Suavizado", min: 0, max: 1, step: 0.01, decimals: 2,
+        value: b.smoothing, onInput: (v) => editor.setBrush({ smoothing: v }),
+      });
+
+      const dynCtl = segmented<StrokeDynamics>({
+        label: "Dinámica",
+        value: b.dynamics,
+        options: (Object.keys(DYNAMICS_INFO) as StrokeDynamics[]).map((k) => ({
+          value: k, label: DYNAMICS_INFO[k].label,
+        })),
+        onChange: (v) => editor.setBrush({ dynamics: v }),
+      });
+
+      const gradCtl = toggle({
+        label: "Degradado", value: b.gradient,
+        onChange: (v) => editor.setBrush({ gradient: v }),
+      });
+      const splatCtl = toggle({
+        label: "Splat", value: b.splat,
+        onChange: (v) => editor.setBrush({ splat: v }),
+      });
+
+      host.appendChild(section("Pincel", [
+        modeCtl.el, sizeCtl.el, opacityCtl.el, smoothCtl.el, dynCtl.el, gradCtl.el, splatCtl.el,
+      ]));
+    };
+
+    render(editor.state);
+    const off = editor.events.on("state", render);
+    return () => off();
+  };
+}
+
+function buildSymmetryPanel(editor: Editor): (host: HTMLElement) => (() => void) | void {
+  return (host: HTMLElement) => {
+    const render = (state: EditorState): void => {
+      host.textContent = "";
+      const sym = state.symmetry;
+
+      const modeCtl = segmented<SymmetryMode>({
+        label: "Modo",
+        value: sym.mode,
+        options: (Object.keys(SYMMETRY_LABELS) as SymmetryMode[]).map((k) => ({
+          value: k, label: SYMMETRY_LABELS[k],
+        })),
+        onChange: (v) => editor.setSymmetry({ mode: v }),
+      });
+      const countCtl = slider({
+        label: "Sectores", min: 2, max: 64, step: 1, gamma: 1.4,
+        value: sym.count, onInput: (v) => editor.setSymmetry({ count: Math.round(v) }),
+      });
+      const angleCtl = slider({
+        label: "Ángulo", min: -180, max: 180, step: 1, unit: "°",
+        value: (sym.angle * 180) / Math.PI,
+        onInput: (v) => editor.setSymmetry({ angle: (v * Math.PI) / 180 }),
+      });
+      const guideCtl = toggle({
+        label: "Guía", value: sym.visible,
+        onChange: (v) => editor.setSymmetry({ visible: v }),
+      });
+      const centerBtn = button({
+        label: "Centrar", variant: "ghost",
+        onClick: () => editor.setSymmetry({ x: editor.camera.x, y: editor.camera.y }),
+      });
+
+      host.appendChild(section("Simetría", [
+        modeCtl.el, countCtl.el, angleCtl.el, guideCtl.el, centerBtn.el,
+      ]));
+    };
+
+    render(editor.state);
+    const off = editor.events.on("state", render);
+    return () => off();
+  };
+}
+
+function buildMatterPanel(editor: Editor): (host: HTMLElement) => (() => void) | void {
+  return (host: HTMLElement) => {
+    const render = (state: EditorState): void => {
+      host.textContent = "";
+      const w = state.world;
+      const f = state.field;
+
+      const runBtn = button({
+        label: state.running ? "Pausar" : "Reanudar",
+        iconName: state.running ? "pause" : "play",
+        variant: "solid",
+        onClick: () => editor.setRunning(!state.running),
+      });
+      const seedBtn = button({
+        label: "Sembrar", iconName: "seed", variant: "ghost",
+        onClick: () => editor.seedMatter(8),
+      });
+      const bakeBtn = button({
+        label: "Hornear", iconName: "bake", variant: "ghost",
+        onClick: () => editor.bakeMatter(),
+      });
+      const gravityCtl = slider({
+        label: "Gravedad", min: -2000, max: 2000, step: 10,
+        value: w.gravity.y, onInput: (v) => editor.setWorld({ gravity: { x: w.gravity.x, y: v } }),
+      });
+      const cohesionCtl = slider({
+        label: "Cohesión", min: 0, max: 1, step: 0.01, decimals: 2,
+        value: w.cohesion, onInput: (v) => editor.setWorld({ cohesion: v }),
+      });
+      const blendCtl = slider({
+        label: "Fusión", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px",
+        value: f.blend, onInput: (v) => { editor.setField({ blend: v }); editor.setWorld({ blend: v }); },
+      });
+      const wallsCtl = toggle({
+        label: "Paredes", value: state.showWalls,
+        onChange: () => editor.toggleWalls(),
+      });
+      const clearBtn = button({
+        label: "Vaciar", iconName: "trash", variant: "danger",
+        onClick: () => editor.clearMatter(),
+      });
+
+      host.appendChild(section("Materia", [
+        runBtn.el, seedBtn.el, bakeBtn.el, gravityCtl.el, cohesionCtl.el, blendCtl.el, wallsCtl.el, clearBtn.el,
+      ]));
+    };
+
+    render(editor.state);
+    const off = editor.events.on("state", render);
+    return () => off();
+  };
+}
+
+function buildShapePanel(editor: Editor): (host: HTMLElement) => (() => void) | void {
+  return (host: HTMLElement) => {
+    const render = (state: EditorState): void => {
+      host.textContent = "";
+      const s = state.shape;
+
+      const kindCtl = segmented<ShapeKind>({
+        label: "Tipo",
+        value: s.kind,
+        options: (Object.keys(SHAPE_LABELS) as ShapeKind[]).map((k) => ({
+          value: k, label: SHAPE_LABELS[k],
+        })),
+        onChange: (v) => editor.setShape({ kind: v }),
+      });
+      const sizeCtl = slider({
+        label: "Tamaño", min: 4, max: 300, step: 1, gamma: 1.6, unit: "px",
+        value: s.size, onInput: (v) => editor.setShape({ size: v }),
+      });
+
+      const controls: HTMLElement[] = [kindCtl.el, sizeCtl.el];
+
+      if (s.kind === "box" || s.kind === "capsule") {
+        controls.push(slider({
+          label: "Proporción", min: 0.25, max: 4, step: 0.05, decimals: 2,
+          value: s.aspect, onInput: (v) => editor.setShape({ aspect: v }),
+        }).el);
+      }
+      if (s.kind === "ngon" || s.kind === "star") {
+        controls.push(slider({
+          label: "Lados", min: 3, max: 12, step: 1,
+          value: s.sides, onInput: (v) => editor.setShape({ sides: Math.round(v) }),
+        }).el);
+      }
+      if (s.kind === "star") {
+        controls.push(slider({
+          label: "Radio interior", min: 0.15, max: 0.9, step: 0.01, decimals: 2,
+          value: s.inner, onInput: (v) => editor.setShape({ inner: v }),
+        }).el);
+      }
+      if (s.kind === "box" || s.kind === "ngon") {
+        controls.push(slider({
+          label: "Redondeo", min: 0, max: 60, step: 0.5, unit: "px",
+          value: s.round, onInput: (v) => editor.setShape({ round: v }),
+        }).el);
+      }
+
+      host.appendChild(section("Forma", controls));
+    };
+
+    render(editor.state);
+    const off = editor.events.on("state", render);
+    return () => off();
+  };
+}
 
 // ------------------------------------------------------------ submenus por herramienta
 
@@ -118,6 +337,15 @@ function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
     run: () => editor.setBrush({ mode: m }),
   });
   const children: HotNode[] = [
+    {
+      kind: "action",
+      id: "brush-panel",
+      label: "Panel",
+      icon: "panel",
+      canFloat: true,
+      buildPanel: buildBrushPanel(editor),
+      run: () => {},
+    },
     { kind: "submenu", id: "mode", label: "Modo", icon: "spark", children: [mode("stroke"), mode("fill"), mode("pull")] },
     {
       kind: "dial",
@@ -136,6 +364,7 @@ function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
       kind: "dial",
       id: "opacity",
       label: "Opacidad",
+      icon: "droplet",
       min: 0.02,
       max: 1,
       step: 0.01,
@@ -160,14 +389,15 @@ function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
       kind: "dial",
       id: "smoothing",
       label: "Suavizado",
+      icon: "spark",
       min: 0,
       max: 1,
       step: 0.01,
       value: b.smoothing,
       onInput: (v) => editor.setBrush({ smoothing: v }),
     },
-    { kind: "action", id: "gradient", label: "Degradado", active: b.gradient, keepOpen: true, run: () => editor.setBrush({ gradient: !b.gradient }) },
-    { kind: "action", id: "splat", label: "Splat", active: b.splat, keepOpen: true, run: () => editor.setBrush({ splat: !b.splat }) },
+    { kind: "action", id: "gradient", label: "Degradado", icon: "layers", active: b.gradient, keepOpen: true, run: () => editor.setBrush({ gradient: !b.gradient }) },
+    { kind: "action", id: "splat", label: "Splat", icon: "droplet", active: b.splat, keepOpen: true, run: () => editor.setBrush({ splat: !b.splat }) },
   ];
   if (b.mode === "pull") {
     children.push({
@@ -194,6 +424,15 @@ function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
 function shapeSubmenu(editor: Editor, state: EditorState): SubmenuNode {
   const s = state.shape;
   const children: HotNode[] = [
+    {
+      kind: "action",
+      id: "shape-panel",
+      label: "Panel",
+      icon: "panel",
+      canFloat: true,
+      buildPanel: buildShapePanel(editor),
+      run: () => {},
+    },
     {
       kind: "submenu",
       id: "shape-kind",
@@ -232,6 +471,15 @@ function symmetrySubmenu(editor: Editor, state: EditorState): SubmenuNode {
     icon: "symmetry",
     children: [
       {
+        kind: "action",
+        id: "symmetry-panel",
+        label: "Panel",
+        icon: "panel",
+        canFloat: true,
+        buildPanel: buildSymmetryPanel(editor),
+        run: () => {},
+      },
+      {
         kind: "submenu",
         id: "sym-mode",
         label: "Modo",
@@ -260,6 +508,15 @@ function matterSubmenu(editor: Editor, state: EditorState): SubmenuNode {
     label: "Materia",
     icon: "matter",
     children: [
+      {
+        kind: "action",
+        id: "matter-panel",
+        label: "Panel",
+        icon: "panel",
+        canFloat: true,
+        buildPanel: buildMatterPanel(editor),
+        run: () => {},
+      },
       { kind: "action", id: "run", label: state.running ? "Pausar" : "Reanudar", icon: state.running ? "pause" : "play", active: state.running, keepOpen: true, run: () => editor.setRunning(!state.running) },
       { kind: "action", id: "seed", label: "Sembrar", icon: "seed", run: () => editor.seedMatter(8) },
       { kind: "action", id: "bake", label: "Hornear", icon: "bake", run: () => editor.bakeMatter() },

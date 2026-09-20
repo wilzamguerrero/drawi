@@ -75,6 +75,14 @@ export const ICONS: Record<string, string> = {
   spark: svg(`<path d="M12 3v6M12 15v6M3 12h6M15 12h6"/><path d="M12 9a3 3 0 0 0 3 3 3 3 0 0 0-3 3 3 3 0 0 0-3-3 3 3 0 0 0 3-3Z"/>`),
   pin: svg(`<path d="M12 3l4 4-1.5 1.5.8 5.2L12 12l-3.3 1.7.8-5.2L8 7Z"/><path d="M12 12v9"/>`),
   file: svg(`<path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v4h4"/>`),
+  export: svg(`<path d="M12 4v11"/><path d="m8 11 4 4 4-4"/><path d="M4 19h16"/>`),
+  settings: svg(
+    `<circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/>`,
+  ),
+  help: svg(`<circle cx="12" cy="12" r="8.5"/><path d="M9.5 9a2.5 2.5 0 0 1 5 1c0 1.5-2.5 2.5-2.5 3.5"/><path d="M12 17h.01"/>`),
+  palette: svg(`<circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="10" r="1.5"/><circle cx="15.5" cy="10" r="1.5"/><circle cx="12" cy="15" r="1.5"/>`),
+  image: svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m4 15 4-4 5 5 5-6 2 2v4H4Z"/>`),
+  panel: svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M14 4v16"/>`),
 };
 
 export function icon(name: keyof typeof ICONS | string): string {
