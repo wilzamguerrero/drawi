@@ -114,22 +114,23 @@
   stroke: rgba(90, 159, 212, 0.55);
 }
 
-/* Rastro de migas: línea de acento desde el centro que sigue el camino. Va bajo
-   los sectores; se ve en el hueco central y en los espacios entre anillos. */
-.rm-trail {
-  fill: none;
-  stroke: rgba(90, 159, 212, 0.9);
-  stroke-width: 2.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 0 4px rgba(90, 159, 212, 0.5));
+/* Haz de acento en el hueco central que apunta hacia la rama abierta. Sustituye
+   a la antigua línea que cruzaba los anillos: es una cuña discreta que se
+   desvanece hacia afuera, marcando "por dónde entré" sin ruido visual. */
+.rm-beam {
+  fill: rgba(90, 159, 212, 0.5);
+  filter: drop-shadow(0 0 5px rgba(90, 159, 212, 0.45));
   pointer-events: none;
+  animation: rm-beam-in 0.2s ease-out backwards;
 }
 
-.rm-trail-dot {
-  fill: rgba(90, 159, 212, 1);
-  filter: drop-shadow(0 0 3px rgba(90, 159, 212, 0.6));
-  pointer-events: none;
+@keyframes rm-beam-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .rm-sector.is-disabled {

@@ -84,12 +84,20 @@ export class RadialMenu {
   private center = 305;
 
   private rootNodes: HotNode[] = [];
-  /** Cadena de submenús expandidos: openIndices[k] = índice expandido en el anillo k+1. */
+  /** Cadena de submenús expandidos: openIndices[k] = índice expandido en el anillo k+1.
+      Se conserva entre cierres: al reabrir, el menú recuerda cómo estaba. Solo
+      el botón central lo limpia por completo. */
   private openIndices: number[] = [];
   /** Camino completo hasta el sector bajo el cursor (para el rastro y el resaltado). */
   private hoveredPath: number[] | null = null;
 
   private sectors: RadialSector[] = [];
+
+  /** Camino activo: el del cursor si hay hover; si no, la expansión recordada.
+      Alimenta el haz del rastro y el resaltado del camino. */
+  private get activePath(): number[] {
+    return this.hoveredPath ?? this.openIndices;
+  }
 
   constructor(editor: Editor, hooks: MenuHooks, panels: Panels) {
     this.editor = editor;
@@ -160,10 +168,29 @@ export class RadialMenu {
     return max;
   }
 
+  /**
+   * Recorta una cadena de expansión al árbol actual: al reabrir el menú con otra
+   * herramienta activa, algún índice puede quedar fuera de rango o dejar de ser
+   * un submenú. Se conserva el prefijo válido y se descarta el resto.
+   */
+  private validateOpenIndices(indices: number[]): number[] {
+    const valid: number[] = [];
+    let nodes = this.rootNodes;
+    for (const idx of indices) {
+      const node = nodes[idx];
+      if (!node || node.kind !== "submenu") break;
+      valid.push(idx);
+      nodes = node.children;
+    }
+    return valid;
+  }
+
   private setupEvents(): void {
     this.container.addEventListener("pointermove", (e) => this.onPointerMove(e));
     this.container.addEventListener("pointerdown", (e) => this.onPointerDown(e));
-    this.centerButton.addEventListener("click", () => this.close());
+    // El botón central limpia toda la expansión (vuelve a la raíz). Si ya está
+    // en la raíz, cierra el menú.
+    this.centerButton.addEventListener("click", () => this.collapseOrClose());
 
     // Clic en el backdrop (área vacía de pantalla completa): cerrar.
     this.el.addEventListener("pointerdown", (e) => {
@@ -201,7 +228,9 @@ export class RadialMenu {
     this.container.style.left = `${this.posX}px`;
     this.container.style.top = `${this.posY}px`;
 
-    this.openIndices = [];
+    // Recordar la expansión anterior, pero validarla: el árbol pudo cambiar
+    // (otra herramienta activa) y algún índice ya no apuntar a un submenú.
+    this.openIndices = this.validateOpenIndices(this.openIndices);
     this.hoveredPath = null;
 
     this.rebuild();
@@ -292,10 +321,6 @@ export class RadialMenu {
 
     const layouts = this.computeLayout();
 
-    // El rastro va PRIMERO para quedar por debajo de los sectores (se ve en el
-    // hueco central y en los espacios entre anillos).
-    this.drawTrail(layouts);
-
     for (const ring of layouts) {
       this.drawRing(ring);
     }
@@ -339,47 +364,64 @@ export class RadialMenu {
   }
 
   /**
-   * Rastro de migas: una línea de acento desde el centro que recorre el camino
-   * hovered (Simetría → Modo → ...). Se dibuja bajo los sectores, así se ve en
-   * el hueco central y en los espacios entre anillos.
+   * Resalta el camino recorrido sin reconstruir los anillos (así el abanico no
+   * se re-anima en cada hover). Dos señales combinadas:
+   *  - Los sectores ancestros del camino activo llevan `is-onpath` (tinte suave).
+   *  - Un haz de acento en el hueco central apunta hacia la rama abierta,
+   *    reemplaza a la antigua "línea fea" que cruzaba los anillos.
+   * Se usa `activePath` (hover o, si no hay, la expansión persistida) para que al
+   * reabrir el menú se vea la última selección aunque el cursor esté en otro sitio.
    */
-  private drawTrail(layouts: RingLayout[]): void {
-    const path = this.hoveredPath;
-    if (!path || path.length === 0) return;
+  private updateActivePathVisuals(): void {
+    const active = this.activePath;
+
+    for (const sector of this.sectors) {
+      // Ancestro del camino activo = su ruta es prefijo estricto del camino.
+      const onPath = active.length > sector.path.length && isPrefix(sector.path, active);
+      setClass(sector.path_el, "is-onpath", onPath);
+    }
+
+    this.drawBeam(active);
+  }
+
+  /**
+   * Haz de acento dentro del hueco central que apunta hacia la rama abierta.
+   * Es una cuña estrecha que se desvanece hacia afuera; discreta, sin cruzar
+   * los anillos. Su dirección sigue la mitad del sector de primer nivel del
+   * camino (Simetría), que es la referencia estable de "por dónde entré".
+   */
+  private drawBeam(active: number[]): void {
+    const prev = this.svg.querySelector(".rm-beam");
+    if (prev) prev.remove();
+
+    if (active.length === 0) return;
+    const root = this.sectors.find((s) => s.ringLevel === 1 && s.index === active[0]);
+    if (!root) return;
 
     const c = this.center;
-    const points: Array<{ x: number; y: number }> = [{ x: c, y: c }];
+    const angle = root.angleMid;
+    // La cuña vive entre el borde del botón central y el borde interno del anillo 1.
+    const rInner = CONFIG.centerRadius + 4;
+    const rOuter = CONFIG.innerRadius - 4;
+    const halfWidth = 7 / rOuter; // ~7px de ancho en la boca, en radianes.
 
-    for (let level = 1; level <= path.length; level++) {
-      const ring = layouts[level - 1];
-      if (!ring) break;
-      const idx = path[level - 1];
-      const sector = ring.sectors.find((s) => s.index === idx);
-      if (!sector) break;
-      const r = this.ringMid(level);
-      points.push({
-        x: c + Math.cos(sector.amid) * r,
-        y: c + Math.sin(sector.amid) * r,
-      });
-    }
+    const a0 = angle - halfWidth;
+    const a1 = angle + halfWidth;
+    const x1 = c + Math.cos(angle) * rInner;
+    const y1 = c + Math.sin(angle) * rInner;
+    const x2 = c + Math.cos(a0) * rOuter;
+    const y2 = c + Math.sin(a0) * rOuter;
+    const x3 = c + Math.cos(a1) * rOuter;
+    const y3 = c + Math.sin(a1) * rOuter;
 
-    if (points.length < 2) return;
-
-    const d = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
-    const line = document.createElementNS(NS, "path") as SVGPathElement;
-    line.setAttribute("d", d);
-    line.setAttribute("class", "rm-trail");
-    this.svg.appendChild(line);
-
-    // Nodos del rastro (puntos de acento en cada parada del camino).
-    for (let i = 1; i < points.length; i++) {
-      const dot = document.createElementNS(NS, "circle") as SVGCircleElement;
-      dot.setAttribute("cx", points[i].x.toFixed(2));
-      dot.setAttribute("cy", points[i].y.toFixed(2));
-      dot.setAttribute("r", "4");
-      dot.setAttribute("class", "rm-trail-dot");
-      this.svg.appendChild(dot);
-    }
+    const beam = document.createElementNS(NS, "path") as SVGPathElement;
+    beam.setAttribute(
+      "d",
+      `M ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(2)} L ${x3.toFixed(2)} ${y3.toFixed(2)} Z`
+    );
+    beam.setAttribute("class", "rm-beam");
+    // Debajo de los sectores para no tapar iconos ni bordes.
+    this.svg.insertBefore(beam, this.svg.firstChild);
   }
 
   private createArc(innerR: number, outerR: number, startA: number, endA: number): SVGPathElement {
@@ -460,24 +502,13 @@ export class RadialMenu {
     return label.slice(0, 3);
   }
 
-  private styleSector(path: SVGPathElement, node: HotNode, isSub: boolean, sectorPath: number[]): void {
+  private styleSector(path: SVGPathElement, node: HotNode, isSub: boolean, _sectorPath: number[]): void {
     path.setAttribute("class", isSub ? "rm-sector rm-sector-sub" : "rm-sector rm-sector-main");
     if (node.active) path.classList.add("is-active");
     if (node.disabled) path.classList.add("is-disabled");
     if (node.kind === "submenu") path.classList.add("has-submenu");
-    // Marcar los sectores que forman parte del camino recorrido (ancestros del
-    // sector bajo el cursor): así el rastro se ve también en los botones.
-    if (this.isOnPath(sectorPath)) path.classList.add("is-onpath");
-  }
-
-  /** ¿Este sector es un ancestro (prefijo estricto) del camino hovered? */
-  private isOnPath(sectorPath: number[]): boolean {
-    const hp = this.hoveredPath;
-    if (!hp || sectorPath.length >= hp.length) return false;
-    for (let i = 0; i < sectorPath.length; i++) {
-      if (sectorPath[i] !== hp[i]) return false;
-    }
-    return true;
+    // El resaltado del camino (is-onpath) lo aplica updateActivePathVisuals, que
+    // se refresca en cada hover sin reconstruir los sectores.
   }
 
   // -------------------------------------------------------------- interacción
@@ -549,6 +580,9 @@ export class RadialMenu {
     }
 
     this.centerLabel.textContent = hoveredNode ? hoveredNode.label : "drawi";
+
+    // Refresca el resaltado del camino y el haz central sin reconstruir.
+    this.updateActivePathVisuals();
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -575,6 +609,17 @@ export class RadialMenu {
 
   private findSector(path: number[]): RadialSector | null {
     return this.sectors.find((s) => pathEq(s.path, path)) ?? null;
+  }
+
+  /** Botón central: colapsa toda la expansión; si ya está en la raíz, cierra. */
+  private collapseOrClose(): void {
+    if (this.openIndices.length > 0) {
+      this.openIndices = [];
+      this.hoveredPath = null;
+      this.rebuild();
+    } else {
+      this.close();
+    }
   }
 
   private executeNode(node: HotNode): void {
@@ -623,5 +668,12 @@ function pathEq(a: number[] | null, b: number[] | null): boolean {
   if (a === null || b === null) return a === b;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** ¿`prefix` es prefijo (inicial) de `full`? */
+function isPrefix(prefix: number[], full: number[]): boolean {
+  if (prefix.length > full.length) return false;
+  for (let i = 0; i < prefix.length; i++) if (prefix[i] !== full[i]) return false;
   return true;
 }
