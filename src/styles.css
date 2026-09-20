@@ -256,14 +256,18 @@ body {
   border-bottom-color: var(--hud-ink);
 }
 
-/* Botones del HUD: sin caja, glifo adaptativo. */
-.topbar .btn {
+/* Botones del HUD: sin caja, glifo adaptativo. Cubre tanto los de la topbar
+   (deshacer/rehacer) como el de ayuda, que vive como hijo directo del HUD al
+   final de la línea. */
+.topbar .btn,
+.hud > .btn {
   background: transparent;
   border-color: transparent;
   color: var(--hud-ink);
 }
 
-.topbar .btn:hover:not(:disabled) {
+.topbar .btn:hover:not(:disabled),
+.hud > .btn:hover:not(:disabled) {
   background: transparent;
   color: var(--hud-ink);
   opacity: 0.7;
@@ -1478,6 +1482,8 @@ body {
   color: var(--hud-ink);
   white-space: nowrap;
   pointer-events: auto;
+  /* Cambios de color/opacidad suaves (p. ej. al entrar en aviso). */
+  transition: color 0.25s ease, opacity 0.25s ease;
 }
 
 .status-chip.is-warn {
@@ -1486,6 +1492,13 @@ body {
 
 .status-engine {
   letter-spacing: 0.06em;
+}
+
+/* El indicador de motor (GPU/CPU) mantiene la tinta adaptativa aunque esté en
+   modo aviso: un color fijo no se invierte con el blend y se ve mal sobre
+   fondos claros. La advertencia se comunica igual por el texto "CPU". */
+.status-engine.is-warn {
+  color: var(--hud-ink);
 }
 
 .pen-readout {
@@ -1498,6 +1511,8 @@ body {
   border: none;
   flex: none;
   pointer-events: auto;
+  /* Entrada/salida del medidor (inactivo ↔ activo) suave, sin parpadeo. */
+  transition: opacity 0.3s ease;
 }
 
 .pen-readout.is-idle {
@@ -1529,7 +1544,7 @@ body {
   inset: 0 auto 0 0;
   width: 0;
   background: var(--hud-ink);
-  transition: width 0.06s linear;
+  transition: width 0.12s ease-out;
 }
 
 .pen-num {
@@ -1540,6 +1555,7 @@ body {
   text-align: right;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  transition: color 0.25s ease;
 }
 
 .pen-num.is-warn {
