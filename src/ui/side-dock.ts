@@ -8,6 +8,7 @@ import type { ToolId } from "../tools/types";
 import { ColorPicker } from "./color-picker";
 import { button, fieldLabel, row, section, segmented, select, slider, swatches, toggle, type Control } from "./controls";
 import { blurSoon, el, setClass } from "./dom";
+import { ensureMateriaWarp } from "./fx/materia";
 import { icon } from "./icons";
 
 const MODE_LABELS: Record<BrushMode, string> = {
@@ -726,7 +727,15 @@ export class SideDock {
     this.dockTitle = titleEl;
 
     const scroll = el("div", { class: "dock-scroll" }, Object.values(this.pages));
-    this.drawer = el("div", { class: "dock-drawer" }, [head, scroll]);
+
+    // "Piel" del panel: una capa detrás del contenido que lleva el relleno y el
+    // borde, y a la que se aplica el filtro de ondulado (#materia-warp). Así todo
+    // el contorno se mueve como materia viva sin deformar el texto ni los
+    // controles, que van en una capa aparte y nítida.
+    ensureMateriaWarp();
+    const skin = el("div", { class: "dock-skin" });
+    const content = el("div", { class: "dock-content" }, [head, scroll]);
+    this.drawer = el("div", { class: "dock-drawer" }, [skin, content]);
 
     // Tira de pestañas, siempre visible en el borde.
     const strip = el("div", { class: "dock-tabs" });

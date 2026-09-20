@@ -124,6 +124,14 @@
   100% { border-radius: 46% 54% 55% 45% / 52% 46% 54% 48%; }
 }
 
+/* ------------------------------------------------- materia viva (borde entero)
+ *
+ * Para siluetas rectangulares (paneles) el ondulado no puede ir por
+ * border-radius —solo curvaría las esquinas—: se hace con el filtro SVG de
+ * desplazamiento #materia-warp (inyectado por `ensureMateriaWarp()` en
+ * `ui/fx/materia.ts`), que mueve TODO el contorno. Se aplica a una capa "piel"
+ * detrás del contenido; el CSS de cada panel decide dónde. */
+
 @media (prefers-reduced-motion: reduce) {
   .materia-fx { display: none; }
   .materia-blob { animation: none; border-radius: 50%; }

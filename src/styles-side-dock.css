@@ -17,8 +17,9 @@
   display: flex;
   align-items: center;
   /* Plegado: el cajón (ancho --inspector) queda fuera de la ventana a la
-     izquierda; solo la tira, pegada a su borde derecho, asoma en el marco. */
-  transform: translate(calc(-1 * var(--inspector, 306px)), -50%);
+     izquierda; solo la tira asoma en el marco. La tira se mete 20px dentro del
+     panel (margin-left), así que se descuentan para que siga tocando el marco. */
+  transform: translate(calc(-1 * var(--inspector, 306px) + 20px), -50%);
   transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
   /* El hueco alrededor no captura clics; cada pieza reactiva los suyos. */
   pointer-events: none;
@@ -33,15 +34,9 @@
 /* ------------------------------------------------------------ cajón deslizante */
 
 .dock-drawer {
+  position: relative;
   width: var(--inspector, 306px);
   max-height: 82vh;
-  display: flex;
-  flex-direction: column;
-  background: #161619;
-  border: 1px solid #23232a;
-  border-left: none;
-  border-radius: 0 4px 4px 0;
-  box-shadow: 12px 0 34px rgba(0, 0, 0, 0.5);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
@@ -50,6 +45,39 @@
 .side-dock.is-open .dock-drawer {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* Piel: el relleno del panel. Ondula TODO su contorno con el filtro de
+   desplazamiento (#materia-warp), como una masa. Va detrás del contenido.
+
+   El lado izquierdo (pegado al marco) NO debe ondular: el vaivén ahí descubriría
+   huecos entre el borde y el contenido. Como un filtro no puede saltarse un solo
+   lado, extendemos la piel bien fuera de pantalla por la izquierda (left
+   negativo): el relleno siempre cubre x:0 y el ondulado de ese borde queda
+   escondido tras el marco. Solo se ve respirar el borde derecho, el del lienzo.
+   Sin borde de 1px: un contorno duro desplazado es justo lo que salía dentado. */
+.dock-skin {
+  position: absolute;
+  left: -80px;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: #161619;
+  border-radius: 0 22px 22px 0;
+  box-shadow: 12px 0 34px rgba(0, 0, 0, 0.5);
+  filter: url(#materia-warp);
+  z-index: 0;
+}
+
+/* Contenido nítido, por encima de la piel ondulante. Un margen a la derecha deja
+   sitio a que el borde vivo respire sin descubrir el texto. */
+.dock-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  max-height: 82vh;
+  padding-right: 8px;
 }
 
 .dock-head {
@@ -130,18 +158,22 @@
 /*
  * Pegada al borde exterior del cajón (el que da al lienzo). Pequeña y solo con
  * icono; el nombre de la categoría lo da el tooltip nativo (atributo title).
+ *
+ * Se mete un poco DENTRO del panel (margin-left negativo) y va por encima
+ * (z-index alto) con el mismo negro: así tapa la costura donde el borde derecho
+ * del panel ondula, y no se ven huecos entre el vaivén y el contenido. Más larga
+ * (más padding arriba/abajo) para cubrir un tramo mayor de ese borde vivo.
  */
 .dock-tabs {
   position: relative;
   z-index: 2;
+  margin-left: -20px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 5px;
+  gap: 4px;
+  padding: 16px 5px;
   background: #161619;
-  border: 1px solid #161619;
-  border-left: none;
-  border-radius: 0 12px 12px 0;
+  border-radius: 0 18px 18px 0;
   box-shadow: 8px 0 22px rgba(0, 0, 0, 0.4);
   pointer-events: auto;
 }
@@ -155,7 +187,7 @@
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 10px;
   color: rgba(255, 255, 255, 0.55);
   cursor: pointer;
   transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
@@ -212,11 +244,14 @@
   }
 }
 
-/* Movimiento reducido: sin deslizamiento, el cajón aparece/desaparece directo.
-   La tira sigue pegada al marco; el cajón se revela con opacidad. */
+/* Movimiento reducido: sin deslizamiento ni ondulado del borde; el cajón
+   aparece/desaparece directo y la piel queda quieta con las esquinas fijas. */
 @media (prefers-reduced-motion: reduce) {
   .side-dock,
   .side-dock.is-open {
     transition: none;
+  }
+  .dock-skin {
+    filter: none;
   }
 }

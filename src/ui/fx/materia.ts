@@ -36,6 +36,41 @@ function ensureGoo(): void {
   gooInjected = true;
 }
 
+let warpInjected = false;
+
+/**
+ * Inyecta una sola vez el filtro de "borde vivo" (#materia-warp).
+ *
+ * Turbulencia (feTurbulence) que desplaza los píxeles del origen
+ * (feDisplacementMap): aplicado a una silueta rellena, ondula TODO su contorno
+ * —no solo las esquinas— como una masa. La turbulencia se mueve sola con un
+ * <animate> SMIL sobre baseFrequency, así el ondulado es continuo y orgánico.
+ *
+ * Va sobre una capa "piel" detrás del contenido (el texto no se filtra), y el
+ * elemento decide con `prefers-reduced-motion` si lo aplica (en el CSS).
+ */
+export function ensureMateriaWarp(): void {
+  if (warpInjected || typeof document === "undefined") return;
+  const holder = document.createElement("div");
+  holder.className = "materia-goo-defs";
+  holder.innerHTML =
+    '<svg aria-hidden="true" width="0" height="0"><defs>' +
+    '<filter id="materia-warp" x="-35%" y="-35%" width="170%" height="170%" color-interpolation-filters="sRGB">' +
+    // Ruido de baja frecuencia y un solo octavo: olas grandes y suaves (no
+    // rizado fino), para que el vaivén se parezca al del círculo del menú radial.
+    '<feTurbulence type="fractalNoise" baseFrequency="0.005 0.007" numOctaves="1" seed="7" result="noise">' +
+    '<animate attributeName="baseFrequency" dur="28s" repeatCount="indefinite" ' +
+    'values="0.005 0.007;0.007 0.005;0.006 0.008;0.005 0.007"/>' +
+    "</feTurbulence>" +
+    // Amplitud amplia (scale) para que el borde respire de verdad.
+    '<feDisplacementMap in="SourceGraphic" in2="noise" scale="26" xChannelSelector="R" yChannelSelector="G" result="disp"/>' +
+    // Suaviza el borde desplazado: sin esto el contorno sale dentado/pixelado.
+    '<feGaussianBlur in="disp" stdDeviation="0.6"/>' +
+    "</filter></defs></svg>";
+  document.body.appendChild(holder);
+  warpInjected = true;
+}
+
 export interface MateriaFxOptions {
   /** Tamaño (diámetro px) de la masa formada. Las gotas y el alcance se escalan
       a partir de esto si no se dan explícitos. */
