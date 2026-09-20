@@ -76,11 +76,14 @@
 .rm-sector-sub {
   fill: rgba(68, 68, 68, 0.94);
   stroke: rgba(90, 159, 212, 0.2);
-  /* Despliegue suave al abrir el submenú: escala desde el centro del menú
-     (transform-box: view-box hace que transform-origin: center sea el centro
-     del viewBox, no el de cada sector) más un fundido. */
   transform-box: view-box;
   transform-origin: center;
+}
+
+/* Despliegue suave: solo el anillo recién abierto lleva .is-deploying, así los
+   anillos que ya estaban no se re-animan al bajar de nivel. La escala parte del
+   centro del menú (transform-box: view-box) más un fundido. */
+.rm-sector-sub.is-deploying {
   animation: rm-sub-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
@@ -114,23 +117,15 @@
   stroke: rgba(90, 159, 212, 0.55);
 }
 
-/* Haz de acento en el hueco central que apunta hacia la rama abierta. Sustituye
-   a la antigua línea que cruzaba los anillos: es una cuña discreta que se
-   desvanece hacia afuera, marcando "por dónde entré" sin ruido visual. */
-.rm-beam {
-  fill: rgba(90, 159, 212, 0.5);
-  filter: drop-shadow(0 0 5px rgba(90, 159, 212, 0.45));
+/* Marca del camino: arco grueso de acento pegado al borde interno (el inicio) de
+   cada sector por el que se avanzó. Marca "por dónde fui" sin cruzar los anillos. */
+.rm-onpath-mark {
+  fill: none;
+  stroke: rgba(90, 159, 212, 0.95);
+  stroke-width: 4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px rgba(90, 159, 212, 0.55));
   pointer-events: none;
-  animation: rm-beam-in 0.2s ease-out backwards;
-}
-
-@keyframes rm-beam-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 .rm-sector.is-disabled {
@@ -179,8 +174,11 @@
 }
 
 .rm-icon-sub {
-  /* Iconos de submenú ligeramente más pequeños. Fundido de entrada al
-     desplegarse, en sincronía con los sectores. */
+  /* Iconos de submenú ligeramente más pequeños. */
+}
+
+/* Fundido de entrada del icono, en sincronía con su sector (solo anillo nuevo). */
+.rm-icon-sub.is-deploying {
   animation: rm-sub-icon-in 0.24s ease backwards;
 }
 

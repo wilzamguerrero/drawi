@@ -92,6 +92,9 @@ export class RadialMenu {
   private hoveredPath: number[] | null = null;
 
   private sectors: RadialSector[] = [];
+  /** Claves de los anillos ya dibujados en el rebuild anterior. Sirve para animar
+      solo el anillo que se acaba de desplegar y no los que ya estaban. */
+  private prevRingKeys = new Set<string>();
 
   /** Camino activo: el del cursor si hay hover; si no, la expansión recordada.
       Alimenta el haz del rastro y el resaltado del camino. */
@@ -233,6 +236,9 @@ export class RadialMenu {
     this.openIndices = this.validateOpenIndices(this.openIndices);
     this.hoveredPath = null;
 
+    // Empezar de cero: en la apertura, todos los anillos expandidos se animan.
+    this.prevRingKeys.clear();
+
     this.rebuild();
 
     this.container.classList.remove("is-closing");
@@ -321,32 +327,51 @@ export class RadialMenu {
 
     const layouts = this.computeLayout();
 
+    // Anima solo los anillos nuevos respecto al rebuild anterior. La clave de un
+    // anillo es su rama (parentPath): si esa rama ya estaba dibujada, no se
+    // re-anima; solo el nivel recién desplegado hace su entrada.
+    const nextKeys = new Set<string>();
     for (const ring of layouts) {
-      this.drawRing(ring);
+      const key = ring.parentPath.join(",");
+      nextKeys.add(key);
+      const isNew = ring.ringLevel > 1 && !this.prevRingKeys.has(key);
+      this.drawRing(ring, isNew);
     }
+    this.prevRingKeys = nextKeys;
 
     this.updateCenterButton();
     this.updateHover();
   }
 
-  private drawRing(ring: RingLayout): void {
+  private drawRing(ring: RingLayout, animate: boolean): void {
     const innerR = this.ringInner(ring.ringLevel);
     const outerR = this.ringOuter(ring.ringLevel);
     const midR = this.ringMid(ring.ringLevel);
     const iconSize = ring.ringLevel === 1 ? CONFIG.iconSize : CONFIG.iconSizeSub;
     const isSub = ring.ringLevel > 1;
 
+    // Escalonado desde el centro hacia los lados: el retardo crece con la
+    // distancia al sector del medio, así el abanico se abre simétrico y no de
+    // izquierda a derecha.
+    const mid = (ring.sectors.length - 1) / 2;
+
     for (const s of ring.sectors) {
       const path = this.createArc(innerR, outerR, s.a0, s.a1);
       const sectorPath = [...ring.parentPath, s.index];
       this.styleSector(path, s.node, isSub, sectorPath);
 
-      // Escalonar la entrada de los anillos que no son el central.
-      if (isSub) path.style.animationDelay = `${(s.index * 0.03).toFixed(3)}s`;
+      const delay = `${(Math.abs(s.index - mid) * 0.04).toFixed(3)}s`;
+      if (animate) {
+        path.classList.add("is-deploying");
+        path.style.animationDelay = delay;
+      }
       this.svg.appendChild(path);
 
       const iconEl = this.createIcon(s.node, s.amid, midR, iconSize, isSub);
-      if (isSub) iconEl.style.animationDelay = `${(s.index * 0.03).toFixed(3)}s`;
+      if (animate) {
+        iconEl.classList.add("is-deploying");
+        iconEl.style.animationDelay = delay;
+      }
       this.iconsContainer.appendChild(iconEl);
 
       this.sectors.push({
@@ -367,61 +392,48 @@ export class RadialMenu {
    * Resalta el camino recorrido sin reconstruir los anillos (así el abanico no
    * se re-anima en cada hover). Dos señales combinadas:
    *  - Los sectores ancestros del camino activo llevan `is-onpath` (tinte suave).
-   *  - Un haz de acento en el hueco central apunta hacia la rama abierta,
-   *    reemplaza a la antigua "línea fea" que cruzaba los anillos.
+   *  - Un arco grueso de acento en el borde interno (el inicio) de cada sector
+   *    del camino, que marca "por dónde avancé" sin cruzar los anillos.
    * Se usa `activePath` (hover o, si no hay, la expansión persistida) para que al
    * reabrir el menú se vea la última selección aunque el cursor esté en otro sitio.
    */
   private updateActivePathVisuals(): void {
     const active = this.activePath;
 
+    // Limpia los marcadores previos (se redibujan según el camino actual).
+    for (const mark of Array.from(this.svg.querySelectorAll(".rm-onpath-mark"))) {
+      mark.remove();
+    }
+
     for (const sector of this.sectors) {
       // Ancestro del camino activo = su ruta es prefijo estricto del camino.
       const onPath = active.length > sector.path.length && isPrefix(sector.path, active);
       setClass(sector.path_el, "is-onpath", onPath);
+      if (onPath) this.drawOnPathMark(sector);
     }
-
-    this.drawBeam(active);
   }
 
   /**
-   * Haz de acento dentro del hueco central que apunta hacia la rama abierta.
-   * Es una cuña estrecha que se desvanece hacia afuera; discreta, sin cruzar
-   * los anillos. Su dirección sigue la mitad del sector de primer nivel del
-   * camino (Simetría), que es la referencia estable de "por dónde entré".
+   * Marca de acento gruesa en el borde interno de un sector del camino: un arco
+   * pegado al inicio del botón (lado que mira al centro), como en la referencia.
    */
-  private drawBeam(active: number[]): void {
-    const prev = this.svg.querySelector(".rm-beam");
-    if (prev) prev.remove();
-
-    if (active.length === 0) return;
-    const root = this.sectors.find((s) => s.ringLevel === 1 && s.index === active[0]);
-    if (!root) return;
-
+  private drawOnPathMark(sector: RadialSector): void {
     const c = this.center;
-    const angle = root.angleMid;
-    // La cuña vive entre el borde del botón central y el borde interno del anillo 1.
-    const rInner = CONFIG.centerRadius + 4;
-    const rOuter = CONFIG.innerRadius - 4;
-    const halfWidth = 7 / rOuter; // ~7px de ancho en la boca, en radianes.
+    const r = this.ringInner(sector.ringLevel) + 2;
+    const halfGap = CONFIG.gapPx / 2 / r;
+    const a0 = sector.angleStart + halfGap;
+    const a1 = sector.angleEnd - halfGap;
 
-    const a0 = angle - halfWidth;
-    const a1 = angle + halfWidth;
-    const x1 = c + Math.cos(angle) * rInner;
-    const y1 = c + Math.sin(angle) * rInner;
-    const x2 = c + Math.cos(a0) * rOuter;
-    const y2 = c + Math.sin(a0) * rOuter;
-    const x3 = c + Math.cos(a1) * rOuter;
-    const y3 = c + Math.sin(a1) * rOuter;
+    const x1 = c + Math.cos(a0) * r;
+    const y1 = c + Math.sin(a0) * r;
+    const x2 = c + Math.cos(a1) * r;
+    const y2 = c + Math.sin(a1) * r;
+    const largeArc = (a1 - a0) > Math.PI ? 1 : 0;
 
-    const beam = document.createElementNS(NS, "path") as SVGPathElement;
-    beam.setAttribute(
-      "d",
-      `M ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(2)} L ${x3.toFixed(2)} ${y3.toFixed(2)} Z`
-    );
-    beam.setAttribute("class", "rm-beam");
-    // Debajo de los sectores para no tapar iconos ni bordes.
-    this.svg.insertBefore(beam, this.svg.firstChild);
+    const mark = document.createElementNS(NS, "path") as SVGPathElement;
+    mark.setAttribute("d", `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`);
+    mark.setAttribute("class", "rm-onpath-mark");
+    this.svg.appendChild(mark);
   }
 
   private createArc(innerR: number, outerR: number, startA: number, endA: number): SVGPathElement {
