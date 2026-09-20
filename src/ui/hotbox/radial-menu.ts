@@ -252,11 +252,14 @@ export class RadialMenu {
   private drawSubmenu(nodes: HotNode[], parentIndex: number, parentCount: number): void {
     const count = nodes.length;
 
-    // Calcular el ángulo del sector padre
+    // Ángulo de la MITAD del sector padre. El sector i va de i*step a
+    // (i+1)*step, así que su centro está en (i + 0.5)*step. Usar el borde
+    // (parentIndex*step) descentraba el submenú hacia un lado; con la mitad
+    // el abanico queda simétrico respecto al elemento del que sale.
     const parentAngleStep = TAU / parentCount;
-    const parentAngle = -Math.PI / 2 + parentIndex * parentAngleStep;
+    const parentAngle = -Math.PI / 2 + (parentIndex + 0.5) * parentAngleStep;
 
-    // El submenú se abre en un arco centrado en el ángulo del padre
+    // El submenú se abre en un arco centrado en la mitad del padre.
     const arcSpan = TAU * CONFIG.submenuArc;
     const angleStep = arcSpan / count;
     const startAngle = parentAngle - arcSpan / 2;
