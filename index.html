@@ -53,26 +53,21 @@
        *
        * El nombre del producto, centrado y por delante de la materia. Negro pleno,
        * con tracking amplio para que respire como una portada.
+       *
+       * Blanco desde el arranque y por delante de la materia (va despues en el DOM):
+       * sobre la hoja blanca no se ve, pero segun las manchas negras se juntan al
+       * centro y pasan por detras, el nombre queda recortado en blanco sobre el negro.
        */
       .splash-name {
         position: relative;
+        z-index: 1;
         margin: 0;
         font-size: clamp(28px, 8vw, 52px);
         font-weight: 800;
         letter-spacing: .18em;
         text-indent: .18em;
         text-transform: lowercase;
-        color: #0a0a0a;
-        /* Nace invisible: aparece cuando la materia ya se ha fundido. */
-        opacity: 0;
-        transform: translateY(6px);
-        transition: opacity 800ms ease, transform 800ms ease;
-      }
-
-      /* La revelacion la dispara el script cuando las metaballs se han fundido. */
-      #splash.reveal .splash-name {
-        opacity: 1;
-        transform: translateY(0);
+        color: #ffffff;
       }
 
       /* --------------------------------------------------------------- la firma
@@ -104,12 +99,11 @@
       }
 
       /*
-       * Con el movimiento reducido la materia se dibuja fundida de una sola vez, el
-       * nombre aparece sin desplazarse y el splash se va de golpe.
+       * Con el movimiento reducido la materia se dibuja fundida de una sola vez y el
+       * splash se va de golpe.
        */
       @media (prefers-reduced-motion: reduce) {
         #splash { transition: none; }
-        .splash-name { transition: none; transform: none; }
       }
     </style>
   </head>
@@ -136,10 +130,7 @@
       (function () {
         var view = document.getElementById("splash-canvas");
         var splash = document.getElementById("splash");
-        if (!view || !view.getContext) {
-          if (splash) splash.classList.add("reveal");
-          return;
-        }
+        if (!view || !view.getContext) return; // sin canvas, solo el nombre blanco
 
         var reduce =
           window.matchMedia &&
@@ -185,7 +176,6 @@
         // Borde muy estrecho: negro plano con apenas un pixel de antialias en el filo.
         var EDGE = 0.06;
         var start = null;
-        var revealed = false;
         var raf = 0;
 
         function step(t) {
@@ -210,13 +200,6 @@
               if (b.y < m) { b.y = m; b.vy = Math.abs(b.vy); }
               if (b.y > H - m) { b.y = H - m; b.vy = -Math.abs(b.vy); }
             }
-          }
-
-          // Cuando el logo ya salio, la materia se desvanece a un fantasma gris para
-          // que el negro del nombre lea limpio encima.
-          var fade = 1;
-          if (elapsed > 1900) {
-            fade = Math.max(0.12, 1 - (elapsed - 1900) / 900);
           }
 
           vctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -270,17 +253,11 @@
                   data[idx] = 10;
                   data[idx + 1] = 10;
                   data[idx + 2] = 10;
-                  data[idx + 3] = Math.round(a * 255 * fade);
+                  data[idx + 3] = Math.round(a * 255);
                 }
               }
               vctx.putImageData(img, x0, y0);
             }
-          }
-
-          // Fundidas: revelar el logo una sola vez.
-          if (!revealed && (elapsed > 1650 || reduce)) {
-            revealed = true;
-            if (splash) splash.classList.add("reveal");
           }
 
           if (reduce) return; // un solo fotograma y quieto
