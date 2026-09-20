@@ -33,9 +33,12 @@ export class StatusBar {
   private penBox: HTMLElement;
   private engine: HTMLElement;
   private timer = 0;
+  private swapTimer = 0;
 
   constructor() {
-    this.message = el("span", { class: "status-message", text: "Listo" });
+    // Nace ya visible (is-fresh) para que el HUD no arranque con el hueco vacio;
+    // el primer status() real hara el swap suave sobre este.
+    this.message = el("span", { class: "status-message is-fresh", text: "Listo" });
     this.toolName = el("span", { class: "status-chip" });
     this.counts = el("span", { class: "status-chip" });
     this.zoom = el("span", { class: "status-chip" });
@@ -68,10 +71,26 @@ export class StatusBar {
   }
 
   setMessage(text: string): void {
-    this.message.textContent = text;
-    this.message.classList.add("is-fresh");
     window.clearTimeout(this.timer);
-    this.timer = window.setTimeout(() => this.message.classList.remove("is-fresh"), 1800);
+    window.clearTimeout(this.swapTimer);
+
+    const show = () => {
+      this.message.textContent = text;
+      // Reflow para que la transicion arranque desde el estado de reposo (fuera).
+      void this.message.offsetWidth;
+      this.message.classList.add("is-fresh");
+    };
+
+    if (this.message.classList.contains("is-fresh")) {
+      // Ya hay un mensaje dentro: sale primero y entra el nuevo. Swap, no corte.
+      this.message.classList.remove("is-fresh");
+      this.swapTimer = window.setTimeout(show, 190);
+    } else {
+      show();
+    }
+
+    // Caduca solo: sale suave pasado un rato.
+    this.timer = window.setTimeout(() => this.message.classList.remove("is-fresh"), 2600);
   }
 
   update(state: EditorState): void {

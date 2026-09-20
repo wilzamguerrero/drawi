@@ -1454,23 +1454,33 @@ body {
 }
 
 /* El mensaje transitorio no ocupa su propia línea: aparece a la izquierda del
-   resto y se recorta si no cabe. */
+   resto y se recorta si no cabe.
+
+   En reposo esta fuera (opacidad 0, desplazado un pelin a la izquierda). Al
+   llegar un mensaje entra deslizandose y aparece; cuando caduca sale igual de
+   suave. El swap entre dos mensajes es salida + entrada, no un corte seco. */
 .status-message {
   padding: 0;
   background: transparent;
   border-radius: 0;
   color: var(--hud-ink);
-  opacity: 0.9;
+  opacity: 0;
+  transform: translateX(-8px);
   max-width: 220px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.34s ease, transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: auto;
 }
 
 .status-message.is-fresh {
   opacity: 1;
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-message { transition: opacity 0.2s ease; transform: none; }
 }
 
 .status-chip {
@@ -1737,8 +1747,26 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * {
-    transition-duration: 0.01ms !important;
+  /* Reducimos el MOVIMIENTO real —animaciones por keyframes y desplazamientos—
+     que es lo que puede marear, pero NO los fundidos de opacidad: un cross-fade
+     suave no causa vertigo y es lo que evita que el HUD y los mensajes aparezcan
+     de golpe. Antes esto aplastaba toda transicion a ~0ms y por eso el HUD se
+     veia entrar y salir de golpe con las animaciones del sistema apagadas. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* El HUD entra y sale solo con opacidad, sin el desplazamiento vertical. */
+  .hud {
+    transition: opacity 0.42s ease !important;
+  }
+
+  .chrome:not(.is-awake) .hud {
+    transform: none;
   }
 }
 
