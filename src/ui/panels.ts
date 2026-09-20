@@ -1,4 +1,5 @@
 import { el, setClass } from "./dom";
+import { MateriaFx, prefersReducedMotion } from "./fx/materia";
 import { icon } from "./icons";
 
 /**
@@ -62,7 +63,9 @@ export class Panels {
     const card = new Card(def, () => this.cards.delete(def.id));
     this.cards.set(def.id, card);
     this.el.appendChild(card.el);
+    this.el.appendChild(card.fx.el); // capa de partículas, en el dock
     card.place(x, y);
+    card.enter(); // aparición con partículas (materia)
   }
 
   dispose(): void {
@@ -73,14 +76,18 @@ export class Panels {
 
 class Card {
   readonly el: HTMLElement;
+  /** Partículas (metaball) que forman/deshacen el panel. Sistema compartido. */
+  readonly fx: MateriaFx;
   pinned = false;
 
   private cleanup: (() => void) | void;
   private onClose: () => void;
   private pinBtn: HTMLButtonElement;
+  private closing = false;
 
   constructor(def: PanelDef, onClose: () => void) {
     this.onClose = onClose;
+    this.fx = new MateriaFx({ coreSize: 140, reach: 108, gatherMs: 380, scatterMs: 300 });
 
     this.pinBtn = el("button", {
       class: "panel-pin",
@@ -101,19 +108,44 @@ class Card {
     const body = el("div", { class: "panel-body" });
     this.cleanup = def.build(body);
 
-    this.el = el("div", { class: "panel-card" }, [head, body]);
+    // Nace oculto (materia-hidden): las partículas lo forman antes de que entre.
+    this.el = el("div", { class: "panel-card materia-hidden" }, [head, body]);
     this.dragBy(head);
   }
 
   place(x: number, y: number): void {
     // Se coloca centrado sobre el punto y se reencaja dentro de la ventana.
-    const r = this.el.getBoundingClientRect();
-    const w = r.width || 260;
-    const h = r.height || 200;
+    // offsetWidth/Height (no getBoundingClientRect) para no medir la escala de
+    // materia-hidden: el transform no afecta al tamaño de maquetación.
+    const w = this.el.offsetWidth || 280;
+    const h = this.el.offsetHeight || 200;
     const left = clamppx(x - w / 2, 8, window.innerWidth - w - 8);
     const top = clamppx(y - h / 2, 8, window.innerHeight - h - 8);
     this.el.style.left = `${left}px`;
     this.el.style.top = `${top}px`;
+  }
+
+  /** Centro del panel en coordenadas del dock (para colocar las partículas). */
+  private centerPoint(): { x: number; y: number } {
+    return {
+      x: this.el.offsetLeft + this.el.offsetWidth / 2,
+      y: this.el.offsetTop + this.el.offsetHeight / 2,
+    };
+  }
+
+  /** Aparición: las partículas se juntan y el panel se funde desde el centro. */
+  enter(): void {
+    if (prefersReducedMotion()) {
+      this.el.classList.remove("materia-hidden");
+      return;
+    }
+    const c = this.centerPoint();
+    this.fx.center(c.x, c.y);
+    this.fx.gather();
+    window.setTimeout(() => {
+      this.el.classList.remove("materia-hidden");
+      this.fx.fadeOut();
+    }, this.fx.gatherMs);
   }
 
   raise(): void {
@@ -160,9 +192,27 @@ class Card {
   }
 
   destroy(): void {
-    if (this.cleanup) this.cleanup();
-    this.el.remove();
-    this.onClose();
+    if (this.closing) return;
+    this.closing = true;
+
+    const finish = (): void => {
+      if (this.cleanup) this.cleanup();
+      this.el.remove();
+      this.fx.el.remove();
+      this.onClose();
+    };
+
+    if (prefersReducedMotion()) {
+      finish();
+      return;
+    }
+
+    // Desaparición: el panel se desintegra en partículas que salen despedidas.
+    const c = this.centerPoint();
+    this.fx.center(c.x, c.y);
+    this.fx.scatter();
+    this.el.classList.add("materia-hiding");
+    window.setTimeout(finish, this.fx.scatterMs);
   }
 }
 

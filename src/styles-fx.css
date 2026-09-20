@@ -1,0 +1,130 @@
+/* ==========================================================================
+   Sistema de aparición / desaparición "materia" (compartido).
+
+   Dos piezas reutilizables por todos los elementos flotantes (menú radial,
+   paneles, rueda de color):
+
+   1. Partículas metaball: unas gotas negras se juntan y se funden para formar
+      el elemento al aparecer, y se desintegran al cerrarse. La lógica vive en
+      `ui/fx/materia.ts` (clase MateriaFx); aquí van su aspecto y sus tiempos.
+   2. `.materia-blob`: ondulado lento del borde para que un círculo se sienta
+      como materia viva, no como un disco perfecto.
+
+   Cambiar este archivo (colores, tiempos, tamaño del núcleo) actualiza la
+   animación en TODOS los sitios que la usan a la vez.
+   ========================================================================== */
+
+.materia-goo-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* Capa de partículas. Se coloca con left/top en el centro del elemento (el
+   contenedor padre debe ser un `position: fixed/absolute; inset: 0`, como el
+   backdrop del menú, el dock o el overlay de la rueda). */
+.materia-fx {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transform: translate(-50%, -50%);
+  filter: url(#materia-goo);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.materia-fx-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #161619;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+}
+
+/* El núcleo: la masa central que crece o mengua. Tamaño por instancia (--core),
+   un poco mayor que el elemento porque el umbral gooey come unos píxeles. */
+.materia-fx-core {
+  width: var(--core, 112px);
+  height: var(--core, 112px);
+}
+
+.materia-fx.is-gathering .materia-fx-dot:not(.materia-fx-core) {
+  animation: materia-gather 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.materia-fx.is-gathering .materia-fx-core {
+  animation: materia-core-in 0.42s ease both;
+}
+
+.materia-fx.is-scattering .materia-fx-dot:not(.materia-fx-core) {
+  animation: materia-scatter 0.34s ease-in both;
+}
+
+.materia-fx.is-scattering .materia-fx-core {
+  animation: materia-core-out 0.34s ease-in both;
+}
+
+/* Se desvanece al mismo ritmo que el elemento entra: crossfade limpio. */
+.materia-fx.is-fading {
+  opacity: 0;
+  transition: opacity 0.26s ease;
+}
+
+@keyframes materia-gather {
+  0% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--sx)), calc(-50% + var(--sy))) scale(0.5);
+  }
+  30% { opacity: 1; }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes materia-core-in {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.2); }
+  55% { opacity: 1; }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes materia-scatter {
+  0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--sx)), calc(-50% + var(--sy))) scale(0.35);
+  }
+}
+
+@keyframes materia-core-out {
+  0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.25); }
+}
+
+/* ------------------------------------------------------------- materia viva
+ *
+ * Ondulado del borde: valores de border-radius que orbitan el 50%, así el
+ * contorno se deforma suave y continuo. Se aplica a cualquier círculo que deba
+ * sentirse como materia (centro del menú, hub de la rueda). Va como `animation`,
+ * así que el elemento no debe fijar otra `animation` que la pise. */
+.materia-blob {
+  animation: materia-blob 8s ease-in-out infinite;
+}
+
+@keyframes materia-blob {
+  0% { border-radius: 46% 54% 55% 45% / 52% 46% 54% 48%; }
+  25% { border-radius: 55% 45% 47% 53% / 47% 55% 45% 53%; }
+  50% { border-radius: 50% 50% 58% 42% / 55% 48% 52% 45%; }
+  75% { border-radius: 45% 55% 48% 52% / 48% 53% 47% 52%; }
+  100% { border-radius: 46% 54% 55% 45% / 52% 46% 54% 48%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .materia-fx { display: none; }
+  .materia-blob { animation: none; border-radius: 50%; }
+}

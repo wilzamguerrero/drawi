@@ -1,4 +1,5 @@
 import { el } from "./dom";
+import { MateriaFx, prefersReducedMotion } from "./fx/materia";
 import { icon } from "./icons";
 import {
   createPaletteFromColors,
@@ -156,6 +157,10 @@ export class PantoneWheel {
   private hideTimer = 0;
   private worker: Worker | null = null;
 
+  /** Partículas (metaball) que forman/deshacen el hub. Sistema compartido. */
+  private fx = new MateriaFx({ coreSize: 92, reach: 74, gatherMs: 380, scatterMs: 300 });
+  private fxTimer = 0;
+
   private active: Swatch | null = null;
 
   // Inercia del giro.
@@ -182,7 +187,8 @@ export class PantoneWheel {
     this.hubName = el("span", { class: "pw-hub-name" });
     this.hubHex = el("span", { class: "pw-hub-hex" });
     this.pinDot = el("span", { class: "pw-pin", title: "Fijar (que no se cierre al hacer clic fuera)" });
-    this.hubBtn = el("button", { class: "pw-hub", type: "button", title: "Arrastra para mover · clic para abrir/cerrar · Ctrl+clic: paletas" }, [
+    // materia-blob: el hub ondula como materia viva, no un círculo perfecto.
+    this.hubBtn = el("button", { class: "pw-hub materia-blob", type: "button", title: "Arrastra para mover · clic para abrir/cerrar · Ctrl+clic: paletas" }, [
       el("span", { class: "pw-hub-label" }, [this.hubName, this.hubHex]),
       this.pinDot,
     ]);
@@ -191,7 +197,7 @@ export class PantoneWheel {
     this.library.hidden = true;
 
     this.container = el("div", { class: "pw-wheel" }, [this.gradientSvg, this.ringsSvg, this.hubBtn]);
-    this.el = el("div", { class: "pw-overlay" }, [this.container, this.library]);
+    this.el = el("div", { class: "pw-overlay" }, [this.container, this.library, this.fx.el]);
     this.el.hidden = true;
     document.body.appendChild(this.el);
 
@@ -234,9 +240,38 @@ export class PantoneWheel {
   private showCollapsed(): void {
     this.visible = true;
     this.el.hidden = false;
-    this.hubBtn.classList.add("is-entering");
+    this.enterFx();
     this.setExpanded(false);
     document.addEventListener("pointerdown", this.onDocDown, true);
+  }
+
+  /**
+   * Aparición con partículas (sistema "materia"): las gotas se juntan y forman el
+   * hub, que se funde en relevo con la masa. Mismo motivo que el menú radial.
+   */
+  private enterFx(): void {
+    window.clearTimeout(this.fxTimer);
+    if (prefersReducedMotion()) {
+      this.container.classList.remove("is-forming");
+      return;
+    }
+    this.container.classList.add("is-forming"); // hub oculto mientras se forma
+    this.fx.center(this.position.x, this.position.y);
+    this.fx.gather();
+    this.fxTimer = window.setTimeout(() => {
+      if (!this.visible) return;
+      this.container.classList.remove("is-forming"); // el hub se funde con la masa
+      this.fx.fadeOut();
+    }, this.fx.gatherMs);
+  }
+
+  /** Desaparición: el hub se desintegra en partículas que salen despedidas. */
+  private exitFx(): void {
+    window.clearTimeout(this.fxTimer);
+    if (prefersReducedMotion()) return;
+    this.container.classList.add("is-forming"); // el hub se apaga en el relevo
+    this.fx.center(this.position.x, this.position.y);
+    this.fx.scatter();
   }
 
   // ------------------------------------------------------------- construccion
@@ -707,11 +742,8 @@ export class PantoneWheel {
       this.position = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
       this.applyPosition();
     }
-    // Reinicia la animacion de entrada del nucleo (quitar/forzar reflow/poner).
-    this.hubBtn.classList.remove("is-leaving");
-    this.hubBtn.classList.remove("is-entering");
-    void this.hubBtn.offsetWidth;
-    this.hubBtn.classList.add("is-entering");
+    // Aparición con partículas (sistema "materia") + expansión de los anillos.
+    this.enterFx();
     this.setExpanded(true);
     document.addEventListener("pointerdown", this.onDocDown, true);
   }
@@ -722,15 +754,15 @@ export class PantoneWheel {
     this.library.hidden = true;
     this.stopMomentum();
     document.removeEventListener("pointerdown", this.onDocDown, true);
-    // Anima la salida (muestras y nucleo) y esconde al terminar.
+    // Anima la salida: anillos se recogen y el hub se desintegra en partículas.
     this.setExpanded(false);
-    this.hubBtn.classList.remove("is-entering");
-    this.hubBtn.classList.add("is-leaving");
+    this.exitFx();
     window.clearTimeout(this.hideTimer);
     this.hideTimer = window.setTimeout(() => {
       this.el.hidden = true;
-      this.hubBtn.classList.remove("is-leaving");
-    }, 260);
+      this.container.classList.remove("is-forming");
+      this.fx.clear();
+    }, this.fx.scatterMs);
   }
 
   toggle(): void {

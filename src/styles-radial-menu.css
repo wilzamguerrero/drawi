@@ -60,122 +60,10 @@
 }
 
 /* ============================================================
-   Partículas del núcleo (metaball) al abrir/cerrar.
-
-   Al abrir: unas gotas nacen alrededor y se juntan rápido en el centro,
-   fundiéndose (filtro gooey) hasta formar el círculo; ahí entran los anillos y
-   el botón. Al cerrar: el centro se desintegra en gotas que salen despedidas.
-   El botón central (en el contenedor) toma el relevo cuando la masa ya está.
+   Aparición/desaparición con partículas: el sistema "materia" compartido vive en
+   `styles-fx.css` + `ui/fx/materia.ts` (clase MateriaFx). Aquí solo queda cómo
+   entran los anillos y el botón una vez la masa está formada.
    ============================================================ */
-.rm-goo-defs {
-  position: absolute;
-  width: 0;
-  height: 0;
-  overflow: hidden;
-}
-
-.rm-fx {
-  position: absolute;
-  width: 0;
-  height: 0;
-  transform: translate(-50%, -50%);
-  filter: url(#rm-goo);
-  pointer-events: none;
-}
-
-.rm-fx-dot {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #161619;
-  transform: translate(-50%, -50%);
-  opacity: 0;
-}
-
-/* El núcleo: la masa central que crece o mengua. Algo mayor que el botón (100px):
-   el umbral del filtro gooey come unos píxeles del borde, así que hay que pasarse
-   un poco para que la masa formada iguale al círculo que entra encima. */
-.rm-fx-core {
-  width: 112px;
-  height: 112px;
-}
-
-/* Juntarse: cada gota entra desde su punto (--sx,--sy) hasta el centro. */
-.rm-fx.is-gathering .rm-fx-dot:not(.rm-fx-core) {
-  animation: rm-fx-gather 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.rm-fx.is-gathering .rm-fx-core {
-  animation: rm-fx-core-in 0.42s ease both;
-}
-
-/* Dispersarse: salen del centro hacia su punto y se apagan. */
-.rm-fx.is-scattering .rm-fx-dot:not(.rm-fx-core) {
-  animation: rm-fx-scatter 0.34s ease-in both;
-}
-
-.rm-fx.is-scattering .rm-fx-core {
-  animation: rm-fx-core-out 0.34s ease-in both;
-}
-
-.rm-fx.is-fading {
-  opacity: 0;
-  /* Se desvanece al mismo ritmo que el botón central entra: crossfade limpio. */
-  transition: opacity 0.26s ease;
-}
-
-@keyframes rm-fx-gather {
-  0% {
-    opacity: 0;
-    transform: translate(calc(-50% + var(--sx)), calc(-50% + var(--sy))) scale(0.5);
-  }
-  30% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-}
-
-@keyframes rm-fx-core-in {
-  0% {
-    opacity: 0;
-    transform: translate(-50%, -50%) scale(0.2);
-  }
-  55% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-}
-
-@keyframes rm-fx-scatter {
-  0% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translate(calc(-50% + var(--sx)), calc(-50% + var(--sy))) scale(0.35);
-  }
-}
-
-@keyframes rm-fx-core-out {
-  0% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translate(-50%, -50%) scale(0.25);
-  }
-}
 
 /* Mientras las partículas se juntan (is-forming): los anillos y los iconos esperan
    encogidos en el centro y el botón central invisible. Al quitar is-forming, las
@@ -423,7 +311,7 @@
   transition: background 0.12s ease-out, border-color 0.12s ease-out, transform 0.12s ease-out, opacity 0.26s ease;
   pointer-events: auto;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
-  animation: rm-center-blob 8s ease-in-out infinite;
+  /* El ondulado "materia viva" lo aporta la clase .materia-blob (compartida). */
 }
 
 /* Icono y label por encima de cualquier capa. */
@@ -441,16 +329,6 @@
 
 .rm-center-btn:active {
   transform: translate(-50%, -50%) scale(0.98);
-}
-
-/* Ondulado del borde: valores de border-radius que orbitan alrededor del 50%,
-   así el contorno se deforma suave y continuo, como materia que respira. */
-@keyframes rm-center-blob {
-  0% { border-radius: 46% 54% 55% 45% / 52% 46% 54% 48%; }
-  25% { border-radius: 55% 45% 47% 53% / 47% 55% 45% 53%; }
-  50% { border-radius: 50% 50% 58% 42% / 55% 48% 52% 45%; }
-  75% { border-radius: 45% 55% 48% 52% / 48% 53% 47% 52%; }
-  100% { border-radius: 46% 54% 55% 45% / 52% 46% 54% 48%; }
 }
 
 /* Icono del botón central */

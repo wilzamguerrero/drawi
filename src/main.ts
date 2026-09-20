@@ -1,4 +1,5 @@
 import "./styles.css";
+import "./styles-fx.css";
 import "./styles-radial-menu.css";
 import "./styles-panels.css";
 import { App } from "./ui/app";

@@ -1229,7 +1229,13 @@ body {
   box-shadow: var(--shadow-2);
   cursor: grab;
   pointer-events: auto;
-  transition: transform 0.12s ease;
+  /* La opacidad entra/sale en relevo con las partículas (sistema "materia"). */
+  transition: transform 0.12s ease, opacity 0.26s ease;
+}
+
+/* Oculto mientras las partículas forman (o deshacen) la masa del hub. */
+.pw-wheel.is-forming .pw-hub {
+  opacity: 0;
 }
 
 .pw-hub.is-entering {

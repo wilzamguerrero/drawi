@@ -19,19 +19,24 @@
   box-shadow: var(--shadow-2);
   backdrop-filter: blur(12px);
   pointer-events: auto;
-  transition: box-shadow 0.15s ease;
-  animation: panel-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  transform-origin: center;
+  /* La entrada/salida la lleva el sistema "materia" (partículas + este fade). */
+  transition: box-shadow 0.15s ease, opacity 0.3s ease,
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-@keyframes panel-in {
-  from {
-    opacity: 0;
-    transform: scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+/* Oculto mientras las partículas se juntan; al quitarlo, el panel se funde
+   (crece desde el centro) en relevo con la masa. */
+.panel-card.materia-hidden {
+  opacity: 0;
+  transform: scale(0.62);
+}
+
+/* Al cerrar: se encoge y se apaga rápido mientras las partículas se dispersan. */
+.panel-card.materia-hiding {
+  opacity: 0;
+  transform: scale(0.86);
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .panel-card.is-flash {
