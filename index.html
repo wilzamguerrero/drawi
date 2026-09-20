@@ -205,15 +205,18 @@
           vctx.setTransform(1, 0, 0, 1, 0, 0);
           vctx.clearRect(0, 0, view.width, view.height);
 
-          // Recuadro que ocupan las gotas activas (en px CSS), con margen para las
-          // protuberancias del campo al fundirse.
+          // Recuadro que ocupan las gotas activas (en px CSS). El campo es la SUMA de
+          // todas las gotas, asi que la superficie fundida llega bastante mas lejos que
+          // el radio de una sola (hasta ~sqrt(N)*r cuando se juntan las N). El margen
+          // tiene que cubrir ese caso o la masa se corta plana contra el borde del
+          // recuadro: era la linea recta que se veia. 3.2r cubre las 7 ya fundidas.
           var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
           var any = false;
           for (var g = 0; g < balls.length; g++) {
             var bg = balls[g];
             if (elapsed < bg.born) continue;
             any = true;
-            var ext = bg.r * 1.8 + 4;
+            var ext = bg.r * 3.2 + 6;
             if (bg.x - ext < minX) minX = bg.x - ext;
             if (bg.y - ext < minY) minY = bg.y - ext;
             if (bg.x + ext > maxX) maxX = bg.x + ext;
