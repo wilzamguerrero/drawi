@@ -88,10 +88,12 @@
   opacity: 0;
 }
 
-/* El núcleo: la masa central que crece o mengua (≈ tamaño del botón). */
+/* El núcleo: la masa central que crece o mengua. Algo mayor que el botón (100px):
+   el umbral del filtro gooey come unos píxeles del borde, así que hay que pasarse
+   un poco para que la masa formada iguale al círculo que entra encima. */
 .rm-fx-core {
-  width: 88px;
-  height: 88px;
+  width: 112px;
+  height: 112px;
 }
 
 /* Juntarse: cada gota entra desde su punto (--sx,--sy) hasta el centro. */
@@ -187,8 +189,8 @@
  * mismo color que el relleno: el mismo truco que el color wheel. El trazo solo
  * está para redondear; la separación entre sectores la da el hueco (gapPx). */
 .rm-sector {
-  fill: #1c1c20;
-  stroke: #1c1c20;
+  fill: #161619;
+  stroke: #161619;
   stroke-width: 4;
   stroke-linejoin: round;
   /* Cambio de hover suave: al pasar de un sector a otro el color y el borde se
