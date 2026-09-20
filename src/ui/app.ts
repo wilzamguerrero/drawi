@@ -1,15 +1,13 @@
 import { Editor, type EditorState } from "../app/editor";
-import { DEFAULT_PALETTES } from "../core/color";
 import { el, setClass } from "./dom";
 import { autosave, exportImage, exportVector, newDocument, openProject, restoreAutosave, saveProject } from "./file-actions";
 import { HelpOverlay } from "./help";
 import { StatusBar } from "./status-bar";
 import { TopBar } from "./top-bar";
-import { ColorPicker } from "./color-picker";
-import { segmented, swatches } from "./controls";
 import { RadialMenu } from "./hotbox/radial-menu";
 import { PantoneWheel } from "./pantone-wheel";
 import { Panels } from "./panels";
+import { SideDock } from "./side-dock";
 
 /**
  * Montaje de la aplicacion — lienzo vivo.
@@ -31,6 +29,7 @@ export class App {
   private hotbox: RadialMenu;
   private pantone: PantoneWheel;
   private panels: Panels;
+  private sideDock: SideDock;
   private stage: HTMLElement;
   private chrome: HTMLElement;
 
@@ -59,8 +58,8 @@ export class App {
       this.wake();
     });
     this.panels = new Panels();
+    this.sideDock = new SideDock(this.editor);
     this.hotbox = new RadialMenu(this.editor, {
-      openColor: () => this.openColorPanel(),
       toggleWheel: () => this.pantone.toggle(),
       help: () => this.help.toggle(),
       newDoc: () => this.editor.status(newDocument(this.editor)),
@@ -82,6 +81,7 @@ export class App {
     root.appendChild(shell);
     root.appendChild(this.help.el);
     this.panels.mount(root);
+    this.sideDock.mount(root);
     this.hotbox.mount(root);
 
     this.editor.events.on("state", (s) => this.queue(s));
@@ -158,70 +158,6 @@ export class App {
     this.wake();
   }
 
-  private openColorPanel(): void {
-    const p = this.lastPointer;
-    this.panels.open({
-      id: "color",
-      title: "Color",
-      build: (host) => this.mountColor(host),
-    }, p.x || window.innerWidth / 2, p.y || window.innerHeight / 2);
-    this.wake();
-  }
-
-  /**
-   * Panel de color: selector, rueda Pantone y muestras de la paleta activa.
-   */
-  private mountColor(host: HTMLElement): () => void {
-    const picker = new ColorPicker(this.editor.color, (hex) => this.editor.setColor(hex));
-
-    // Fila principal: los últimos 15 colores usados (se sustituyen con el uso).
-    const recent = swatches({
-      colors: this.editor.recentColors,
-      value: this.editor.color,
-      onPick: (hex) => {
-        this.editor.setColor(hex);
-        picker.set(hex);
-      },
-    });
-
-    // Debajo, las paletas curadas para sembrar colores nuevos al historial.
-    const paletteTabs = segmented({
-      options: DEFAULT_PALETTES.map((p, i) => ({ value: String(i), label: p.name })),
-      value: String(this.editor.paletteIndex),
-      onChange: (v) => {
-        this.editor.setPalette(Number(v));
-        wells.set({ colors: this.editor.palette.colors, value: this.editor.color });
-      },
-    });
-    const wells = swatches({
-      colors: this.editor.palette.colors,
-      value: this.editor.color,
-      onPick: (hex) => {
-        this.editor.setColor(hex);
-        picker.set(hex);
-      },
-    });
-    const panel = el("div", { class: "hot-color" }, [
-      el("h3", { class: "hot-color-title", text: "Color" }),
-      picker.el,
-      el("span", { class: "hot-color-label", text: "Recientes" }),
-      recent.el,
-      paletteTabs.el,
-      wells.el,
-    ]);
-    host.appendChild(panel);
-
-    // Mantener la fila de recientes viva: se refresca cuando cambia el historial.
-    const off = this.editor.events.on("state", (s) => {
-      recent.set({ colors: s.recentColors, value: s.color });
-      wells.set({ colors: this.editor.palette.colors, value: s.color });
-    });
-    return () => {
-      off();
-      panel.remove();
-    };
-  }
-
   /** Despierta la interfaz translucida; se esconde de nuevo tras la inactividad. */
   private wake(): void {
     setClass(this.chrome, "is-awake", true);
@@ -281,6 +217,7 @@ export class App {
   private apply(state: EditorState): void {
     this.topBar.update(state);
     this.statusBar.update(state);
+    this.sideDock.update(state);
     document.title = `${state.name} — drawi`;
   }
 

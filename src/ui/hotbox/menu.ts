@@ -62,7 +62,6 @@ export type HotNode = ActionNode | SubmenuNode | DialNode;
 
 /** Puertos de alto nivel que la app implementa; el menu solo los invoca. */
 export interface MenuHooks {
-  openColor(): void;
   toggleWheel(): void;
   help(): void;
   newDoc(): void;
@@ -811,7 +810,6 @@ function colorSubmenu(editor: Editor, state: EditorState, hooks: MenuHooks): Sub
     icon: "droplet",
     accent: state.color,
     children: [
-      { kind: "action", id: "color-panel", label: "Selector", icon: "droplet", accent: state.color, run: () => hooks.openColor() },
       { kind: "action", id: "wheel", label: "Rueda", icon: "wheel", run: () => hooks.toggleWheel() },
       // Últimos colores usados (no la paleta fija): lo que de verdad has tocado.
       ...state.recentColors.map((hex, i) => ({

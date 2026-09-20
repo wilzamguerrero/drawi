@@ -95,7 +95,6 @@ noThrow("modificadores degradado + splat", () => {
 ed.setTool("shape");
 const shapeDials = (): string[] => {
   const root = buildRoot(ed, ed.state, {
-    openColor: () => {},
     toggleWheel: () => {},
     help: () => {},
     newDoc: () => {},

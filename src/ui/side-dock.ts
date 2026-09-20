@@ -1,10 +1,14 @@
 import type { Editor, EditorState } from "../app/editor";
+import { DEFAULT_PALETTES } from "../core/color";
 import { SHAPE_LABELS, type ShapeKind } from "../physics/shapes";
 import { DYNAMICS_INFO, type BrushMode, type StrokeDynamics } from "../stroke/types";
 import { SYMMETRY_LABELS, symmetryCopies, type SymmetryMode } from "../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../tools/pull-shapes";
-import { button, fieldLabel, row, section, segmented, select, slider, toggle, type Control } from "./controls";
-import { el, setClass } from "./dom";
+import type { ToolId } from "../tools/types";
+import { ColorPicker } from "./color-picker";
+import { button, fieldLabel, row, section, segmented, select, slider, swatches, toggle, type Control } from "./controls";
+import { blurSoon, el, setClass } from "./dom";
+import { icon } from "./icons";
 
 const MODE_LABELS: Record<BrushMode, string> = {
   stroke: "Trazo",
@@ -12,21 +16,60 @@ const MODE_LABELS: Record<BrushMode, string> = {
   pull: "Arrastre",
 };
 
+/** Categorías del dock. Cada una agrupa las secciones de una herramienta. */
+type CatId = "color" | "brush" | "shape" | "symmetry" | "matter";
+
+interface CatDef {
+  id: CatId;
+  label: string;
+  icon: string;
+}
+
+const CATEGORIES: CatDef[] = [
+  { id: "color", label: "Color", icon: "droplet" },
+  { id: "brush", label: "Pincel", icon: "brush" },
+  { id: "shape", label: "Forma", icon: "shape" },
+  { id: "symmetry", label: "Simetría", icon: "symmetry" },
+  { id: "matter", label: "Materia", icon: "matter" },
+];
+
 /**
- * Panel contextual.
- *
- * Todas las secciones se construyen una vez y se muestran u ocultan segun la
- * herramienta: reconstruir el panel en cada cambio perderia el foco del campo
- * que estuvieras editando y haria parpadear los deslizadores.
- *
- * Los controles que no tienen efecto con la dinamica activa se atenuan en vez
- * de desaparecer, para que la ausencia no se lea como que el ajuste no existe.
+ * Qué pestaña corresponde a cada herramienta. Al cambiar de herramienta el dock
+ * resalta la pestaña relacionada (no la abre: solo la marca como "en uso"). Las
+ * herramientas sin ajustes propios —cuentagotas y mano— no resaltan ninguna.
  */
-export class Inspector {
+const TOOL_TO_CAT: Partial<Record<ToolId, CatId>> = {
+  brush: "brush",
+  shape: "shape",
+  matter: "matter",
+  symmetry: "symmetry",
+};
+
+/**
+ * Dock lateral izquierdo.
+ *
+ * Un único panel anclado al borde izquierdo que, plegado, deja ver solo su tira
+ * de pestañas —una por categoría—. Al pulsar una pestaña el cajón se desliza
+ * desde el borde con los ajustes de esa categoría; al volver a pulsarla, se
+ * repliega. Cambiar de herramienta resalta su pestaña para invitar a abrirla,
+ * pero no interrumpe el dibujo abriéndola sola.
+ *
+ * El color, que antes vivía en el menú radial, es ahora una pestaña más: un solo
+ * sitio para todos los ajustes.
+ *
+ * Las secciones se construyen una vez y se muestran u ocultan por categoría:
+ * reconstruir el panel en cada cambio perdería el foco del campo que estuvieras
+ * editando y haría parpadear los deslizadores.
+ */
+export class SideDock {
   readonly el: HTMLElement;
 
   private sections: Record<string, HTMLElement> = {};
   private controls: Record<string, Control<never>> = {};
+  private pages: Record<CatId, HTMLElement> = {} as Record<CatId, HTMLElement>;
+  private tabs = new Map<CatId, HTMLButtonElement>();
+
+  private drawer: HTMLElement;
   private dynamicsHint: HTMLElement;
   private symmetryCount: HTMLElement;
   private brushPreview: HTMLCanvasElement;
@@ -34,8 +77,54 @@ export class Inspector {
   private pressureGroup: HTMLElement;
   private pullGroup: HTMLElement;
 
+  // Estado del cajón: qué categoría está abierta (null = plegado) y cuál está
+  // "en uso" por la herramienta activa (solo resalta la pestaña).
+  private openCat: CatId | null = null;
+  private activeTool: CatId | null = null;
+
+  // Color: se refresca con el estado, como el resto de controles.
+  private colorPicker: ColorPicker;
+  private recentSwatches: Control<{ colors: readonly string[]; value: string }>;
+  private paletteTabs: Control<string>;
+  private paletteWells: Control<{ colors: readonly string[]; value: string }>;
+
   constructor(editor: Editor) {
     const b = editor.brush;
+
+    // ============================================================ color
+    this.colorPicker = new ColorPicker(editor.color, (hex) => editor.setColor(hex));
+    this.recentSwatches = swatches({
+      colors: editor.recentColors,
+      value: editor.color,
+      onPick: (hex) => {
+        editor.setColor(hex);
+        this.colorPicker.set(hex);
+      },
+    });
+    this.paletteTabs = segmented({
+      options: DEFAULT_PALETTES.map((p, i) => ({ value: String(i), label: p.name })),
+      value: String(editor.paletteIndex),
+      onChange: (v) => {
+        editor.setPalette(Number(v));
+        this.paletteWells.set({ colors: editor.palette.colors, value: editor.color });
+      },
+    });
+    this.paletteWells = swatches({
+      colors: editor.palette.colors,
+      value: editor.color,
+      onPick: (hex) => {
+        editor.setColor(hex);
+        this.colorPicker.set(hex);
+      },
+    });
+
+    this.sections.color = section("Color", [
+      this.colorPicker.el,
+      fieldLabel("Recientes"),
+      this.recentSwatches.el,
+      this.paletteTabs.el,
+      this.paletteWells.el,
+    ]);
 
     // ------------------------------------------------------------- pincel
     const mode = segmented<BrushMode>({
@@ -617,28 +706,104 @@ export class Inspector {
       }).el,
     ]);
 
-    this.el = el("aside", { class: "inspector" }, [
-      el("div", { class: "inspector-scroll" }, [
-        this.sections.brush,
-        this.sections.stabilize,
-        this.sections.shape,
-        this.sections.symmetry,
-        this.sections.field,
-        this.sections.physics,
-      ]),
-    ]);
+    // =================================================== páginas por categoría
+    this.pages.color = el("div", { class: "dock-page" }, [this.sections.color]);
+    this.pages.brush = el("div", { class: "dock-page" }, [this.sections.brush, this.sections.stabilize]);
+    this.pages.shape = el("div", { class: "dock-page" }, [this.sections.shape]);
+    this.pages.symmetry = el("div", { class: "dock-page" }, [this.sections.symmetry]);
+    this.pages.matter = el("div", { class: "dock-page" }, [this.sections.field, this.sections.physics]);
+
+    // Cabecera del cajón: título de la categoría abierta + botón de cerrar.
+    const titleEl = el("span", { class: "dock-title" });
+    const closeBtn = el("button", {
+      class: "dock-close",
+      type: "button",
+      title: "Cerrar panel",
+      html: icon("close"),
+    });
+    closeBtn.addEventListener("click", () => this.setOpen(null));
+    const head = el("div", { class: "dock-head" }, [titleEl, closeBtn]);
+    this.dockTitle = titleEl;
+
+    const scroll = el("div", { class: "dock-scroll" }, Object.values(this.pages));
+    this.drawer = el("div", { class: "dock-drawer" }, [head, scroll]);
+
+    // Tira de pestañas, siempre visible en el borde.
+    const strip = el("div", { class: "dock-tabs" });
+    for (const cat of CATEGORIES) {
+      const tab = el("button", {
+        class: "dock-tab",
+        type: "button",
+        title: cat.label,
+        html: icon(cat.icon),
+      });
+      tab.addEventListener("click", () => {
+        this.toggle(cat.id);
+        blurSoon(tab);
+      });
+      this.tabs.set(cat.id, tab);
+      strip.appendChild(tab);
+    }
+
+    this.el = el("aside", { class: "side-dock", role: "toolbar" }, [this.drawer, strip]);
+    this.renderState();
+  }
+
+  private dockTitle!: HTMLElement;
+
+  mount(parent: HTMLElement): void {
+    parent.appendChild(this.el);
+  }
+
+  /** Pulsar una pestaña: abre su categoría, o la repliega si ya estaba abierta. */
+  private toggle(cat: CatId): void {
+    this.setOpen(this.openCat === cat ? null : cat);
+  }
+
+  private setOpen(cat: CatId | null): void {
+    this.openCat = cat;
+    this.renderState();
+  }
+
+  /**
+   * Resalta la pestaña de la herramienta activa sin abrir el cajón. Herramientas
+   * sin ajustes (cuentagotas, mano) no resaltan ninguna.
+   */
+  focusTool(tool: ToolId): void {
+    this.activeTool = TOOL_TO_CAT[tool] ?? null;
+    this.renderState();
+  }
+
+  /** Pinta el estado de pestañas/cajón: abierta, en-uso y qué página se ve. */
+  private renderState(): void {
+    setClass(this.el, "is-open", this.openCat !== null);
+    for (const [id, tab] of this.tabs) {
+      setClass(tab, "is-open", id === this.openCat);
+      setClass(tab, "is-active", id === this.activeTool);
+    }
+    for (const cat of CATEGORIES) {
+      setClass(this.pages[cat.id], "is-shown", cat.id === this.openCat);
+    }
+    if (this.openCat) {
+      const def = CATEGORIES.find((c) => c.id === this.openCat);
+      if (def) this.dockTitle.textContent = def.label;
+    }
   }
 
   update(state: EditorState): void {
+    // La pestaña "en uso" sigue a la herramienta activa.
+    this.focusTool(state.tool);
+
+    // ------ color
+    this.colorPicker.set(state.color);
+    this.recentSwatches.set({ colors: state.recentColors, value: state.color });
+    this.paletteTabs.set(String(state.paletteIndex));
+    this.paletteWells.set({ colors: state.palette.colors, value: state.color });
+
+    // ------ pincel
     const b = state.brush;
     const usesPressure = b.dynamics === "pressure" || b.dynamics === "pressure-velocity";
     const usesVelocity = b.dynamics === "velocity" || b.dynamics === "pressure-velocity";
-
-    setClass(this.sections.brush, "is-hidden", state.tool !== "brush");
-    setClass(this.sections.stabilize, "is-hidden", state.tool !== "brush");
-    setClass(this.sections.shape, "is-hidden", state.tool !== "shape");
-    setClass(this.sections.field, "is-hidden", state.tool === "brush" && state.bodies === 0);
-    setClass(this.sections.physics, "is-hidden", state.tool === "brush" && state.bodies === 0);
 
     (this.controls.mode as Control<BrushMode>).set(b.mode);
     (this.controls.dynamics as Control<StrokeDynamics>).set(b.dynamics);
@@ -662,6 +827,7 @@ export class Inspector {
     setClass(this.velocityGroup, "is-dim", !usesVelocity);
     setClass(this.pullGroup, "is-hidden", b.mode !== "pull");
 
+    // ------ forma
     const s = state.shape;
     (this.controls.shapeKind as Control<ShapeKind>).set(s.kind);
     (this.controls.shapeSize as Control<number>).set(s.size);
@@ -674,6 +840,7 @@ export class Inspector {
     setClass(this.controls.shapeInner.el, "is-hidden", s.kind !== "star");
     setClass(this.controls.shapeRound.el, "is-hidden", s.kind !== "box" && s.kind !== "ngon");
 
+    // ------ simetria
     const sym = state.symmetry;
     (this.controls.symMode as Control<SymmetryMode>).set(sym.mode);
     (this.controls.symCount as Control<number>).set(sym.count);
@@ -685,6 +852,7 @@ export class Inspector {
     setClass(this.controls.symCount.el, "is-hidden", sym.mode !== "radial" && sym.mode !== "kaleido");
     setClass(this.controls.symAngle.el, "is-hidden", sym.mode === "none");
 
+    // ------ fisica
     const w = state.world;
     (this.controls.gravityY as Control<number>).set(w.gravity.y);
     (this.controls.gravityX as Control<number>).set(w.gravity.x);
@@ -698,6 +866,7 @@ export class Inspector {
     (this.controls.walls as Control<boolean>).set(state.showWalls);
     (this.controls.colliders as Control<boolean>).set(state.debugColliders);
 
+    // ------ campo
     const f = state.field;
     (this.controls.blend as Control<number>).set(f.blend);
     (this.controls.outline as Control<number>).set(f.outline);
@@ -762,12 +931,11 @@ export class Inspector {
       if (b.jitter > 0) k *= 1 - b.jitter * 0.5 * Math.abs(Math.sin(t * 57.3));
 
       const r = Math.max(0.4, k * maxR);
-      const nx = Math.cos(t * Math.PI * 1.7 + Math.PI / 2) * 0;
       const dy = Math.cos(t * Math.PI * 1.7) * h * 0.24 * ((Math.PI * 1.7) / (w - 36));
       const len = Math.hypot(1, dy) || 1;
       const px = -dy / len;
       const py = 1 / len;
-      top.push({ x: x + px * r + nx, y: y + py * r });
+      top.push({ x: x + px * r, y: y + py * r });
       bottom.push({ x: x - px * r, y: y - py * r });
     }
 

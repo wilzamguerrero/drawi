@@ -1,0 +1,222 @@
+/* =========================================================================
+   Dock lateral izquierdo — pestañas por categoría + cajón deslizante.
+
+   Anclado al borde izquierdo. La tira de pestañas va SIEMPRE pegada al borde
+   exterior (el que da al lienzo) del cajón, como en el estudio de referencia
+   (`.rail-left { left: 100% }`): plegado, el cajón vive fuera de la ventana y
+   solo asoma la tira en el marco; al abrir, todo el conjunto se desliza a la
+   derecha y la tira sale montada en el borde del panel. El color de la chapa es
+   el mismo negro plano del menú radial (#161619).
+   ========================================================================= */
+
+.side-dock {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  /* Plegado: el cajón (ancho --inspector) queda fuera de la ventana a la
+     izquierda; solo la tira, pegada a su borde derecho, asoma en el marco. */
+  transform: translate(calc(-1 * var(--inspector, 306px)), -50%);
+  transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+  /* El hueco alrededor no captura clics; cada pieza reactiva los suyos. */
+  pointer-events: none;
+}
+
+/* Abierto: el conjunto se desliza hasta que el borde izquierdo del cajón toca
+   el marco. La tira viaja con él y acaba sobre el borde exterior del panel. */
+.side-dock.is-open {
+  transform: translate(0, -50%);
+}
+
+/* ------------------------------------------------------------ cajón deslizante */
+
+.dock-drawer {
+  width: var(--inspector, 306px);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  background: #161619;
+  border: 1px solid #23232a;
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  box-shadow: 12px 0 34px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.side-dock.is-open .dock-drawer {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.dock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid #23232a;
+}
+
+.dock-title {
+  font: 600 13px/1 var(--font);
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.dock-close {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.dock-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+.dock-close:hover {
+  background: #23232a;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.dock-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a42 transparent;
+}
+
+.dock-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.dock-scroll::-webkit-scrollbar-thumb {
+  background: #3a3a42;
+  border-radius: 6px;
+  border: 3px solid #161619;
+}
+
+/* Solo se muestra la página de la categoría abierta. */
+.dock-page {
+  display: none;
+}
+
+.dock-page.is-shown {
+  display: block;
+}
+
+/* Las secciones dentro del dock heredan el estilo de .panel-section, pero sobre
+   el negro del dock las líneas suaves se ven mejor algo más claras. */
+.side-dock .panel-section {
+  border-bottom: 1px solid #23232a;
+}
+
+/* ------------------------------------------------------------ tira de pestañas */
+
+/*
+ * Pegada al borde exterior del cajón (el que da al lienzo). Pequeña y solo con
+ * icono; el nombre de la categoría lo da el tooltip nativo (atributo title).
+ */
+.dock-tabs {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px;
+  background: #161619;
+  border: 1px solid #161619;
+  border-left: none;
+  border-radius: 0 12px 12px 0;
+  box-shadow: 8px 0 22px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.dock-tab {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.dock-tab svg {
+  width: 18px;
+  height: 18px;
+}
+
+.dock-tab:hover {
+  background: #23232a;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+/* "En uso": la herramienta activa. Punto de acento a la derecha (lado lienzo),
+   marca la pestaña sin abrir el cajón. */
+.dock-tab.is-active {
+  color: #cfe4f7;
+}
+
+.dock-tab.is-active::after {
+  content: "";
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  border-radius: 3px 0 0 3px;
+  background: var(--accent);
+}
+
+/* Abierta: la categoría cuyo cajón está desplegado. */
+.dock-tab.is-open {
+  background: #35618c;
+  border-color: #5a9fd4;
+  color: #ffffff;
+}
+
+/* Responsive: en pantallas estrechas el cajón no se pasa de ancho. */
+@media (max-width: 560px) {
+  :root {
+    --inspector: 306px;
+  }
+  .dock-drawer {
+    width: min(306px, calc(100vw - 60px));
+  }
+  .side-dock {
+    transform: translate(calc(-1 * min(306px, 100vw - 60px)), -50%);
+  }
+  .side-dock.is-open {
+    transform: translate(0, -50%);
+  }
+}
+
+/* Movimiento reducido: sin deslizamiento, el cajón aparece/desaparece directo.
+   La tira sigue pegada al marco; el cajón se revela con opacidad. */
+@media (prefers-reduced-motion: reduce) {
+  .side-dock,
+  .side-dock.is-open {
+    transition: none;
+  }
+}
