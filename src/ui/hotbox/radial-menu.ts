@@ -1,6 +1,6 @@
 import type { Editor } from "../../app/editor";
 import { TAU, clamp } from "../../core/math";
-import { el, setClass } from "../dom";
+import { clear, el, setClass } from "../dom";
 import { icon } from "../icons";
 import type { Panels } from "../panels";
 import { buildRoot, type HotNode, type MenuHooks } from "./menu";
@@ -78,6 +78,15 @@ export class RadialMenu {
   private centerButton: HTMLElement;
   private centerLabel: HTMLElement;
 
+  /** Lienzo de partículas (metaball) que forma/deshace el centro al abrir/cerrar. */
+  private fx: HTMLElement;
+  private fxTimer = 0;
+
+  // Duración de las fases de partículas y hasta dónde nacen/se van las gotas.
+  private static readonly FX_REACH = 96;
+  private static readonly FX_GATHER_MS = 420;
+  private static readonly FX_SCATTER_MS = 340;
+
   isOpen = false;
   private posX = 0;
   private posY = 0;
@@ -128,7 +137,23 @@ export class RadialMenu {
       this.centerButton,
     ]);
 
-    this.el = el("div", { class: "radial-menu" }, [this.container]);
+    // Capa de partículas: hermana del contenedor (no hija), así la opacidad del
+    // menú al abrir/cerrar no la afecta. Se coloca en el centro en cada show().
+    this.fx = el("div", { class: "rm-fx" });
+
+    // Filtro "gooey": desenfoque + umbral de alfa que funde las gotas como en el
+    // loader. Vive en el documento para que `filter: url(#rm-goo)` lo encuentre.
+    const gooDefs = el("div", { class: "rm-goo-defs" });
+    gooDefs.innerHTML =
+      '<svg aria-hidden="true" width="0" height="0"><defs>' +
+      '<filter id="rm-goo" color-interpolation-filters="sRGB">' +
+      '<feGaussianBlur in="SourceGraphic" stdDeviation="7" result="b"/>' +
+      '<feColorMatrix in="b" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 26 -11"/>' +
+      "</filter></defs></svg>";
+
+    // fx va antes que el contenedor: el botón central (en el contenedor) pinta por
+    // encima de las partículas durante el relevo.
+    this.el = el("div", { class: "radial-menu" }, [gooDefs, this.fx, this.container]);
     this.el.hidden = true;
 
     this.setupEvents();
@@ -245,23 +270,101 @@ export class RadialMenu {
 
     this.rebuild();
 
-    this.container.classList.remove("is-closing");
-    this.container.classList.add("is-opening");
+    // Centrar la capa de partículas sobre el núcleo del menú.
+    this.fx.style.left = `${this.posX}px`;
+    this.fx.style.top = `${this.posY}px`;
+
+    window.clearTimeout(this.fxTimer);
+    this.container.classList.remove("is-closing", "is-forming", "is-dissolving");
+
+    if (this.reduceMotion) {
+      // Sin movimiento: aparición directa, sin partículas.
+      clear(this.fx);
+      this.container.classList.add("is-opening");
+      return;
+    }
+
+    // Las partículas se juntan y forman el centro; los anillos y el botón esperan
+    // (ocultos por .is-forming) hasta que la masa está hecha, y ahí entran.
+    this.container.classList.remove("is-opening");
+    this.container.classList.add("is-forming");
+    this.playFx(false);
+
+    this.fxTimer = window.setTimeout(() => {
+      if (!this.isOpen) return;
+      this.container.classList.remove("is-forming");
+      this.container.classList.add("is-opening");
+      this.fx.classList.add("is-fading");
+      window.setTimeout(() => clear(this.fx), 200);
+    }, RadialMenu.FX_GATHER_MS);
   }
 
   close(): void {
     if (!this.isOpen) return;
 
     this.isOpen = false;
-    this.container.classList.remove("is-opening");
-    this.container.classList.add("is-closing");
+    window.clearTimeout(this.fxTimer);
+    this.container.classList.remove("is-opening", "is-forming");
 
-    setTimeout(() => {
+    if (this.reduceMotion) {
+      this.container.classList.add("is-closing");
+      this.fxTimer = window.setTimeout(() => {
+        if (!this.isOpen) {
+          this.el.hidden = true;
+          this.container.classList.remove("is-closing");
+        }
+      }, 250);
+      return;
+    }
+
+    // El centro se desintegra en partículas mientras los anillos se van.
+    this.container.classList.add("is-closing", "is-dissolving");
+    this.playFx(true);
+
+    this.fxTimer = window.setTimeout(() => {
       if (!this.isOpen) {
         this.el.hidden = true;
-        this.container.classList.remove("is-closing");
+        this.container.classList.remove("is-closing", "is-dissolving");
+        clear(this.fx);
       }
-    }, 250);
+    }, RadialMenu.FX_SCATTER_MS);
+  }
+
+  private get reduceMotion(): boolean {
+    return (
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
+  /**
+   * Siembra las gotas y lanza la animación de juntarse (gather) o dispersarse
+   * (scatter). El filtro gooey del CSS las funde como una sola masa.
+   */
+  private playFx(scatter: boolean): void {
+    clear(this.fx);
+    this.fx.classList.remove("is-gathering", "is-scattering", "is-fading");
+
+    // Núcleo central: la masa que crece (o mengua) en el centro.
+    this.fx.appendChild(el("div", { class: "rm-fx-dot rm-fx-core" }));
+
+    const n = 8;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU + (Math.random() - 0.5) * 0.7;
+      const dist = RadialMenu.FX_REACH * (0.72 + Math.random() * 0.45);
+      const size = 16 + Math.random() * 22;
+      const dot = el("div", { class: "rm-fx-dot" });
+      dot.style.width = `${size.toFixed(1)}px`;
+      dot.style.height = `${size.toFixed(1)}px`;
+      dot.style.setProperty("--sx", `${(Math.cos(a) * dist).toFixed(1)}px`);
+      dot.style.setProperty("--sy", `${(Math.sin(a) * dist).toFixed(1)}px`);
+      dot.style.animationDelay = `${i * (scatter ? 7 : 11)}ms`;
+      this.fx.appendChild(dot);
+    }
+
+    // Reflow para reiniciar la animación al re-añadir la clase.
+    void this.fx.offsetWidth;
+    this.fx.classList.add(scatter ? "is-scattering" : "is-gathering");
   }
 
   dispose(): void {

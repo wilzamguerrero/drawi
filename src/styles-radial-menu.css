@@ -52,6 +52,128 @@
   }
 }
 
+/* ============================================================
+   Partículas del núcleo (metaball) al abrir/cerrar.
+
+   Al abrir: unas gotas nacen alrededor y se juntan rápido en el centro,
+   fundiéndose (filtro gooey) hasta formar el círculo; ahí entran los anillos y
+   el botón. Al cerrar: el centro se desintegra en gotas que salen despedidas.
+   El botón central (en el contenedor) toma el relevo cuando la masa ya está.
+   ============================================================ */
+.rm-goo-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.rm-fx {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transform: translate(-50%, -50%);
+  filter: url(#rm-goo);
+  pointer-events: none;
+}
+
+.rm-fx-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #161619;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+}
+
+/* El núcleo: la masa central que crece o mengua (≈ tamaño del botón). */
+.rm-fx-core {
+  width: 88px;
+  height: 88px;
+}
+
+/* Juntarse: cada gota entra desde su punto (--sx,--sy) hasta el centro. */
+.rm-fx.is-gathering .rm-fx-dot:not(.rm-fx-core) {
+  animation: rm-fx-gather 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.rm-fx.is-gathering .rm-fx-core {
+  animation: rm-fx-core-in 0.42s ease both;
+}
+
+/* Dispersarse: salen del centro hacia su punto y se apagan. */
+.rm-fx.is-scattering .rm-fx-dot:not(.rm-fx-core) {
+  animation: rm-fx-scatter 0.34s ease-in both;
+}
+
+.rm-fx.is-scattering .rm-fx-core {
+  animation: rm-fx-core-out 0.34s ease-in both;
+}
+
+.rm-fx.is-fading {
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+@keyframes rm-fx-gather {
+  0% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--sx)), calc(-50% + var(--sy))) scale(0.5);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes rm-fx-core-in {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.2);
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes rm-fx-scatter {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--sx)), calc(-50% + var(--sy))) scale(0.35);
+  }
+}
+
+@keyframes rm-fx-core-out {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.25);
+  }
+}
+
+/* Al desintegrar, el botón central desaparece al instante: la masa de partículas
+   es la que se ve deshacerse. */
+.rm-container.is-dissolving .rm-center-btn {
+  opacity: 0;
+  transition: none;
+}
+
 /* SVG */
 .rm-svg {
   display: block;
