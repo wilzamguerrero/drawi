@@ -17,7 +17,10 @@ const CONFIG = {
   submenuThickness: 50,
 
   // Ángulos
-  gapAngle: 0.018,
+  // Hueco entre sectores en PÍXELES (no en ángulo): así el separador mide lo
+  // mismo en el borde interior y en el exterior. El desfase angular se calcula
+  // por radio en createArc (arco = radio × ángulo).
+  gapPx: 3,
   submenuArc: 0.35, // 35% del círculo = ~126 grados
 
   // Tamaños de iconos
@@ -119,6 +122,13 @@ export class RadialMenu {
     this.container.addEventListener("pointerdown", (e) => this.onPointerDown(e));
     this.centerButton.addEventListener("click", () => this.navigateBack());
 
+    // Clic fuera del contenedor (en el backdrop de pantalla completa): cerrar.
+    // El evento en el contenedor no se propaga aquí porque onPointerDown ya lo
+    // maneja; este solo se dispara en el área vacía alrededor del menú.
+    this.el.addEventListener("pointerdown", (e) => {
+      if (e.target === this.el) this.close();
+    });
+
     // Prevenir menú contextual
     this.el.addEventListener("contextmenu", (e) => e.preventDefault());
   }
@@ -212,8 +222,11 @@ export class RadialMenu {
 
     for (let i = 0; i < count; i++) {
       const node = nodes[i];
-      const a0 = startAngle + i * angleStep + CONFIG.gapAngle;
-      const a1 = startAngle + (i + 1) * angleStep - CONFIG.gapAngle;
+      // Ángulos completos del sector (sin hueco): sirven para el hover, así no
+      // quedan zonas muertas entre sectores. El hueco visual lo aplica
+      // createArc por radio.
+      const a0 = startAngle + i * angleStep;
+      const a1 = startAngle + (i + 1) * angleStep;
       const amid = (a0 + a1) / 2;
 
       // Crear sector
@@ -266,8 +279,9 @@ export class RadialMenu {
 
     for (let i = 0; i < count; i++) {
       const node = nodes[i];
-      const a0 = startAngle + i * angleStep + CONFIG.gapAngle;
-      const a1 = startAngle + (i + 1) * angleStep - CONFIG.gapAngle;
+      // Ángulos completos (sin hueco) para el hover; el hueco lo pone createArc.
+      const a0 = startAngle + i * angleStep;
+      const a1 = startAngle + (i + 1) * angleStep;
       const amid = (a0 + a1) / 2;
 
       // Crear sector
@@ -306,17 +320,30 @@ export class RadialMenu {
   private createArc(innerR: number, outerR: number, startA: number, endA: number): SVGPathElement {
     const c = CONFIG.center;
 
-    // Puntos del arco
-    const x1 = c + Math.cos(startA) * outerR;
-    const y1 = c + Math.sin(startA) * outerR;
-    const x2 = c + Math.cos(endA) * outerR;
-    const y2 = c + Math.sin(endA) * outerR;
-    const x3 = c + Math.cos(endA) * innerR;
-    const y3 = c + Math.sin(endA) * innerR;
-    const x4 = c + Math.cos(startA) * innerR;
-    const y4 = c + Math.sin(startA) * innerR;
+    // Hueco de ancho constante: el desfase angular en cada borde es gapPx/radio.
+    // Como el arco crece con el radio, un ángulo fijo dejaría el hueco más ancho
+    // por fuera; dividiendo entre el radio, el separador mide gapPx tanto en el
+    // borde interior como en el exterior. Se usa medio hueco por lado.
+    const halfGap = CONFIG.gapPx / 2;
+    const outGap = halfGap / outerR;
+    const inGap = halfGap / innerR;
 
-    const largeArc = (endA - startA) > Math.PI ? 1 : 0;
+    const startOut = startA + outGap;
+    const endOut = endA - outGap;
+    const startIn = startA + inGap;
+    const endIn = endA - inGap;
+
+    // Puntos del arco
+    const x1 = c + Math.cos(startOut) * outerR;
+    const y1 = c + Math.sin(startOut) * outerR;
+    const x2 = c + Math.cos(endOut) * outerR;
+    const y2 = c + Math.sin(endOut) * outerR;
+    const x3 = c + Math.cos(endIn) * innerR;
+    const y3 = c + Math.sin(endIn) * innerR;
+    const x4 = c + Math.cos(startIn) * innerR;
+    const y4 = c + Math.sin(startIn) * innerR;
+
+    const largeArc = (endOut - startOut) > Math.PI ? 1 : 0;
 
     const d = [
       `M ${x1.toFixed(2)} ${y1.toFixed(2)}`,

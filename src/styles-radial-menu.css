@@ -5,7 +5,9 @@
 .radial-menu {
   position: fixed;
   inset: 0;
-  pointer-events: none;
+  /* Captura clics en el área vacía (backdrop) para cerrar el menú al hacer
+     clic fuera. El contenedor interior maneja los suyos y no se propagan. */
+  pointer-events: auto;
   z-index: 9999;
 }
 
