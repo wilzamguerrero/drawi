@@ -8,7 +8,7 @@ import type { ToolId } from "../tools/types";
 import { ColorPicker } from "./color-picker";
 import { button, fieldLabel, row, section, segmented, select, slider, swatches, toggle, type Control } from "./controls";
 import { blurSoon, el, setClass } from "./dom";
-import { ensureMateriaWarp } from "./fx/materia";
+import { MateriaEdge } from "./fx/materia-edge";
 import { icon } from "./icons";
 
 const MODE_LABELS: Record<BrushMode, string> = {
@@ -71,6 +71,7 @@ export class SideDock {
   private tabs = new Map<CatId, HTMLButtonElement>();
 
   private drawer: HTMLElement;
+  private edge: MateriaEdge;
   private dynamicsHint: HTMLElement;
   private symmetryCount: HTMLElement;
   private brushPreview: HTMLCanvasElement;
@@ -728,14 +729,16 @@ export class SideDock {
 
     const scroll = el("div", { class: "dock-scroll" }, Object.values(this.pages));
 
-    // "Piel" del panel: una capa detrás del contenido que lleva el relleno y el
-    // borde, y a la que se aplica el filtro de ondulado (#materia-warp). Así todo
-    // el contorno se mueve como materia viva sin deformar el texto ni los
-    // controles, que van en una capa aparte y nítida.
-    ensureMateriaWarp();
-    const skin = el("div", { class: "dock-skin" });
+    // "Piel" del panel: el relleno del panel dibujado como un trazo vectorial que
+    // se remodela por frames (MateriaEdge). El borde derecho —el que da al
+    // lienzo— ondula como una masa; los otros tres quedan rectos. Al ser vector,
+    // el contorno se antialiasea perfecto: continuo y fluido, sin el pixelado ni
+    // las "vetas" que dejaba deformar píxeles con un filtro SVG. Va detrás del
+    // contenido, que vive en su propia capa nítida.
+    this.edge = new MateriaEdge({ fill: "#161619", radius: 22, amplitude: 11 });
+    this.edge.el.classList.add("dock-skin");
     const content = el("div", { class: "dock-content" }, [head, scroll]);
-    this.drawer = el("div", { class: "dock-drawer" }, [skin, content]);
+    this.drawer = el("div", { class: "dock-drawer" }, [this.edge.el, content]);
 
     // Tira de pestañas, siempre visible en el borde.
     const strip = el("div", { class: "dock-tabs" });
@@ -771,6 +774,9 @@ export class SideDock {
 
   private setOpen(cat: CatId | null): void {
     this.openCat = cat;
+    // El borde vivo solo se anima mientras el cajón se ve (ahorra CPU plegado).
+    if (cat) this.edge.start();
+    else this.edge.stop();
     this.renderState();
   }
 

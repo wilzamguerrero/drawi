@@ -17,9 +17,9 @@
   display: flex;
   align-items: center;
   /* Plegado: el cajón (ancho --inspector) queda fuera de la ventana a la
-     izquierda; solo la tira asoma en el marco. La tira se mete 20px dentro del
+     izquierda; solo la tira asoma en el marco. La tira se mete 10px dentro del
      panel (margin-left), así que se descuentan para que siga tocando el marco. */
-  transform: translate(calc(-1 * var(--inspector, 306px) + 20px), -50%);
+  transform: translate(calc(-1 * var(--inspector, 306px) + 10px), -50%);
   transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
   /* El hueco alrededor no captura clics; cada pieza reactiva los suyos. */
   pointer-events: none;
@@ -37,6 +37,8 @@
   position: relative;
   width: var(--inspector, 306px);
   max-height: 82vh;
+  /* Sombra del panel aquí (sin filtrar), no en la piel: el goo se la comería. */
+  filter: drop-shadow(10px 0 28px rgba(0, 0, 0, 0.5));
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
@@ -47,37 +49,34 @@
   pointer-events: auto;
 }
 
-/* Piel: el relleno del panel. Ondula TODO su contorno con el filtro de
-   desplazamiento (#materia-warp), como una masa. Va detrás del contenido.
-
-   El lado izquierdo (pegado al marco) NO debe ondular: el vaivén ahí descubriría
-   huecos entre el borde y el contenido. Como un filtro no puede saltarse un solo
-   lado, extendemos la piel bien fuera de pantalla por la izquierda (left
-   negativo): el relleno siempre cubre x:0 y el ondulado de ese borde queda
-   escondido tras el marco. Solo se ve respirar el borde derecho, el del lienzo.
-   Sin borde de 1px: un contorno duro desplazado es justo lo que salía dentado. */
+/* Piel: el relleno del panel, dibujado como un SVG vectorial (MateriaEdge) que
+   cubre exactamente el cajón. Su borde derecho —el que da al lienzo— ondula como
+   una masa; los otros tres quedan rectos. El izquierdo se dibuja en x:0 del SVG,
+   así que queda pegado al marco sin huecos. Al ser un `<path>` que se recalcula
+   por frames, el contorno se antialiasea perfecto: continuo y fluido, sin el
+   pixelado ni las "vetas" del filtro de desplazamiento que reemplaza. Va detrás
+   del contenido, que vive en su propia capa nítida. */
 .dock-skin {
   position: absolute;
-  left: -80px;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  background: #161619;
-  border-radius: 0 22px 22px 0;
-  box-shadow: 12px 0 34px rgba(0, 0, 0, 0.5);
-  filter: url(#materia-warp);
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Deja respirar el ondulado del borde derecho más allá del ancho del cajón sin
+     que el SVG recorte el pico de la ola. */
+  overflow: visible;
   z-index: 0;
 }
 
 /* Contenido nítido, por encima de la piel ondulante. Un margen a la derecha deja
-   sitio a que el borde vivo respire sin descubrir el texto. */
+   sitio a que el borde vivo respire sin descubrir el texto y separa la info de la
+   tira de iconos. */
 .dock-content {
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
   max-height: 82vh;
-  padding-right: 8px;
+  padding-right: 22px;
 }
 
 .dock-head {
@@ -167,7 +166,7 @@
 .dock-tabs {
   position: relative;
   z-index: 2;
-  margin-left: -20px;
+  margin-left: -10px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -244,14 +243,12 @@
   }
 }
 
-/* Movimiento reducido: sin deslizamiento ni ondulado del borde; el cajón
-   aparece/desaparece directo y la piel queda quieta con las esquinas fijas. */
+/* Movimiento reducido: sin deslizamiento del cajón. El borde no ondula —lo
+   resuelve MateriaEdge en JS, que dibuja una silueta quieta con las esquinas
+   fijas cuando el usuario pide reducir el movimiento. */
 @media (prefers-reduced-motion: reduce) {
   .side-dock,
   .side-dock.is-open {
     transition: none;
-  }
-  .dock-skin {
-    filter: none;
   }
 }

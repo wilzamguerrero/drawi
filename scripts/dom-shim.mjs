@@ -94,7 +94,9 @@ globalThis.document = {
   removeEventListener() {},
 };
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
-globalThis.requestAnimationFrame = (fn) => setTimeout(() => fn(performance.now()), 16);
+// unref() para que un bucle de animacion (p.ej. el borde vivo del dock) no
+// mantenga vivo el proceso de Node: en un navegador rAF nunca impide salir.
+globalThis.requestAnimationFrame = (fn) => { const h = setTimeout(() => fn(performance.now()), 16); h.unref?.(); return h; };
 globalThis.cancelAnimationFrame = (h) => clearTimeout(h);
 const store = new Map();
 globalThis.localStorage = {

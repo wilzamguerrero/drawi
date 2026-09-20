@@ -127,10 +127,12 @@
 /* ------------------------------------------------- materia viva (borde entero)
  *
  * Para siluetas rectangulares (paneles) el ondulado no puede ir por
- * border-radius —solo curvaría las esquinas—: se hace con el filtro SVG de
- * desplazamiento #materia-warp (inyectado por `ensureMateriaWarp()` en
- * `ui/fx/materia.ts`), que mueve TODO el contorno. Se aplica a una capa "piel"
- * detrás del contenido; el CSS de cada panel decide dónde. */
+ * border-radius —solo curvaría las esquinas— ni con un filtro SVG de
+ * desplazamiento —deforma píxeles y deja pixelado y "vetas"—: se dibuja como un
+ * `<path>` vectorial que se recalcula por frames (clase MateriaEdge en
+ * `ui/fx/materia-edge.ts`). Al ser vector, el contorno se antialiasea perfecto y
+ * se ve continuo y fluido. Se monta como capa "piel" detrás del contenido; el
+ * CSS de cada panel decide dónde. */
 
 @media (prefers-reduced-motion: reduce) {
   .materia-fx { display: none; }
