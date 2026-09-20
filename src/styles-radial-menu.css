@@ -1,0 +1,280 @@
+/* ============================================================
+   RADIAL MENU - Sistema de menú radial profesional
+   ============================================================ */
+
+.radial-menu {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Contenedor principal */
+.rm-container {
+  position: absolute;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  user-select: none;
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.3));
+  opacity: 0;
+  transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+}
+
+.rm-container.is-opening {
+  animation: rm-scale-in 0.2s ease-out forwards;
+}
+
+.rm-container.is-closing {
+  animation: rm-scale-out 0.15s ease-in forwards;
+}
+
+@keyframes rm-scale-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes rm-scale-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.9);
+  }
+}
+
+/* SVG */
+.rm-svg {
+  display: block;
+  overflow: visible;
+}
+
+/* Sectores */
+.rm-sector {
+  fill: rgba(42, 46, 56, 0.96);
+  stroke: rgba(74, 144, 226, 0.25);
+  stroke-width: 1.5;
+  transition: all 0.08s ease-out;
+  cursor: pointer;
+}
+
+.rm-sector-main {
+  /* Estilo por defecto */
+}
+
+.rm-sector-sub {
+  fill: rgba(50, 54, 66, 0.94);
+  stroke: rgba(74, 144, 226, 0.2);
+}
+
+/* Estados de sector */
+.rm-sector.is-hover {
+  fill: rgba(74, 144, 226, 0.45);
+  stroke: rgba(74, 144, 226, 1);
+  stroke-width: 2;
+}
+
+.rm-sector.is-active {
+  fill: rgba(74, 144, 226, 0.3);
+  stroke: rgba(74, 144, 226, 0.6);
+}
+
+.rm-sector.is-disabled {
+  fill: rgba(42, 46, 56, 0.5);
+  stroke: rgba(74, 144, 226, 0.1);
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.rm-sector.has-submenu {
+  /* Indicador visual de que tiene submenú */
+}
+
+/* Contenedor de iconos */
+.rm-icons {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Iconos */
+.rm-icon {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition: all 0.08s ease-out;
+}
+
+.rm-icon svg {
+  width: 100%;
+  height: 100%;
+  color: rgba(255, 255, 255, 0.85);
+  fill: currentColor;
+  transition: color 0.08s ease-out;
+}
+
+.rm-icon.is-hover svg {
+  color: rgba(255, 255, 255, 1);
+  transform: scale(1.1);
+}
+
+.rm-icon-sub {
+  /* Iconos de submenú ligeramente más pequeños */
+}
+
+.rm-icon-swatch {
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.rm-icon-swatch.is-hover {
+  border-color: rgba(255, 255, 255, 0.9);
+  transform: translate(-50%, -50%) scale(1.15);
+}
+
+.rm-icon-color {
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* Botón central */
+.rm-center-btn {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: rgba(26, 29, 35, 0.98);
+  border: 2px solid rgba(74, 144, 226, 0.4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease-out;
+  pointer-events: auto;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.rm-center-btn:hover {
+  background: rgba(26, 29, 35, 1);
+  border-color: rgba(74, 144, 226, 0.7);
+  transform: translate(-50%, -50%) scale(1.05);
+}
+
+.rm-center-btn:active {
+  transform: translate(-50%, -50%) scale(0.98);
+}
+
+/* Icono del botón central */
+.rm-center-icon {
+  display: none;
+  width: 20px;
+  height: 20px;
+  color: rgba(74, 144, 226, 0.9);
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}
+
+.rm-center-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
+.rm-center-btn.can-back .rm-center-icon {
+  display: block;
+  opacity: 1;
+}
+
+/* Label del botón central */
+.rm-center-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  text-align: center;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
+  transition: all 0.1s ease-out;
+}
+
+.rm-center-btn.can-back .rm-center-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.rm-center-btn:hover .rm-center-label {
+  color: rgba(255, 255, 255, 1);
+}
+
+/* Responsive - pantallas pequeñas */
+@media (max-width: 768px) {
+  .rm-container {
+    /* En móviles, podríamos reducir el tamaño */
+    transform: translate(-50%, -50%) scale(0.85);
+  }
+
+  .rm-container.is-opening {
+    animation: rm-scale-in-mobile 0.2s ease-out forwards;
+  }
+
+  @keyframes rm-scale-in-mobile {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.7);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(0.85);
+    }
+  }
+}
+
+/* Modo alto contraste */
+@media (prefers-contrast: high) {
+  .rm-sector {
+    stroke-width: 2;
+  }
+
+  .rm-sector.is-hover {
+    stroke-width: 3;
+  }
+
+  .rm-center-btn {
+    border-width: 3px;
+  }
+}
+
+/* Reducción de movimiento */
+@media (prefers-reduced-motion: reduce) {
+  .rm-container,
+  .rm-sector,
+  .rm-icon,
+  .rm-icon svg,
+  .rm-center-btn,
+  .rm-center-label {
+    transition: none;
+    animation: none;
+  }
+}

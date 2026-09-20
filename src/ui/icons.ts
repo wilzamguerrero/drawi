@@ -61,6 +61,20 @@ export const ICONS: Record<string, string> = {
   eraser: svg(
     `<path d="m10 19 9-9-5-5-9 9 5 5Z"/><path d="M6 19h13"/>`,
   ),
+  droplet: svg(`<path d="M12 3.5c3.5 4 5.5 6.7 5.5 9.5a5.5 5.5 0 0 1-11 0c0-2.8 2-5.5 5.5-9.5Z"/>`),
+  tune: svg(
+    `<path d="M6 4v6M6 14v6"/><circle cx="6" cy="12" r="2"/><path d="M14 4v2M14 10v10"/><circle cx="14" cy="8" r="2"/><path d="M20 4v10M20 18v2"/><circle cx="20" cy="16" r="2"/>`,
+  ),
+  compass: svg(`<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.2 4.8-4.8 2.2 2.2-4.8Z"/>`),
+  gear: svg(
+    `<circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/>`,
+  ),
+  back: svg(`<path d="M15 6l-6 6 6 6"/>`),
+  plus: svg(`<path d="M12 5v14M5 12h14"/>`),
+  minus: svg(`<path d="M5 12h14"/>`),
+  spark: svg(`<path d="M12 3v6M12 15v6M3 12h6M15 12h6"/><path d="M12 9a3 3 0 0 0 3 3 3 3 0 0 0-3 3 3 3 0 0 0-3-3 3 3 0 0 0 3-3Z"/>`),
+  pin: svg(`<path d="M12 3l4 4-1.5 1.5.8 5.2L12 12l-3.3 1.7.8-5.2L8 7Z"/><path d="M12 12v9"/>`),
+  file: svg(`<path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v4h4"/>`),
 };
 
 export function icon(name: keyof typeof ICONS | string): string {

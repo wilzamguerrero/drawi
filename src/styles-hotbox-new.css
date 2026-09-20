@@ -1,0 +1,219 @@
+/* =========================================================================
+   Hotbox Nuevo - Estilo Godot
+   ========================================================================= */
+
+.hotbox-new {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.hb-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
+              transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1.2);
+}
+
+.hb-ring.is-in {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.hb-ring.is-out {
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.2s ease-in, transform 0.2s ease-in;
+}
+
+/* SVG Container */
+.hb-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  filter: drop-shadow(0 4px 20px rgba(0, 0, 0, 0.5));
+}
+
+/* Sectores */
+.hb-sector {
+  fill: rgba(50, 54, 66, 0.92);
+  stroke: rgba(74, 144, 226, 0.3);
+  stroke-width: 1.5;
+  transition: fill 0.15s ease, stroke 0.15s ease;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.hb-sector.is-active {
+  fill: rgba(74, 144, 226, 0.25);
+  stroke: rgba(74, 144, 226, 0.6);
+}
+
+.hb-sector.is-hover {
+  fill: rgba(74, 144, 226, 0.4);
+  stroke: rgba(74, 144, 226, 1);
+  stroke-width: 2;
+}
+
+.hb-sector.is-disabled {
+  fill: rgba(50, 54, 66, 0.4);
+  stroke: rgba(74, 144, 226, 0.15);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.hb-sector.has-submenu {
+  fill: rgba(60, 64, 76, 0.92);
+  stroke: rgba(74, 144, 226, 0.4);
+}
+
+.hb-sector.has-submenu.is-hover {
+  fill: rgba(74, 144, 226, 0.5);
+}
+
+.hb-sector-sub {
+  fill: rgba(42, 46, 56, 0.95);
+  stroke: rgba(74, 144, 226, 0.5);
+}
+
+/* Capa de iconos */
+.hb-icons {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hb-icon {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: #9ba3b8;
+  transition: color 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+}
+
+.hb-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.hb-icon.is-hover {
+  color: #fff;
+  transform: translate(-50%, -50%) scale(1.2);
+  filter: drop-shadow(0 0 8px rgba(74, 144, 226, 0.8))
+          drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+}
+
+.hb-icon.is-swatch,
+.hb-icon.is-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 3px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6),
+              inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+
+.hb-icon.is-swatch.is-hover,
+.hb-icon.is-dot.is-hover {
+  border-color: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 16px rgba(74, 144, 226, 0.8),
+              0 2px 8px rgba(0, 0, 0, 0.6),
+              inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+
+.hb-icon-sub {
+  width: 24px;
+  height: 24px;
+}
+
+.hb-icon-sub svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Hub central */
+.hb-hub {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 80px;
+  height: 80px;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 2px;
+  border: 2px solid rgba(74, 144, 226, 0.5);
+  background: linear-gradient(135deg, rgba(42, 46, 56, 0.98), rgba(50, 54, 66, 0.98));
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8),
+              0 0 20px rgba(74, 144, 226, 0.3),
+              inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  pointer-events: auto;
+  backdrop-filter: blur(12px);
+  transition: all 0.2s ease;
+}
+
+.hb-hub:hover {
+  border-color: rgba(74, 144, 226, 0.8);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9),
+              0 0 30px rgba(74, 144, 226, 0.5),
+              inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  transform: translate(-50%, -50%) scale(1.05);
+}
+
+.hb-hub-icon {
+  display: none;
+  width: 24px;
+  height: 24px;
+  color: var(--accent);
+  grid-area: 1 / 1;
+  filter: drop-shadow(0 0 6px rgba(74, 144, 226, 0.6));
+}
+
+.hb-hub-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.hb-hub-label {
+  grid-area: 1 / 1;
+  font: 700 13px/1.2 var(--font);
+  letter-spacing: 0.03em;
+  color: #e8ecf4;
+  text-shadow: 0 0 8px rgba(74, 144, 226, 0.4),
+               0 2px 4px rgba(0, 0, 0, 0.8);
+  text-align: center;
+  padding: 0 8px;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hb-hub.can-back .hb-hub-icon {
+  display: block;
+}
+
+.hb-hub.can-back:hover .hb-hub-label {
+  opacity: 0;
+}
+
+/* Eliminar tooltip separado - ya no se usa */

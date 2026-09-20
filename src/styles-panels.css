@@ -1,0 +1,112 @@
+/* =========================================================================
+   Sistema de paneles flotantes con anclaje (pin)
+   ========================================================================= */
+
+.dock {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.panel-card {
+  position: fixed;
+  z-index: 50;
+  width: 280px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+  transition: box-shadow 0.15s ease;
+  animation: panel-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.panel-card.is-flash {
+  animation: panel-flash 0.3s ease;
+}
+
+@keyframes panel-flash {
+  0%, 100% {
+    box-shadow: var(--shadow-2);
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--accent), var(--shadow-2);
+  }
+}
+
+.panel-card.is-pinned {
+  border-color: rgba(74, 144, 226, 0.4);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: move;
+  user-select: none;
+}
+
+.panel-title {
+  flex: 1;
+  font: 600 12px/1 var(--font);
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.panel-pin,
+.panel-x {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.panel-pin:hover,
+.panel-x:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.panel-pin.is-on {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.panel-body {
+  padding: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-3) transparent;
+}
+
+.panel-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.panel-body::-webkit-scrollbar-thumb {
+  background: var(--panel-3);
+  border-radius: 4px;
+}

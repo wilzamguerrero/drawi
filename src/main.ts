@@ -1,4 +1,5 @@
 import "./styles.css";
+import "./styles-radial-menu.css";
 import { App } from "./ui/app";
 
 const root = document.getElementById("app");

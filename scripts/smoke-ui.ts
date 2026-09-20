@@ -12,6 +12,7 @@
  */
 
 import { App } from "../src/ui/app";
+import { buildRoot } from "../src/ui/hotbox/menu";
 import { exportSvg } from "../src/io/export";
 import { exportVector, newDocument, projectText, saveProject, autosave, restoreAutosave } from "../src/ui/file-actions";
 import { parseProject } from "../src/io/project";
@@ -87,24 +88,26 @@ noThrow("modificadores degradado + splat", () => {
   ed.setBrush({ gradient: false, splat: false });
 });
 
-// --- La seccion Forma solo ofrece lo que la pieza activa usa ---
-// "Redondeo" no hace nada en una estrella y "Lados" no hace nada en una caja.
-// Si el control sigue visible, el usuario arrastra el deslizador y no ocurre
-// nada: la interfaz estaria mintiendo. La interfaz se repinta en un frame, asi
-// que hay que esperarlo antes de mirar.
-const frame = (): Promise<void> => new Promise((r) => setTimeout(r, 40));
-const ctrlHidden = (label: string): boolean | null => {
-  for (const n of flat) {
-    if (n.className !== "slider-label" || n.textContent !== label) continue;
-    let p: any = n.parentNode;
-    while (p && !p.classList?.contains("ctrl-slider")) p = p.parentNode;
-    if (p) return p.classList.contains("is-hidden");
-  }
-  return null;
-};
-
+// --- El submenu Forma del hotbox solo ofrece lo que la pieza activa usa ---
+// "Redondeo" no hace nada en una estrella ni "Lados" en una caja: si el dial
+// siguiera ahi el usuario lo giraria sin efecto y la interfaz estaria mintiendo.
+// El arbol del hotbox se poda por tipo de forma; aqui se comprueba esa poda.
 ed.setTool("shape");
-// Que control debe verse en cada forma, segun lo que la geometria usa de verdad.
+const shapeDials = (): string[] => {
+  const root = buildRoot(ed, ed.state, {
+    openColor: () => {},
+    toggleWheel: () => {},
+    help: () => {},
+    newDoc: () => {},
+    openFile: () => {},
+    save: () => {},
+    exportPng: () => {},
+    exportSvg: () => {},
+  });
+  const cfg = root.find((n: any) => n.id === "shape-cfg");
+  if (!cfg || cfg.kind !== "submenu") return [];
+  return cfg.children.filter((c: any) => c.kind === "dial").map((c: any) => c.label);
+};
 const expectVisible: Record<string, string[]> = {
   circle: [],
   box: ["Proporcion", "Redondeo"],
@@ -116,17 +119,16 @@ const everyCtrl = ["Proporcion", "Lados", "Radio interior", "Redondeo"];
 let shapeUiErr = "";
 for (const [kind, visible] of Object.entries(expectVisible)) {
   ed.setShape({ kind: kind as any });
-  await frame();
+  const dials = shapeDials();
   for (const label of everyCtrl) {
-    const hidden = ctrlHidden(label);
-    if (hidden === null) { shapeUiErr ||= `no encuentro el control "${label}"`; continue; }
-    const should = !visible.includes(label);
-    if (hidden !== should) {
-      shapeUiErr ||= `${kind}: "${label}" ${hidden ? "oculto" : "visible"} y deberia estar ${should ? "oculto" : "visible"}`;
+    const present = dials.includes(label);
+    const should = visible.includes(label);
+    if (present !== should) {
+      shapeUiErr ||= `${kind}: "${label}" ${present ? "presente" : "ausente"} y deberia estar ${should ? "presente" : "ausente"}`;
     }
   }
 }
-ok("la seccion Forma se adapta a la pieza", shapeUiErr === "", shapeUiErr || `${Object.keys(expectVisible).length} formas revisadas`);
+ok("el submenu Forma se adapta a la pieza", shapeUiErr === "", shapeUiErr || `${Object.keys(expectVisible).length} formas revisadas`);
 ed.setShape({ kind: "ngon" });
 
 // --- Las cuatro simetrias, dibujando de verdad en cada una ---
