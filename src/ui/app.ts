@@ -21,6 +21,8 @@ import { Panels } from "./panels";
  * lo unico que invita a hacer algo sea el lienzo.
  */
 export class App {
+  private static readonly PIN_KEY = "drawi.hud.pinned";
+
   readonly editor: Editor;
 
   private topBar: TopBar;
@@ -36,6 +38,7 @@ export class App {
   private frameQueued = false;
   private autosaveTimer = 0;
   private idleTimer = 0;
+  private pinned = false;
   private lastPointer = { x: 0, y: 0 };
   private keyHandler: (e: KeyboardEvent) => void;
   private pointerHandler: (e: PointerEvent) => void;
@@ -48,7 +51,9 @@ export class App {
     this.editor = new Editor(canvasHost);
     this.help = new HelpOverlay();
     this.topBar = new TopBar(this.editor, () => this.help.toggle());
-    this.statusBar = new StatusBar();
+    // El pin se recuerda entre sesiones. Por defecto viene activo (fijado).
+    this.pinned = this.readPinnedPref();
+    this.statusBar = new StatusBar(this.pinned, (pinned) => this.setPinned(pinned));
     this.pantone = new PantoneWheel((hex) => {
       this.editor.setColor(hex);
       this.wake();
@@ -69,7 +74,7 @@ export class App {
     // legibilidad sobre cualquier fondo la da mix-blend-mode: difference en el
     // CSS (invierte cada píxel del texto contra el color del lienzo debajo);
     // por eso .chrome no lleva z-index, para no aislar el HUD del lienzo.
-    const hud = el("div", { class: "hud" }, [this.topBar.el, this.statusBar.el, this.topBar.helpBtn]);
+    const hud = el("div", { class: "hud" }, [this.topBar.el, this.statusBar.el, this.statusBar.pinEl, this.topBar.helpBtn]);
     this.chrome = el("div", { class: "chrome" }, [hud]);
     root.appendChild(this.pantone.el);
 
@@ -129,7 +134,23 @@ export class App {
       this.editor.status("Dibuja. Clic derecho o Q para las herramientas.");
     }
     this.queue(this.editor.state);
-    this.wake();
+    this.revealHud();
+  }
+
+  /**
+   * Entrada del HUD al cargar. Doble rAF a proposito: dejamos que pinte primero
+   * oculto (opacity 0) y en el siguiente frame lo despertamos, asi la aparicion
+   * se anima de verdad en vez de salir ya puesta. Si venia fijado de sesiones
+   * anteriores (o por defecto), se marca is-pinned y wake() no programa el
+   * ocultado: entra suave y se queda.
+   */
+  private revealHud(): void {
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (this.pinned) setClass(this.chrome, "is-pinned", true);
+        this.wake();
+      }),
+    );
   }
 
   private async openFile(): Promise<void> {
@@ -205,9 +226,44 @@ export class App {
   private wake(): void {
     setClass(this.chrome, "is-awake", true);
     window.clearTimeout(this.idleTimer);
+    // Fijado: se queda a la vista, no programamos el ocultado.
+    if (this.pinned) return;
     this.idleTimer = window.setTimeout(() => {
       if (!this.hotbox.isOpen) setClass(this.chrome, "is-awake", false);
     }, 2600);
+  }
+
+  /** Fija o suelta el HUD. Fijado = siempre visible; suelto = vuelve a aparecer
+      y esconderse solo con la inactividad (como al cargar la pagina). */
+  private setPinned(pinned: boolean): void {
+    this.pinned = pinned;
+    this.writePinnedPref(pinned);
+    setClass(this.chrome, "is-pinned", pinned);
+    if (pinned) {
+      window.clearTimeout(this.idleTimer);
+      setClass(this.chrome, "is-awake", true);
+    } else {
+      this.wake(); // reanuda el conteo de inactividad
+    }
+  }
+
+  /** Preferencia del pin persistida. Por defecto activo (fijado) si no hay nada
+      guardado. El try/catch cubre el modo privado, donde localStorage lanza. */
+  private readPinnedPref(): boolean {
+    try {
+      const v = window.localStorage.getItem(App.PIN_KEY);
+      return v === null ? true : v === "1";
+    } catch {
+      return true;
+    }
+  }
+
+  private writePinnedPref(pinned: boolean): void {
+    try {
+      window.localStorage.setItem(App.PIN_KEY, pinned ? "1" : "0");
+    } catch {
+      // Sin almacenamiento (modo privado): el pin sigue funcionando en la sesion.
+    }
   }
 
   private queue(state: EditorState): void {

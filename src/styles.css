@@ -190,8 +190,33 @@ body {
   pointer-events: none;
 }
 
+/* Fijado: el HUD se queda siempre visible, pase lo que pase con is-awake. */
+.chrome.is-pinned .hud {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
 .hud:hover {
   opacity: 1;
+}
+
+/* Toggle de fijar: mismo aire translucido que el resto del HUD. Atenuado en
+   reposo, pleno cuando esta activo (fijado), para que el estado se lea de un
+   vistazo aun con el mix-blend del HUD. */
+.hud > .btn.status-pin {
+  opacity: 0.5;
+}
+
+.hud > .btn.status-pin:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+.hud > .btn.status-pin.is-active {
+  opacity: 1;
+  background: transparent;
+  border-color: transparent;
+  color: var(--hud-ink);
 }
 
 /* ---------------------------------------------------------------- topbar */

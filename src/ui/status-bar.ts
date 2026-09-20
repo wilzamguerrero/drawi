@@ -1,5 +1,6 @@
 import type { EditorState, PenReadout } from "../app/editor";
 import { TOOL_LABELS } from "../tools/types";
+import { button } from "./controls";
 import { el, num, setClass } from "./dom";
 
 const KIND_LABELS: Record<PenReadout["kind"], string> = {
@@ -20,6 +21,13 @@ const KIND_LABELS: Record<PenReadout["kind"], string> = {
 export class StatusBar {
   readonly el: HTMLElement;
 
+  /** Boton para fijar el HUD. Vive fuera del footer para que el HUD lo coloque
+      como hijo directo (junto al chip de motor, al lado de CPU/GPU) y herede el
+      estilo translucido del resto de la barra. */
+  readonly pinEl: HTMLElement;
+  private pinBtn: ReturnType<typeof button>;
+  private pinned = false;
+
   private message: HTMLElement;
   private toolName: HTMLElement;
   private counts: HTMLElement;
@@ -35,7 +43,13 @@ export class StatusBar {
   private timer = 0;
   private swapTimer = 0;
 
-  constructor() {
+  /**
+   * @param initialPinned  Estado inicial del pin (recordado de sesiones previas).
+   * @param onTogglePin  Se llama al pulsar el boton de fijar; recibe el nuevo
+   *   estado. Fijado = el HUD queda siempre visible; suelto = vuelve a aparecer
+   *   y esconderse solo con la inactividad.
+   */
+  constructor(initialPinned = false, onTogglePin?: (pinned: boolean) => void) {
     // Nace ya visible (is-fresh) para que el HUD no arranque con el hueco vacio;
     // el primer status() real hara el swap suave sobre este.
     this.message = el("span", { class: "status-message is-fresh", text: "Listo" });
@@ -68,6 +82,29 @@ export class StatusBar {
       this.fps,
       this.engine,
     ]);
+
+    // Toggle para fijar el HUD. Al lado de CPU/GPU (justo despues del footer en
+    // el orden del HUD). Suelto por defecto: el HUD sigue apareciendo y
+    // escondiendose solo. Fijado: se queda siempre a la vista.
+    const pinTitle = (on: boolean): string =>
+      on
+        ? "HUD fijo — clic para volver a ocultarlo solo"
+        : "Fijar el HUD (mantenerlo siempre visible)";
+
+    this.pinned = initialPinned;
+    this.pinBtn = button({
+      iconName: "pin",
+      title: pinTitle(initialPinned),
+      onClick: () => {
+        this.pinned = !this.pinned;
+        this.pinBtn.setActive(this.pinned);
+        this.pinBtn.el.title = pinTitle(this.pinned);
+        onTogglePin?.(this.pinned);
+      },
+    });
+    this.pinBtn.el.classList.add("status-pin");
+    this.pinBtn.setActive(initialPinned);
+    this.pinEl = this.pinBtn.el;
   }
 
   setMessage(text: string): void {
