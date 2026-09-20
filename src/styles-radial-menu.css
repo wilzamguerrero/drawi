@@ -204,8 +204,8 @@
 }
 
 .rm-sector-sub {
-  fill: #24242a;
-  stroke: #24242a;
+  fill: #1e1e22;
+  stroke: #1e1e22;
   transform-box: view-box;
   transform-origin: center;
 }
@@ -368,12 +368,10 @@
 /* Botón central */
 /* Núcleo del menú radial.
  *
- * No es un círculo quieto: el borde ondula despacio como una masa viva (el mismo
- * espíritu que la materia del loader) y por dentro se mueve un halo, para que dé
- * la sensación de que el centro "está vivo" mientras interactúas con la rueda.
- * La transición NO incluye border-radius: ese lo lleva la animación de ondulado
- * y un `transition: all` lo pelearía. `overflow: hidden` recorta el halo a la
- * silueta ondulante. */
+ * Negro pleno, como las partículas de entrada: sin borde ni halo de color. No es
+ * un círculo quieto: el borde ondula despacio como una masa viva (el mismo espíritu
+ * que la materia del loader). La transición NO incluye border-radius: ese lo lleva
+ * la animación de ondulado y un `transition: all` lo pelearía. */
 .rm-center-btn {
   position: absolute;
   left: 50%;
@@ -383,7 +381,8 @@
   height: 100px;
   border-radius: 50%;
   background: #161619;
-  border: 2px solid rgba(90, 159, 212, 0.45);
+  /* Negro pleno, como las partículas de entrada: sin borde de color. */
+  border: 2px solid #161619;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -397,20 +396,7 @@
   animation: rm-center-blob 8s ease-in-out infinite;
 }
 
-/* El halo interior: una masa de acento que deriva y late, recortada por el borde
-   ondulante. Es lo que hace que el núcleo se sienta habitado, no un disco plano. */
-.rm-center-btn::before {
-  content: "";
-  position: absolute;
-  inset: -25%;
-  border-radius: 50%;
-  background: radial-gradient(circle at 50% 50%, rgba(90, 159, 212, 0.28), rgba(90, 159, 212, 0) 62%);
-  z-index: 0;
-  pointer-events: none;
-  animation: rm-center-mass 7s ease-in-out infinite;
-}
-
-/* Icono y label siempre por encima del halo. */
+/* Icono y label por encima de cualquier capa. */
 .rm-center-icon,
 .rm-center-label {
   position: relative;
@@ -419,7 +405,7 @@
 
 .rm-center-btn:hover {
   background: #1e1e23;
-  border-color: rgba(90, 159, 212, 0.75);
+  border-color: #1e1e23;
   transform: translate(-50%, -50%) scale(1.05);
 }
 
@@ -435,14 +421,6 @@
   50% { border-radius: 50% 50% 58% 42% / 55% 48% 52% 45%; }
   75% { border-radius: 45% 55% 48% 52% / 48% 53% 47% 52%; }
   100% { border-radius: 46% 54% 55% 45% / 52% 46% 54% 48%; }
-}
-
-/* Deriva del halo interior: se desplaza y late fuera de fase con el borde. */
-@keyframes rm-center-mass {
-  0% { transform: translate(-6%, 5%) scale(1); }
-  33% { transform: translate(6%, -5%) scale(1.12); }
-  66% { transform: translate(-4%, 7%) scale(0.94); }
-  100% { transform: translate(-6%, 5%) scale(1); }
 }
 
 /* Icono del botón central */
@@ -534,7 +512,6 @@
   .rm-icon,
   .rm-icon svg,
   .rm-center-btn,
-  .rm-center-btn::before,
   .rm-center-label {
     transition: none;
     animation: none;
