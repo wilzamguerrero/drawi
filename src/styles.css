@@ -2012,6 +2012,14 @@ body {
   color: var(--muted);
 }
 
+.hot-color-label {
+  font: 600 10px/1 var(--font);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 @media (pointer: coarse) {
   .hot-glyph {
     gap: 4px;

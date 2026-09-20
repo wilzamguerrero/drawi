@@ -104,7 +104,19 @@ const shapeDials = (): string[] => {
     exportPng: () => {},
     exportSvg: () => {},
   });
-  const cfg = root.find((n: any) => n.id === "shape-cfg");
+  // shape-cfg ahora vive anidado dentro del grupo unificado "Materia": se
+  // busca en profundidad en vez de solo en la raíz.
+  const findDeep = (nodes: any[]): any => {
+    for (const n of nodes) {
+      if (n.id === "shape-cfg") return n;
+      if (n.kind === "submenu") {
+        const hit = findDeep(n.children);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  };
+  const cfg = findDeep(root);
   if (!cfg || cfg.kind !== "submenu") return [];
   return cfg.children.filter((c: any) => c.kind === "dial").map((c: any) => c.label);
 };

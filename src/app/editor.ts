@@ -27,6 +27,10 @@ import { SymmetryTool } from "../tools/symmetry-tool";
 import type { PullFamily } from "../tools/pull-shapes";
 import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
 
+/** Semilla del historial de colores: la escala de grises de la paleta Tinta.
+    Se va sustituyendo por los colores que el usuario elige. */
+const RECENT_SEED = ["#000000", "#1b1b1f", "#3d3d46", "#6e6e78", "#a8a8b3", "#d6d6dd", "#ffffff"];
+
 export interface PenReadout {
   kind: "pen" | "touch" | "mouse";
   pressure: number;
@@ -49,6 +53,8 @@ export interface EditorState {
   world: WorldSettings;
   field: FieldStyle;
   pullFamily: PullFamily | "random";
+  /** Últimos colores usados (más reciente primero, máx. 15). */
+  recentColors: string[];
   history: HistoryStatus;
   zoom: number;
   items: number;
@@ -89,6 +95,9 @@ export class Editor {
   brush: BrushSettings = { ...DEFAULT_BRUSH };
   color = "#16181d";
   paletteIndex = 0;
+  /** Historial de colores usados: se siembra con la escala de grises y se va
+      sustituyendo por los colores que el usuario elige (más reciente primero). */
+  recentColors: string[] = [...RECENT_SEED];
   pullFamily: PullFamily | "random" = "random";
   running = true;
   showWalls = false;
@@ -210,6 +219,7 @@ export class Editor {
       world: this.doc.physics.settings,
       field: this.doc.field,
       pullFamily: this.pullFamily,
+      recentColors: this.recentColors,
       history: this.history.status,
       zoom: this.camera.zoom,
       items: this.doc.items.length,
@@ -251,7 +261,17 @@ export class Editor {
 
   setColor(hex: string): void {
     this.color = hex;
+    this.pushRecentColor(hex);
     this.emitState();
+  }
+
+  /** Registra un color en el historial: lo lleva al frente, sin duplicados, y
+      recorta a 15. Así el panel de color muestra siempre lo último usado. */
+  private pushRecentColor(hex: string): void {
+    const norm = hex.toLowerCase();
+    const next = this.recentColors.filter((c) => c.toLowerCase() !== norm);
+    next.unshift(hex);
+    this.recentColors = next.slice(0, 15);
   }
 
   setPalette(index: number): void {

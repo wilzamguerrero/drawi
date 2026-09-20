@@ -5,7 +5,7 @@ import { SYMMETRY_LABELS, type SymmetryMode } from "../../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../../tools/pull-shapes";
 import { TOOL_LABELS, type ToolId } from "../../tools/types";
 import { el } from "../dom";
-import { button, section, segmented, slider, toggle, type Control } from "../controls";
+import { button, fieldLabel, row, section, segmented, slider, toggle, type Control } from "../controls";
 
 /**
  * Modelo declarativo del hotbox.
@@ -90,27 +90,19 @@ function buildBrushPanel(editor: Editor): (host: HTMLElement) => (() => void) | 
   return (host: HTMLElement) => {
     const b0 = editor.state.brush;
 
-    const modeCtl = segmented<BrushMode>({
-      label: "Modo",
-      value: b0.mode,
-      options: [
-        { value: "stroke", label: "Trazo" },
-        { value: "fill", label: "Relleno" },
-        { value: "pull", label: "Arrastre" },
-      ],
-      onChange: (v) => editor.setBrush({ mode: v }),
-    });
+    // El modo (Trazo/Relleno/Arrastre) no vive aquí: es su propio anillo en el
+    // menú circular. El panel es para los ajustes finos del pincel.
     const sizeCtl = slider({
       label: "Tamaño", min: 0.5, max: 400, step: 0.5, gamma: 2.2, unit: "px",
       value: b0.size, onInput: (v) => editor.setBrush({ size: v }),
     });
+    const minRatioCtl = slider({
+      label: "Ancho mínimo", min: 0, max: 1, step: 0.01, decimals: 2,
+      value: b0.minRatio, onInput: (v) => editor.setBrush({ minRatio: v }),
+    });
     const opacityCtl = slider({
       label: "Opacidad", min: 0.02, max: 1, step: 0.01, decimals: 2,
       value: b0.opacity, onInput: (v) => editor.setBrush({ opacity: v }),
-    });
-    const smoothCtl = slider({
-      label: "Suavizado", min: 0, max: 1, step: 0.01, decimals: 2,
-      value: b0.smoothing, onInput: (v) => editor.setBrush({ smoothing: v }),
     });
     const dynCtl = segmented<StrokeDynamics>({
       label: "Dinámica",
@@ -119,6 +111,39 @@ function buildBrushPanel(editor: Editor): (host: HTMLElement) => (() => void) | 
         value: k, label: DYNAMICS_INFO[k].label,
       })),
       onChange: (v) => editor.setBrush({ dynamics: v }),
+    });
+    const dynHint = fieldLabel(DYNAMICS_INFO[b0.dynamics].hint);
+    const pressureCtl = slider({
+      label: "Curva de presión", min: -1, max: 1, step: 0.05, decimals: 2,
+      value: b0.pressureCurve, onInput: (v) => editor.setBrush({ pressureCurve: v }),
+    });
+    const velScaleCtl = slider({
+      label: "Escala de velocidad", min: 0.2, max: 6, step: 0.05, decimals: 2, unit: "px/ms",
+      value: b0.velocityScale, onInput: (v) => editor.setBrush({ velocityScale: v }),
+    });
+    const velInvertCtl = toggle({
+      label: "Rápido = grueso", value: b0.velocityInvert,
+      onChange: (v) => editor.setBrush({ velocityInvert: v }),
+    });
+    const smoothCtl = slider({
+      label: "Suavizado", min: 0, max: 1, step: 0.01, decimals: 2,
+      value: b0.smoothing, onInput: (v) => editor.setBrush({ smoothing: v }),
+    });
+    const streamlineCtl = slider({
+      label: "Estabilizador", min: 0, max: 0.95, step: 0.01, decimals: 2,
+      value: b0.streamline, onInput: (v) => editor.setBrush({ streamline: v }),
+    });
+    const taperInCtl = slider({
+      label: "Afilado inicial", min: 0, max: 0.5, step: 0.01, decimals: 2,
+      value: b0.taperIn, onInput: (v) => editor.setBrush({ taperIn: v }),
+    });
+    const taperOutCtl = slider({
+      label: "Afilado final", min: 0, max: 0.5, step: 0.01, decimals: 2,
+      value: b0.taperOut, onInput: (v) => editor.setBrush({ taperOut: v }),
+    });
+    const jitterCtl = slider({
+      label: "Temblor", min: 0, max: 1, step: 0.01, decimals: 2,
+      value: b0.jitter, onInput: (v) => editor.setBrush({ jitter: v }),
     });
     const gradCtl = toggle({
       label: "Degradado", value: b0.gradient,
@@ -130,18 +155,32 @@ function buildBrushPanel(editor: Editor): (host: HTMLElement) => (() => void) | 
     });
 
     host.appendChild(section("Pincel", [
-      modeCtl.el, sizeCtl.el, opacityCtl.el, smoothCtl.el, dynCtl.el, gradCtl.el, splatCtl.el,
+      sizeCtl.el, minRatioCtl.el, opacityCtl.el,
+      dynCtl.el, dynHint,
+      pressureCtl.el, velScaleCtl.el, velInvertCtl.el,
+      smoothCtl.el, streamlineCtl.el,
+      row([taperInCtl.el, taperOutCtl.el]),
+      jitterCtl.el,
+      el("div", { class: "ctrl-group" }, [gradCtl.el, splatCtl.el]),
     ]));
 
     // Sincroniza los controles sin reconstruir el DOM (así el slider no se
     // destruye mientras se arrastra). Cada control ignora el set si está en foco.
     const off = editor.events.on("state", (state) => {
       const b = state.brush;
-      modeCtl.set(b.mode);
       sizeCtl.set(b.size);
+      minRatioCtl.set(b.minRatio);
       opacityCtl.set(b.opacity);
-      smoothCtl.set(b.smoothing);
       dynCtl.set(b.dynamics);
+      dynHint.textContent = DYNAMICS_INFO[b.dynamics].hint;
+      pressureCtl.set(b.pressureCurve);
+      velScaleCtl.set(b.velocityScale);
+      velInvertCtl.set(b.velocityInvert);
+      smoothCtl.set(b.smoothing);
+      streamlineCtl.set(b.streamline);
+      taperInCtl.set(b.taperIn);
+      taperOutCtl.set(b.taperOut);
+      jitterCtl.set(b.jitter);
       gradCtl.set(b.gradient);
       splatCtl.set(b.splat);
     });
@@ -174,13 +213,23 @@ function buildSymmetryPanel(editor: Editor): (host: HTMLElement) => (() => void)
       label: "Guía", value: s0.visible,
       onChange: (v) => editor.setSymmetry({ visible: v }),
     });
+    const lockCtl = toggle({
+      label: "Bloquear", value: s0.locked,
+      onChange: (v) => editor.setSymmetry({ locked: v }),
+    });
     const centerBtn = button({
       label: "Centrar", variant: "ghost",
       onClick: () => editor.setSymmetry({ x: editor.camera.x, y: editor.camera.y }),
     });
+    const straightenBtn = button({
+      label: "Enderezar", variant: "ghost",
+      onClick: () => editor.setSymmetry({ angle: 0 }),
+    });
 
     host.appendChild(section("Simetría", [
-      modeCtl.el, countCtl.el, angleCtl.el, guideCtl.el, centerBtn.el,
+      modeCtl.el, countCtl.el, angleCtl.el,
+      el("div", { class: "ctrl-group" }, [guideCtl.el, lockCtl.el]),
+      row([centerBtn.el, straightenBtn.el]),
     ]));
 
     const off = editor.events.on("state", (state) => {
@@ -189,6 +238,7 @@ function buildSymmetryPanel(editor: Editor): (host: HTMLElement) => (() => void)
       countCtl.set(sym.count);
       angleCtl.set((sym.angle * 180) / Math.PI);
       guideCtl.set(sym.visible);
+      lockCtl.set(sym.locked);
     });
     return () => off();
   };
@@ -214,37 +264,119 @@ function buildMatterPanel(editor: Editor): (host: HTMLElement) => (() => void) |
       label: "Hornear", iconName: "bake", variant: "ghost",
       onClick: () => editor.bakeMatter(),
     });
+
+    // ---- Física
     const gravityCtl = slider({
       label: "Gravedad", min: -2000, max: 2000, step: 10,
       value: w0.gravity.y, onInput: (v) => editor.setWorld({ gravity: { x: editor.state.world.gravity.x, y: v } }),
+    });
+    const gravityXCtl = slider({
+      label: "Gravedad lateral", min: -2000, max: 2000, step: 10,
+      value: w0.gravity.x, onInput: (v) => editor.setWorld({ gravity: { x: v, y: editor.state.world.gravity.y } }),
     });
     const cohesionCtl = slider({
       label: "Cohesión", min: 0, max: 1, step: 0.01, decimals: 2,
       value: w0.cohesion, onInput: (v) => editor.setWorld({ cohesion: v }),
     });
-    const blendCtl = slider({
-      label: "Fusión", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px",
-      value: f0.blend, onInput: (v) => { editor.setField({ blend: v }); editor.setWorld({ blend: v }); },
+    const dampingCtl = slider({
+      label: "Rozamiento del aire", min: 0, max: 3, step: 0.01, decimals: 2,
+      value: w0.damping, onInput: (v) => editor.setWorld({ damping: v }),
+    });
+    const restitutionCtl = slider({
+      label: "Rebote", min: 0, max: 1, step: 0.01, decimals: 2,
+      value: w0.restitution, onInput: (v) => editor.setWorld({ restitution: v }),
+    });
+    const frictionCtl = slider({
+      label: "Fricción", min: 0, max: 1.5, step: 0.01, decimals: 2,
+      value: w0.friction, onInput: (v) => editor.setWorld({ friction: v }),
+    });
+    const iterationsCtl = slider({
+      label: "Precisión", min: 1, max: 24, step: 1,
+      value: w0.iterations, onInput: (v) => editor.setWorld({ iterations: Math.round(v) }),
+    });
+    const timeScaleCtl = slider({
+      label: "Velocidad del tiempo", min: 0.05, max: 3, step: 0.05, decimals: 2,
+      value: w0.timeScale, onInput: (v) => editor.setWorld({ timeScale: v }),
+    });
+    const sleepingCtl = toggle({
+      label: "Dormir en reposo", value: w0.sleeping,
+      onChange: (v) => editor.setWorld({ sleeping: v }),
     });
     const wallsCtl = toggle({
       label: "Paredes", value: st0.showWalls,
       onChange: () => editor.toggleWalls(),
     });
+    const collidersCtl = toggle({
+      label: "Ver colisionadores", value: st0.debugColliders,
+      onChange: () => editor.toggleColliders(),
+    });
+
+    // ---- Acabado (campo)
+    const blendCtl = slider({
+      label: "Fusión", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px",
+      value: f0.blend, onInput: (v) => { editor.setField({ blend: v }); editor.setWorld({ blend: v }); },
+    });
+    const outlineCtl = slider({
+      label: "Contorno", min: 0, max: 12, step: 0.5, decimals: 1, unit: "px",
+      value: f0.outline, onInput: (v) => editor.setField({ outline: v }),
+    });
+    const shadeCtl = slider({
+      label: "Volumen", min: 0, max: 1, step: 0.01, decimals: 2,
+      value: f0.shade, onInput: (v) => editor.setField({ shade: v }),
+    });
+    const glossCtl = slider({
+      label: "Brillo", min: 0, max: 1.5, step: 0.01, decimals: 2,
+      value: f0.gloss, onInput: (v) => editor.setField({ gloss: v }),
+    });
+    const depthCtl = slider({
+      label: "Profundidad", min: 4, max: 160, step: 1, gamma: 1.4, unit: "px",
+      value: f0.depth, onInput: (v) => editor.setField({ depth: v }),
+    });
+    const alphaCtl = slider({
+      label: "Opacidad", min: 0.05, max: 1, step: 0.01, decimals: 2,
+      value: f0.alpha, onInput: (v) => editor.setField({ alpha: v }),
+    });
+
     const clearBtn = button({
       label: "Vaciar", iconName: "trash", variant: "danger",
       onClick: () => editor.clearMatter(),
     });
+    const zeroGBtn = button({
+      label: "Cero G", variant: "ghost",
+      onClick: () => editor.setWorld({ gravity: { x: 0, y: 0 } }),
+    });
 
     host.appendChild(section("Materia", [
-      runBtn.el, seedBtn.el, bakeBtn.el, gravityCtl.el, cohesionCtl.el, blendCtl.el, wallsCtl.el, clearBtn.el,
+      row([runBtn.el, seedBtn.el, bakeBtn.el]),
+      gravityCtl.el, gravityXCtl.el, cohesionCtl.el, dampingCtl.el,
+      row([restitutionCtl.el, frictionCtl.el]),
+      iterationsCtl.el, timeScaleCtl.el,
+      el("div", { class: "ctrl-group" }, [sleepingCtl.el, wallsCtl.el, collidersCtl.el]),
+      blendCtl.el, outlineCtl.el, shadeCtl.el, glossCtl.el, depthCtl.el, alphaCtl.el,
+      row([zeroGBtn.el, clearBtn.el]),
     ]));
 
     const off = editor.events.on("state", (state) => {
       runBtn.el.querySelector(".btn-label")!.textContent = state.running ? "Pausar" : "Reanudar";
-      gravityCtl.set(state.world.gravity.y);
-      cohesionCtl.set(state.world.cohesion);
-      blendCtl.set(state.field.blend);
+      const w = state.world;
+      const f = state.field;
+      gravityCtl.set(w.gravity.y);
+      gravityXCtl.set(w.gravity.x);
+      cohesionCtl.set(w.cohesion);
+      dampingCtl.set(w.damping);
+      restitutionCtl.set(w.restitution);
+      frictionCtl.set(w.friction);
+      iterationsCtl.set(w.iterations);
+      timeScaleCtl.set(w.timeScale);
+      sleepingCtl.set(w.sleeping);
       wallsCtl.set(state.showWalls);
+      collidersCtl.set(state.debugColliders);
+      blendCtl.set(f.blend);
+      outlineCtl.set(f.outline);
+      shadeCtl.set(f.shade);
+      glossCtl.set(f.gloss);
+      depthCtl.set(f.depth);
+      alphaCtl.set(f.alpha);
     });
     return () => off();
   };
@@ -353,9 +485,18 @@ function toolsSubmenu(editor: Editor, state: EditorState): SubmenuNode {
     hint: "Elige con que actuas sobre el lienzo",
     children: [
       toolNode(editor, state, "brush", "brush"),
-      toolNode(editor, state, "shape", "shape"),
-      toolNode(editor, state, "matter", "matter"),
-      toolNode(editor, state, "symmetry", "symmetry"),
+      // Forma y Materia se fusionan en un solo grupo "Materia" con Crear/Mover.
+      {
+        kind: "submenu",
+        id: "matter-tools",
+        label: "Materia",
+        icon: "matter",
+        hint: "Crea formas y muévelas como materia física",
+        children: [
+          { kind: "action", id: "tool-shape", label: "Crear", icon: "shape", active: state.tool === "shape", run: () => editor.setTool("shape") },
+          { kind: "action", id: "tool-matter", label: "Mover", icon: "matter", active: state.tool === "matter", run: () => editor.setTool("matter") },
+        ],
+      },
       toolNode(editor, state, "picker", "picker"),
       toolNode(editor, state, "hand", "hand"),
     ],
@@ -453,11 +594,12 @@ function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
 }
 
 /**
- * Submenu de forma: solo aparecen los ajustes que la pieza activa usa de verdad.
+ * Nodo "Forma": solo aparecen los ajustes que la pieza activa usa de verdad.
  * "Redondeo" no hace nada en una estrella ni "Lados" en una caja, asi que el
- * arbol se poda por tipo de forma para no ofrecer diales inertes.
+ * arbol se poda por tipo de forma para no ofrecer diales inertes. Vive dentro
+ * del grupo Materia (crear formas), no como herramienta suelta.
  */
-function shapeSubmenu(editor: Editor, state: EditorState): SubmenuNode {
+function shapeConfigNode(editor: Editor, state: EditorState): SubmenuNode {
   const s = state.shape;
   const children: HotNode[] = [
     {
@@ -498,6 +640,49 @@ function shapeSubmenu(editor: Editor, state: EditorState): SubmenuNode {
   return { kind: "submenu", id: "shape-cfg", label: "Forma", icon: "shape", children };
 }
 
+/** Nodo "Física": el mundo completo (gravedad, roces, solver, reposo). */
+function physicsConfigNode(editor: Editor, state: EditorState): SubmenuNode {
+  const w = state.world;
+  return {
+    kind: "submenu",
+    id: "physics-cfg",
+    label: "Física",
+    icon: "tune",
+    children: [
+      { kind: "dial", id: "gravity", label: "Gravedad", min: -2000, max: 2000, step: 10, value: w.gravity.y, onInput: (v) => editor.setWorld({ gravity: { x: editor.state.world.gravity.x, y: v } }) },
+      { kind: "dial", id: "gravity-x", label: "Gravedad lateral", min: -2000, max: 2000, step: 10, value: w.gravity.x, onInput: (v) => editor.setWorld({ gravity: { x: v, y: editor.state.world.gravity.y } }) },
+      { kind: "dial", id: "cohesion", label: "Cohesion", min: 0, max: 1, step: 0.01, value: w.cohesion, onInput: (v) => editor.setWorld({ cohesion: v }) },
+      { kind: "dial", id: "damping", label: "Rozamiento", min: 0, max: 3, step: 0.01, value: w.damping, onInput: (v) => editor.setWorld({ damping: v }) },
+      { kind: "dial", id: "restitution", label: "Rebote", min: 0, max: 1, step: 0.01, value: w.restitution, onInput: (v) => editor.setWorld({ restitution: v }) },
+      { kind: "dial", id: "friction", label: "Friccion", min: 0, max: 1.5, step: 0.01, value: w.friction, onInput: (v) => editor.setWorld({ friction: v }) },
+      { kind: "dial", id: "iterations", label: "Precision", min: 1, max: 24, step: 1, value: w.iterations, onInput: (v) => editor.setWorld({ iterations: Math.round(v) }) },
+      { kind: "dial", id: "time-scale", label: "Velocidad tiempo", min: 0.05, max: 3, step: 0.05, value: w.timeScale, onInput: (v) => editor.setWorld({ timeScale: v }) },
+      { kind: "action", id: "sleeping", label: "Dormir", icon: "spark", active: w.sleeping, keepOpen: true, run: () => editor.setWorld({ sleeping: !editor.state.world.sleeping }) },
+      { kind: "action", id: "colliders", label: "Colisionadores", icon: "grid", active: state.debugColliders, keepOpen: true, run: () => editor.toggleColliders() },
+      { kind: "action", id: "zero-g", label: "Cero G", icon: "spark", run: () => editor.setWorld({ gravity: { x: 0, y: 0 } }) },
+    ],
+  };
+}
+
+/** Nodo "Acabado": el estilo con el que se pinta la materia fundida. */
+function fieldConfigNode(editor: Editor, state: EditorState): SubmenuNode {
+  const f = state.field;
+  return {
+    kind: "submenu",
+    id: "field-cfg",
+    label: "Acabado",
+    icon: "layers",
+    children: [
+      { kind: "dial", id: "blend", label: "Fusion", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px", value: f.blend, onInput: (v) => { editor.setField({ blend: v }); editor.setWorld({ blend: v }); } },
+      { kind: "dial", id: "outline", label: "Contorno", min: 0, max: 12, step: 0.5, unit: "px", value: f.outline, onInput: (v) => editor.setField({ outline: v }) },
+      { kind: "dial", id: "shade", label: "Volumen", min: 0, max: 1, step: 0.01, value: f.shade, onInput: (v) => editor.setField({ shade: v }) },
+      { kind: "dial", id: "gloss", label: "Brillo", min: 0, max: 1.5, step: 0.01, value: f.gloss, onInput: (v) => editor.setField({ gloss: v }) },
+      { kind: "dial", id: "depth", label: "Profundidad", min: 4, max: 160, step: 1, gamma: 1.4, unit: "px", value: f.depth, onInput: (v) => editor.setField({ depth: v }) },
+      { kind: "dial", id: "field-alpha", label: "Opacidad", min: 0.05, max: 1, step: 0.01, value: f.alpha, onInput: (v) => editor.setField({ alpha: v }) },
+    ],
+  };
+}
+
 function symmetrySubmenu(editor: Editor, state: EditorState): SubmenuNode {
   const sym = state.symmetry;
   return {
@@ -514,6 +699,16 @@ function symmetrySubmenu(editor: Editor, state: EditorState): SubmenuNode {
         canFloat: true,
         buildPanel: buildSymmetryPanel(editor),
         run: () => {},
+      },
+      // Activa la herramienta de simetría (mover el eje en el lienzo). Antes
+      // vivía en "Dibujar"; ahora está donde se controla la simetría.
+      {
+        kind: "action",
+        id: "tool-symmetry",
+        label: "Mover eje",
+        icon: "symmetry",
+        active: state.tool === "symmetry",
+        run: () => editor.setTool("symmetry"),
       },
       {
         kind: "submenu",
@@ -535,9 +730,13 @@ function symmetrySubmenu(editor: Editor, state: EditorState): SubmenuNode {
   };
 }
 
+/**
+ * Grupo unificado "Materia": reúne crear formas y moverlas como materia física.
+ * Antes eran dos herramientas sueltas (Forma y Materia); ahora es un solo lugar
+ * con dos botones —Crear y Mover— y, debajo, todo lo que faltaba: play/pausa,
+ * sembrar, hornear, y los ajustes de forma, física y acabado en subgrupos.
+ */
 function matterSubmenu(editor: Editor, state: EditorState): SubmenuNode {
-  const w = state.world;
-  const f = state.field;
   return {
     kind: "submenu",
     id: "matter-cfg",
@@ -553,12 +752,17 @@ function matterSubmenu(editor: Editor, state: EditorState): SubmenuNode {
         buildPanel: buildMatterPanel(editor),
         run: () => {},
       },
+      // Los dos modos de la materia: crear piezas o moverlas.
+      { kind: "action", id: "tool-shape", label: "Crear", icon: "shape", active: state.tool === "shape", run: () => editor.setTool("shape") },
+      { kind: "action", id: "tool-matter", label: "Mover", icon: "matter", active: state.tool === "matter", run: () => editor.setTool("matter") },
+      // Controles de simulación.
       { kind: "action", id: "run", label: state.running ? "Pausar" : "Reanudar", icon: state.running ? "pause" : "play", active: state.running, keepOpen: true, run: () => editor.setRunning(!state.running) },
       { kind: "action", id: "seed", label: "Sembrar", icon: "seed", run: () => editor.seedMatter(8) },
       { kind: "action", id: "bake", label: "Hornear", icon: "bake", run: () => editor.bakeMatter() },
-      { kind: "dial", id: "gravity", label: "Gravedad", min: -2000, max: 2000, step: 10, value: w.gravity.y, onInput: (v) => editor.setWorld({ gravity: { x: w.gravity.x, y: v } }) },
-      { kind: "dial", id: "cohesion", label: "Cohesion", min: 0, max: 1, step: 0.01, value: w.cohesion, onInput: (v) => editor.setWorld({ cohesion: v }) },
-      { kind: "dial", id: "blend", label: "Fusion", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px", value: f.blend, onInput: (v) => { editor.setField({ blend: v }); editor.setWorld({ blend: v }); } },
+      // Ajustes agrupados: forma de las piezas, física del mundo y acabado.
+      shapeConfigNode(editor, state),
+      physicsConfigNode(editor, state),
+      fieldConfigNode(editor, state),
       { kind: "action", id: "walls", label: "Paredes", icon: "grid", active: state.showWalls, keepOpen: true, run: () => editor.toggleWalls() },
       { kind: "action", id: "clear-matter", label: "Vaciar", icon: "trash", accent: "#ff5f6d", run: () => editor.clearMatter() },
     ],
@@ -609,7 +813,8 @@ function colorSubmenu(editor: Editor, state: EditorState, hooks: MenuHooks): Sub
     children: [
       { kind: "action", id: "color-panel", label: "Selector", icon: "droplet", accent: state.color, run: () => hooks.openColor() },
       { kind: "action", id: "wheel", label: "Rueda", icon: "wheel", run: () => hooks.toggleWheel() },
-      ...state.palette.colors.map((hex, i) => ({
+      // Últimos colores usados (no la paleta fija): lo que de verdad has tocado.
+      ...state.recentColors.map((hex, i) => ({
         kind: "action" as const,
         id: `swatch-${i}`,
         label: hex.toUpperCase(),
@@ -634,16 +839,19 @@ export function buildRoot(editor: Editor, state: EditorState, hooks: MenuHooks):
   const tool = state.tool;
   const nodes: HotNode[] = [];
 
+  // Ajuste de la herramienta activa como primer sector. Forma y Materia
+  // comparten el mismo grupo unificado (crear/mover + física + acabado).
   if (tool === "brush" || tool === "picker" || tool === "hand") nodes.push(brushSubmenu(editor, state));
-  else if (tool === "shape") nodes.push(shapeSubmenu(editor, state));
+  else if (tool === "shape" || tool === "matter") nodes.push(matterSubmenu(editor, state));
   else if (tool === "symmetry") nodes.push(symmetrySubmenu(editor, state));
-  else if (tool === "matter") nodes.push(matterSubmenu(editor, state));
 
   nodes.push(toolsSubmenu(editor, state));
   nodes.push(colorSubmenu(editor, state, hooks));
 
   if (tool !== "symmetry") nodes.push(symmetrySubmenu(editor, state));
-  if (tool !== "matter" && (state.bodies > 0 || tool === "shape")) nodes.push(matterSubmenu(editor, state));
+  // El grupo Materia también aparece suelto cuando ya hay cuerpos y no es el
+  // sector activo, para tener la simulación a mano sin cambiar de herramienta.
+  if (tool !== "shape" && tool !== "matter" && state.bodies > 0) nodes.push(matterSubmenu(editor, state));
 
   nodes.push(viewSubmenu(editor));
   nodes.push(fileSubmenu(editor, state, hooks));

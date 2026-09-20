@@ -152,6 +152,18 @@ export class App {
    */
   private mountColor(host: HTMLElement): () => void {
     const picker = new ColorPicker(this.editor.color, (hex) => this.editor.setColor(hex));
+
+    // Fila principal: los últimos 15 colores usados (se sustituyen con el uso).
+    const recent = swatches({
+      colors: this.editor.recentColors,
+      value: this.editor.color,
+      onPick: (hex) => {
+        this.editor.setColor(hex);
+        picker.set(hex);
+      },
+    });
+
+    // Debajo, las paletas curadas para sembrar colores nuevos al historial.
     const paletteTabs = segmented({
       options: DEFAULT_PALETTES.map((p, i) => ({ value: String(i), label: p.name })),
       value: String(this.editor.paletteIndex),
@@ -171,11 +183,22 @@ export class App {
     const panel = el("div", { class: "hot-color" }, [
       el("h3", { class: "hot-color-title", text: "Color" }),
       picker.el,
+      el("span", { class: "hot-color-label", text: "Recientes" }),
+      recent.el,
       paletteTabs.el,
       wells.el,
     ]);
     host.appendChild(panel);
-    return () => panel.remove();
+
+    // Mantener la fila de recientes viva: se refresca cuando cambia el historial.
+    const off = this.editor.events.on("state", (s) => {
+      recent.set({ colors: s.recentColors, value: s.color });
+      wells.set({ colors: this.editor.palette.colors, value: s.color });
+    });
+    return () => {
+      off();
+      panel.remove();
+    };
   }
 
   /** Despierta la interfaz translucida; se esconde de nuevo tras la inactividad. */
