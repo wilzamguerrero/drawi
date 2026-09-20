@@ -235,6 +235,14 @@
 }
 
 /* Botón central */
+/* Núcleo del menú radial.
+ *
+ * No es un círculo quieto: el borde ondula despacio como una masa viva (el mismo
+ * espíritu que la materia del loader) y por dentro se mueve un halo, para que dé
+ * la sensación de que el centro "está vivo" mientras interactúas con la rueda.
+ * La transición NO incluye border-radius: ese lo lleva la animación de ondulado
+ * y un `transition: all` lo pelearía. `overflow: hidden` recorta el halo a la
+ * silueta ondulante. */
 .rm-center-btn {
   position: absolute;
   left: 50%;
@@ -251,9 +259,31 @@
   justify-content: center;
   gap: 4px;
   cursor: pointer;
-  transition: all 0.12s ease-out;
+  overflow: hidden;
+  transition: background 0.12s ease-out, border-color 0.12s ease-out, transform 0.12s ease-out;
   pointer-events: auto;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  animation: rm-center-blob 8s ease-in-out infinite;
+}
+
+/* El halo interior: una masa de acento que deriva y late, recortada por el borde
+   ondulante. Es lo que hace que el núcleo se sienta habitado, no un disco plano. */
+.rm-center-btn::before {
+  content: "";
+  position: absolute;
+  inset: -25%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, rgba(90, 159, 212, 0.28), rgba(90, 159, 212, 0) 62%);
+  z-index: 0;
+  pointer-events: none;
+  animation: rm-center-mass 7s ease-in-out infinite;
+}
+
+/* Icono y label siempre por encima del halo. */
+.rm-center-icon,
+.rm-center-label {
+  position: relative;
+  z-index: 1;
 }
 
 .rm-center-btn:hover {
@@ -264,6 +294,24 @@
 
 .rm-center-btn:active {
   transform: translate(-50%, -50%) scale(0.98);
+}
+
+/* Ondulado del borde: valores de border-radius que orbitan alrededor del 50%,
+   así el contorno se deforma suave y continuo, como materia que respira. */
+@keyframes rm-center-blob {
+  0% { border-radius: 46% 54% 55% 45% / 52% 46% 54% 48%; }
+  25% { border-radius: 55% 45% 47% 53% / 47% 55% 45% 53%; }
+  50% { border-radius: 50% 50% 58% 42% / 55% 48% 52% 45%; }
+  75% { border-radius: 45% 55% 48% 52% / 48% 53% 47% 52%; }
+  100% { border-radius: 46% 54% 55% 45% / 52% 46% 54% 48%; }
+}
+
+/* Deriva del halo interior: se desplaza y late fuera de fase con el borde. */
+@keyframes rm-center-mass {
+  0% { transform: translate(-6%, 5%) scale(1); }
+  33% { transform: translate(6%, -5%) scale(1.12); }
+  66% { transform: translate(-4%, 7%) scale(0.94); }
+  100% { transform: translate(-6%, 5%) scale(1); }
 }
 
 /* Icono del botón central */
@@ -355,8 +403,14 @@
   .rm-icon,
   .rm-icon svg,
   .rm-center-btn,
+  .rm-center-btn::before,
   .rm-center-label {
     transition: none;
     animation: none;
+  }
+
+  /* Sin ondulado: vuelve a ser un círculo limpio. */
+  .rm-center-btn {
+    border-radius: 50%;
   }
 }
