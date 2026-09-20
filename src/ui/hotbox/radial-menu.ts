@@ -406,8 +406,13 @@ export class RadialMenu {
     }
 
     for (const sector of this.sectors) {
-      // Ancestro del camino activo = su ruta es prefijo estricto del camino.
-      const onPath = active.length > sector.path.length && isPrefix(sector.path, active);
+      // En el camino = submenú abierto cuya ruta es prefijo del camino activo.
+      // Incluye el último nivel desplegado (p. ej. Modo), no solo sus ancestros,
+      // para que la marca se quede aunque el cursor no esté encima.
+      const onPath =
+        sector.path.length > 0 &&
+        sector.node.kind === "submenu" &&
+        isPrefix(sector.path, active);
       setClass(sector.path_el, "is-onpath", onPath);
       if (onPath) this.drawOnPathMark(sector);
     }
