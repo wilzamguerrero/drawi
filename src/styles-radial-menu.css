@@ -63,7 +63,9 @@
   fill: rgba(55, 55, 55, 0.96);
   stroke: rgba(90, 159, 212, 0.25);
   stroke-width: 1.5;
-  transition: all 0.08s ease-out;
+  /* Cambio de hover suave: al pasar de un sector a otro el color y el borde se
+     funden en vez de saltar de golpe. */
+  transition: fill 0.22s ease, stroke 0.22s ease, stroke-width 0.22s ease;
   cursor: pointer;
 }
 
@@ -74,6 +76,23 @@
 .rm-sector-sub {
   fill: rgba(68, 68, 68, 0.94);
   stroke: rgba(90, 159, 212, 0.2);
+  /* Despliegue suave al abrir el submenú: escala desde el centro del menú
+     (transform-box: view-box hace que transform-origin: center sea el centro
+     del viewBox, no el de cada sector) más un fundido. */
+  transform-box: view-box;
+  transform-origin: center;
+  animation: rm-sub-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@keyframes rm-sub-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 /* Estados de sector */
@@ -117,7 +136,7 @@
   justify-content: center;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  transition: all 0.08s ease-out;
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .rm-icon svg {
@@ -125,7 +144,7 @@
   height: 100%;
   color: rgba(255, 255, 255, 0.85);
   fill: currentColor;
-  transition: color 0.08s ease-out;
+  transition: color 0.22s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .rm-icon.is-hover svg {
@@ -134,13 +153,28 @@
 }
 
 .rm-icon-sub {
-  /* Iconos de submenú ligeramente más pequeños */
+  /* Iconos de submenú ligeramente más pequeños. Fundido de entrada al
+     desplegarse, en sincronía con los sectores. */
+  animation: rm-sub-icon-in 0.24s ease backwards;
+}
+
+@keyframes rm-sub-icon-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .rm-icon-swatch {
   border: 2px solid rgba(255, 255, 255, 0.3);
   border-radius: 50%;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.rm-icon-swatch {
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.22s ease;
 }
 
 .rm-icon-swatch.is-hover {
@@ -161,6 +195,10 @@
   color: rgba(255, 255, 255, 0.85);
   letter-spacing: 0.02em;
   text-transform: none;
+}
+
+.rm-icon-text {
+  transition: color 0.22s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .rm-icon-text.is-hover {

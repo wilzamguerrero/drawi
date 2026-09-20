@@ -293,6 +293,10 @@ export class RadialMenu {
       );
 
       this.styleSubmenuSector(path, node);
+      // Retardo escalonado: cada sector entra un pelín después que el anterior,
+      // así el submenú se "despliega" en abanico en vez de aparecer entero.
+      const delay = `${(i * 0.03).toFixed(3)}s`;
+      path.style.animationDelay = delay;
       this.svg.appendChild(path);
 
       // Crear icono
@@ -301,6 +305,7 @@ export class RadialMenu {
         CONFIG.iconSizeSub,
         true
       );
+      iconEl.style.animationDelay = delay;
 
       this.iconsContainer.appendChild(iconEl);
 
