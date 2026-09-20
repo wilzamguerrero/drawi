@@ -275,27 +275,27 @@ export class RadialMenu {
     this.fx.style.top = `${this.posY}px`;
 
     window.clearTimeout(this.fxTimer);
-    this.container.classList.remove("is-closing", "is-forming", "is-dissolving");
+    this.container.classList.remove("is-closing", "is-forming", "is-dissolving", "is-opening");
+    this.container.classList.add("is-open");
 
     if (this.reduceMotion) {
       // Sin movimiento: aparición directa, sin partículas.
       clear(this.fx);
-      this.container.classList.add("is-opening");
       return;
     }
 
     // Las partículas se juntan y forman el centro; los anillos y el botón esperan
-    // (ocultos por .is-forming) hasta que la masa está hecha, y ahí entran.
-    this.container.classList.remove("is-opening");
+    // (encogidos/ocultos por .is-forming) hasta que la masa está hecha. Al quitar
+    // .is-forming, cada capa entra con su transición: los anillos crecen desde el
+    // centro y el botón se funde con la masa (mismo negro). El relevo es continuo.
     this.container.classList.add("is-forming");
     this.playFx(false);
 
     this.fxTimer = window.setTimeout(() => {
       if (!this.isOpen) return;
       this.container.classList.remove("is-forming");
-      this.container.classList.add("is-opening");
       this.fx.classList.add("is-fading");
-      window.setTimeout(() => clear(this.fx), 200);
+      window.setTimeout(() => clear(this.fx), 300);
     }, RadialMenu.FX_GATHER_MS);
   }
 
@@ -304,7 +304,7 @@ export class RadialMenu {
 
     this.isOpen = false;
     window.clearTimeout(this.fxTimer);
-    this.container.classList.remove("is-opening", "is-forming");
+    this.container.classList.remove("is-opening", "is-forming", "is-open");
 
     if (this.reduceMotion) {
       this.container.classList.add("is-closing");

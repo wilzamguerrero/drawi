@@ -22,6 +22,13 @@
   transition: opacity 0.15s ease-out, transform 0.15s ease-out;
 }
 
+/* Estado abierto: el contenedor visible. La entrada de anillos/centro la llevan
+   las transiciones de cada capa (ver .is-forming), no un escalado del conjunto,
+   para que el centro no "salte" respecto a la masa de partículas ya formada. */
+.rm-container.is-open {
+  opacity: 1;
+}
+
 .rm-container.is-opening {
   animation: rm-scale-in 0.2s ease-out forwards;
 }
@@ -116,7 +123,8 @@
 
 .rm-fx.is-fading {
   opacity: 0;
-  transition: opacity 0.18s ease;
+  /* Se desvanece al mismo ritmo que el botón central entra: crossfade limpio. */
+  transition: opacity 0.26s ease;
 }
 
 @keyframes rm-fx-gather {
@@ -169,6 +177,20 @@
   }
 }
 
+/* Mientras las partículas se juntan (is-forming): los anillos y los iconos esperan
+   encogidos en el centro y el botón central invisible. Al quitar is-forming, las
+   transiciones de cada capa los hacen crecer desde el centro y el botón se funde
+   con la masa (mismo negro), así el relevo es continuo, no un salto. */
+.rm-container.is-forming .rm-svg,
+.rm-container.is-forming .rm-icons {
+  opacity: 0;
+  transform: scale(0.6);
+}
+
+.rm-container.is-forming .rm-center-btn {
+  opacity: 0;
+}
+
 /* Al desintegrar, el botón central desaparece al instante: la masa de partículas
    es la que se ve deshacerse. */
 .rm-container.is-dissolving .rm-center-btn {
@@ -180,6 +202,10 @@
 .rm-svg {
   display: block;
   overflow: visible;
+  /* Los anillos crecen desde el centro (donde se formó la masa) al abrir. */
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+  transition: opacity 0.32s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Sectores.
@@ -278,6 +304,8 @@
   width: 100%;
   height: 100%;
   pointer-events: none;
+  transform-origin: 50% 50%;
+  transition: opacity 0.32s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Iconos */
@@ -390,7 +418,9 @@
   gap: 4px;
   cursor: pointer;
   overflow: hidden;
-  transition: background 0.12s ease-out, border-color 0.12s ease-out, transform 0.12s ease-out;
+  /* La opacidad va en transición (no en la animación del blob) para hacer el
+     crossfade con las partículas al aparecer, sin pisar el ondulado. */
+  transition: background 0.12s ease-out, border-color 0.12s ease-out, transform 0.12s ease-out, opacity 0.26s ease;
   pointer-events: auto;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
   animation: rm-center-blob 8s ease-in-out infinite;
