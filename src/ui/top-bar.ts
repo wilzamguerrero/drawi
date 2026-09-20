@@ -11,6 +11,10 @@ import { blurSoon, el, num } from "./dom";
 export class TopBar {
   readonly el: HTMLElement;
 
+  /** Botón de ayuda/atajos. Vive aparte del header para que el HUD lo pueda
+      colocar al final de la línea, después de la información de estado. */
+  readonly helpBtn: HTMLElement;
+
   private nameInput: HTMLInputElement;
   private undoBtn: ReturnType<typeof button>;
   private redoBtn: ReturnType<typeof button>;
@@ -52,16 +56,15 @@ export class TopBar {
       blurSoon(this.zoomLabel);
     });
 
+    this.helpBtn = button({ iconName: "help", title: "Atajos y ayuda", onClick: () => this.onHelp() }).el;
+
     this.el = el("header", { class: "topbar" }, [
       el("div", { class: "topbar-group topbar-brand" }, [
         el("span", { class: "brand-mark", text: "drawi" }),
         this.nameInput,
       ]),
       el("div", { class: "topbar-group" }, [this.undoBtn.el, this.redoBtn.el]),
-      el("div", { class: "topbar-group" }, [
-        this.zoomLabel,
-        button({ iconName: "help", title: "Atajos y ayuda", onClick: () => this.onHelp() }).el,
-      ]),
+      el("div", { class: "topbar-group" }, [this.zoomLabel]),
     ]);
   }
 

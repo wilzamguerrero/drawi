@@ -168,7 +168,10 @@ body {
   --hud-ink: #ffffff;
   --hud-ink-soft: rgba(255, 255, 255, 0.85);
   --hud-track: rgba(255, 255, 255, 0.55);
-  transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* Aparición suave: fundido largo y desplazamiento mínimo, con una curva de
+     salida (ease-out) para que no "salte" al despertar. */
+  transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Inversión exacta por píxel: el contenido es blanco y se mezcla con el lienzo
@@ -183,7 +186,7 @@ body {
 
 .chrome:not(.is-awake) .hud {
   opacity: 0;
-  transform: translateY(-10px);
+  transform: translateY(-4px);
   pointer-events: none;
 }
 
@@ -283,6 +286,8 @@ body {
   border-radius: 0;
   color: var(--hud-ink);
   font: 500 11px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
   cursor: pointer;
   transition: opacity 0.12s ease;
 }
@@ -1434,6 +1439,10 @@ body {
   color: #fff;
   font-size: 11.5px;
   min-width: 0;
+  /* Dígitos de ancho fijo: fps, presión, zoom y demás se actualizan seguido;
+     sin esto cada cambio de cifra mueve el ancho y todo el HUD "salta" al pasar
+     el cursor. Con tabular-nums los números cambian sin reflujo. */
+  font-variant-numeric: tabular-nums;
 }
 
 .statusbar-spacer {
@@ -1499,6 +1508,11 @@ body {
   color: var(--hud-ink);
   font-size: 11px;
   white-space: nowrap;
+  /* Ancho fijo: el texto varía ("Lápiz", "Ratón (borra)"…) y sin reservarlo
+     empuja al mensaje de estado que tiene a la izquierda. */
+  min-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pen-bar {
@@ -1522,9 +1536,10 @@ body {
   font: 500 10.5px/1.6 var(--mono);
   color: var(--hud-ink);
   opacity: 0.9;
-  min-width: 34px;
+  min-width: 48px;
   text-align: right;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .pen-num.is-warn {

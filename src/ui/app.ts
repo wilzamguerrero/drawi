@@ -69,7 +69,7 @@ export class App {
     // legibilidad sobre cualquier fondo la da mix-blend-mode: difference en el
     // CSS (invierte cada píxel del texto contra el color del lienzo debajo);
     // por eso .chrome no lleva z-index, para no aislar el HUD del lienzo.
-    const hud = el("div", { class: "hud" }, [this.topBar.el, this.statusBar.el]);
+    const hud = el("div", { class: "hud" }, [this.topBar.el, this.statusBar.el, this.topBar.helpBtn]);
     this.chrome = el("div", { class: "chrome" }, [hud]);
     root.appendChild(this.pantone.el);
 
