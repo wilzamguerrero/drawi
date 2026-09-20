@@ -20,7 +20,11 @@ const CONFIG = {
   // Hueco entre sectores en PÍXELES (no en ángulo): así el separador mide lo
   // mismo en el borde interior y en el exterior. El desfase angular se calcula
   // por radio en createArc (arco = radio × ángulo).
-  gapPx: 3,
+  // Hueco entre sectores. Un poco mayor porque las esquinas ahora van redondeadas
+  // con stroke-linejoin (como el color wheel): el trazo engorda cada sector ~2px
+  // por lado, asi que el hueco debe ser > al ancho de trazo para que la separacion
+  // y las esquinas redondas se vean.
+  gapPx: 7,
   submenuArc: 0.42, // fracción del círculo que ocupa el abanico de un submenú
 
   // Tamaños de iconos
