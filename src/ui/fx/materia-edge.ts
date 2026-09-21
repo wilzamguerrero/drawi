@@ -35,6 +35,13 @@ export interface MateriaEdgeOptions {
   inset?: number;
   /** Velocidad del vaivén (rad/s aprox.). */
   speed?: number;
+  /**
+   * Borde vivo completo: las CUATRO aristas ondulan y las cuatro esquinas se
+   * redondean. Para siluetas que flotan (un diálogo centrado), donde no hay un
+   * marco al que pegar un lado recto. Por defecto (false) es el modo panel: solo
+   * ondulan tres bordes y el izquierdo queda recto pegado al marco.
+   */
+  full?: boolean;
 }
 
 export class MateriaEdge {
@@ -60,12 +67,14 @@ export class MateriaEdge {
   private amp: number;
   private inset: number;
   private speed: number;
+  private full: boolean;
 
   constructor(opts: MateriaEdgeOptions = {}) {
     this.radius = opts.radius ?? 22;
     this.amp = opts.amplitude ?? 11;
     this.inset = opts.inset ?? 13;
     this.speed = opts.speed ?? 1;
+    this.full = opts.full ?? false;
 
     this.el = document.createElementNS(SVGNS, "svg");
     this.el.setAttribute("preserveAspectRatio", "none");
@@ -163,7 +172,7 @@ export class MateriaEdge {
   };
 
   private redraw(): void {
-    const d = this.buildPath();
+    const d = this.full ? this.buildFullPath() : this.buildPath();
     if (d) this.path.setAttribute("d", d);
   }
 
@@ -261,6 +270,101 @@ export class MateriaEdge {
 
     // Vuelta a la esquina inferior izquierda y cierre.
     d += ` L 0 ${H.toFixed(2)}`;
+    d += ` Z`;
+    return d;
+  }
+
+  /**
+   * Silueta con los CUATRO bordes vivos y las cuatro esquinas redondeadas, para
+   * un elemento que flota (un diálogo centrado) y no tiene ningún lado pegado a
+   * un marco.
+   *
+   * El rectángulo base se mete `inset` px por dentro del viewBox, dejando ese
+   * margen para que los picos del ondulado asomen hacia afuera sin recortarse
+   * (el SVG va con overflow visible). Cada arista oscila alrededor de su línea
+   * base con una envolvente `sin(p·π)` que la lleva a cero en las dos esquinas,
+   * así el tramo recto entronca sin salto con los cuartos de arco de las esquinas.
+   */
+  private buildFullPath(): string {
+    const W = this.w;
+    const H = this.h;
+    if (W <= 0 || H <= 0) return "";
+
+    const inset = this.inset;
+    const a = this.amp * this.ampScale; // amplitud (0 = rectángulo recto)
+    const t = this.t;
+
+    // Rectángulo base (líneas de reposo de cada arista), metido `inset` px.
+    const L = inset;
+    const R = W - inset;
+    const T = inset;
+    const B = H - inset;
+    const r = Math.max(0, Math.min(this.radius, (R - L) / 2 - 1, (B - T) / 2 - 1));
+
+    // Tramos rectos de cada arista (entre las dos esquinas redondeadas).
+    const hSpan = R - L - 2 * r; // ancho del tramo recto horizontal
+    const vSpan = B - T - 2 * r; // alto del tramo recto vertical
+    const step = 6;
+
+    // Envolvente 0→1→0 a lo largo de un tramo [0, span].
+    const env = (u: number, span: number): number => {
+      if (span <= 0) return 0;
+      const p = Math.max(0, Math.min(1, u / span));
+      return Math.sin(p * Math.PI);
+    };
+
+    // Desplazamientos por arista: suma de dos senos incomensurables + envolvente.
+    // Cada borde usa fases/frecuencias distintas para que el vaivén no se sienta
+    // repetido de un lado a otro.
+    const topOff = (x: number): number =>
+      a * env(x - (L + r), hSpan) *
+      (0.62 * Math.sin(x * 0.024 + t * 0.9 + 2.0) + 0.38 * Math.sin(x * 0.040 - t * 0.6 + 0.5));
+    const botOff = (x: number): number =>
+      a * env(x - (L + r), hSpan) *
+      (0.62 * Math.sin(x * 0.022 - t * 1.0 + 3.7) + 0.38 * Math.sin(x * 0.037 + t * 0.55 + 1.1));
+    const leftOff = (y: number): number =>
+      a * env(y - (T + r), vSpan) *
+      (0.62 * Math.sin(y * 0.023 - t * 0.85 + 1.4) + 0.38 * Math.sin(y * 0.039 + t * 0.65 + 2.6));
+    const rightOff = (y: number): number =>
+      a * env(y - (T + r), vSpan) *
+      (0.62 * Math.sin(y * 0.020 + t * 1.1) + 0.38 * Math.sin(y * 0.034 - t * 0.7 + 1.3));
+
+    // -------- construir el path (sentido horario desde arriba-izquierda) --------
+
+    // Punto de arranque: fin del arco superior izquierdo, inicio del borde superior.
+    let d = `M ${(L + r).toFixed(2)} ${(T + topOff(L + r)).toFixed(2)}`;
+
+    // Borde SUPERIOR: izquierda → derecha, ondulando en Y.
+    for (let x = L + r + step; x < R - r; x += step) {
+      d += ` L ${x.toFixed(2)} ${(T + topOff(x)).toFixed(2)}`;
+    }
+    // Esquina superior derecha.
+    d += ` L ${(R - r).toFixed(2)} ${(T + topOff(R - r)).toFixed(2)}`;
+    d += ` Q ${R.toFixed(2)} ${T.toFixed(2)} ${(R + rightOff(T + r)).toFixed(2)} ${(T + r).toFixed(2)}`;
+
+    // Borde DERECHO: arriba → abajo, ondulando en X.
+    for (let y = T + r + step; y < B - r; y += step) {
+      d += ` L ${(R + rightOff(y)).toFixed(2)} ${y.toFixed(2)}`;
+    }
+    // Esquina inferior derecha.
+    d += ` L ${(R + rightOff(B - r)).toFixed(2)} ${(B - r).toFixed(2)}`;
+    d += ` Q ${R.toFixed(2)} ${B.toFixed(2)} ${(R - r).toFixed(2)} ${(B + botOff(R - r)).toFixed(2)}`;
+
+    // Borde INFERIOR: derecha → izquierda, ondulando en Y.
+    for (let x = R - r - step; x > L + r; x -= step) {
+      d += ` L ${x.toFixed(2)} ${(B + botOff(x)).toFixed(2)}`;
+    }
+    // Esquina inferior izquierda.
+    d += ` L ${(L + r).toFixed(2)} ${(B + botOff(L + r)).toFixed(2)}`;
+    d += ` Q ${L.toFixed(2)} ${B.toFixed(2)} ${(L + leftOff(B - r)).toFixed(2)} ${(B - r).toFixed(2)}`;
+
+    // Borde IZQUIERDO: abajo → arriba, ondulando en X.
+    for (let y = B - r - step; y > T + r; y -= step) {
+      d += ` L ${(L + leftOff(y)).toFixed(2)} ${y.toFixed(2)}`;
+    }
+    // Esquina superior izquierda y cierre.
+    d += ` L ${(L + leftOff(T + r)).toFixed(2)} ${(T + r).toFixed(2)}`;
+    d += ` Q ${L.toFixed(2)} ${T.toFixed(2)} ${(L + r).toFixed(2)} ${(T + topOff(L + r)).toFixed(2)}`;
     d += ` Z`;
     return d;
   }

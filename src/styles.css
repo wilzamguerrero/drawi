@@ -1616,16 +1616,81 @@ body {
   backdrop-filter: blur(3px);
 }
 
+/* El cuadro flota: la piel (MateriaEdge) dibuja su relleno ondulante y el
+   contenido va nítido por encima. El diálogo en sí es transparente y deja que
+   las olas de los cuatro bordes asomen fuera (overflow visible). Entra y sale
+   como el menú radial: las partículas lo forman/deshacen y estas transiciones
+   hacen el relevo (crecer desde el centro al aparecer, encoger al cerrar). */
 .help-dialog {
   position: relative;
   width: min(880px, 100%);
   max-height: min(86vh, 760px);
+  overflow: visible;
+  transform-origin: 50% 50%;
+}
+
+/* Mientras las partículas se juntan, el cuadro espera encogido e invisible. */
+.help-dialog.is-forming {
+  opacity: 0;
+  transform: scale(0.6);
+}
+
+/* Al quitar is-forming, el cuadro crece desde el centro y se funde con la masa. */
+.help-dialog.is-opening {
+  animation: help-scale-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Al cerrar, el cuadro encoge y se desvanece mientras las partículas se dispersan. */
+.help-dialog.is-closing {
+  animation: help-scale-out 0.3s ease-in both;
+}
+
+@keyframes help-scale-in {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes help-scale-out {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.9); }
+}
+
+/* Piel: SVG vectorial que cubre el cuadro y ondula en sus cuatro bordes. Va
+   detrás del contenido; overflow visible para que los picos asomen fuera. La
+   sombra sigue la forma ondulada. Mismo negro que el dock y el menú radial. */
+.help-skin {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  z-index: 0;
+  filter: drop-shadow(0 12px 34px rgba(0, 0, 0, 0.5));
+}
+
+/* Contenido nítido, por encima de la piel. Aquí van el scroll y el padding que
+   antes vivían en .help-dialog; así la piel queda quieta detrás y solo el texto
+   se desplaza. El radio recorta el contenido dentro de la silueta ondulante. */
+.help-content {
+  position: relative;
+  z-index: 1;
+  max-height: min(86vh, 760px);
   overflow-y: auto;
-  padding: 22px 24px 26px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-2);
+  overscroll-behavior: contain;
+  padding: 22px 26px 26px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a42 transparent;
+}
+
+.help-content::-webkit-scrollbar {
+  width: 10px;
+}
+
+.help-content::-webkit-scrollbar-thumb {
+  background: #3a3a42;
+  border-radius: 6px;
+  border: 3px solid #161619;
 }
 
 .help-head {

@@ -1,4 +1,6 @@
 import { el } from "./dom";
+import { MateriaEdge } from "./fx/materia-edge";
+import { MateriaFx, prefersReducedMotion } from "./fx/materia";
 import { icon } from "./icons";
 
 const GROUPS: { title: string; rows: [string, string][] }[] = [
@@ -57,10 +59,22 @@ const NOTES: [string, string][] = [
  *
  * Alcanzable con el boton de la barra o con ?, y cerrable con Escape o clic
  * fuera: un panel de atajos que no se cierra rapido acaba siendo un estorbo.
+ *
+ * Comparte el lenguaje visual del resto: el mismo negro del dock/menú radial, un
+ * borde vivo ondulante (MateriaEdge, sus cuatro lados porque el cuadro flota) y
+ * la entrada/salida por partículas del menú radial (MateriaFx), pero a la escala
+ * de este cuadro —más grande que el centro del menú—, así toda la interfaz se
+ * siente hecha de la misma materia.
  */
 export class HelpOverlay {
   readonly el: HTMLElement;
   private open = false;
+
+  private dialog: HTMLElement;
+  private edge: MateriaEdge;
+  /** Partículas (metaball) que forman/deshacen el cuadro. Sistema compartido. */
+  private fx: MateriaFx;
+  private fxTimer = 0;
 
   constructor() {
     const columns = GROUPS.map((g) =>
@@ -87,7 +101,8 @@ export class HelpOverlay {
     const close = el("button", { class: "btn btn-icon help-close", type: "button", title: "Cerrar", html: icon("close") });
     close.addEventListener("click", () => this.hide());
 
-    const dialog = el("div", { class: "help-dialog", role: "dialog" }, [
+    // Contenido nítido, por encima de la piel ondulante.
+    const content = el("div", { class: "help-content" }, [
       el("div", { class: "help-head" }, [
         el("h2", { class: "help-title", text: "drawi" }),
         el("p", { class: "help-sub", text: "Dibujo generativo con materia que se funde." }),
@@ -97,7 +112,18 @@ export class HelpOverlay {
       el("div", { class: "help-notes" }, notes),
     ]);
 
-    this.el = el("div", { class: "help-overlay" }, [dialog]);
+    // Piel: el relleno del cuadro, dibujado como SVG vectorial con los cuatro
+    // bordes vivos. Mismo negro (#161619) que el dock y el menú radial.
+    this.edge = new MateriaEdge({ fill: "#161619", radius: 26, amplitude: 12, inset: 16, full: true });
+    this.edge.el.classList.add("help-skin");
+
+    this.dialog = el("div", { class: "help-dialog", role: "dialog" }, [this.edge.el, content]);
+
+    // Capa de partículas: hermana del diálogo, para que la opacidad del cuadro al
+    // abrir/cerrar no la afecte. Núcleo grande, acorde al tamaño del cuadro.
+    this.fx = new MateriaFx({ coreSize: 260, reach: 230, dots: 14 });
+
+    this.el = el("div", { class: "help-overlay" }, [this.fx.el, this.dialog]);
     this.el.hidden = true;
     this.el.addEventListener("pointerdown", (e) => {
       if (e.target === this.el) this.hide();
@@ -110,13 +136,72 @@ export class HelpOverlay {
   }
 
   show(): void {
+    if (this.open) return;
     this.el.hidden = false;
     this.open = true;
+
+    window.clearTimeout(this.fxTimer);
+    this.dialog.classList.remove("is-closing", "is-forming", "is-opening");
+    this.edge.start();
+
+    if (prefersReducedMotion()) {
+      // Sin movimiento: aparición directa, sin partículas.
+      this.fx.clear();
+      return;
+    }
+
+    // Las partículas se juntan en el centro del cuadro y lo forman; el diálogo
+    // espera (encogido/oculto por .is-forming) hasta que la masa está hecha. Al
+    // quitar .is-forming, el cuadro entra con su transición y las partículas se
+    // funden con él (mismo negro). El relevo es continuo, igual que el menú radial.
+    this.dialog.classList.add("is-forming");
+    this.centerFx();
+    this.fx.gather();
+
+    this.fxTimer = window.setTimeout(() => {
+      if (!this.open) return;
+      this.dialog.classList.remove("is-forming");
+      this.dialog.classList.add("is-opening");
+      this.fx.fadeOut();
+    }, this.fx.gatherMs);
   }
 
   hide(): void {
-    this.el.hidden = true;
+    if (!this.open) return;
     this.open = false;
+
+    window.clearTimeout(this.fxTimer);
+    this.dialog.classList.remove("is-forming", "is-opening");
+    this.edge.collapse();
+
+    if (prefersReducedMotion()) {
+      this.el.hidden = true;
+      this.dialog.classList.remove("is-closing");
+      return;
+    }
+
+    // El cuadro se desintegra en partículas mientras se va: sale como entró.
+    this.dialog.classList.add("is-closing");
+    this.centerFx();
+    this.fx.scatter();
+
+    this.fxTimer = window.setTimeout(() => {
+      if (this.open) return;
+      this.el.hidden = true;
+      this.dialog.classList.remove("is-closing");
+      this.fx.clear();
+    }, this.fx.scatterMs);
+  }
+
+  /** Coloca las partículas en el centro del diálogo (en coords del overlay). */
+  private centerFx(): void {
+    const r = this.dialog.getBoundingClientRect();
+    if (r.width > 0) {
+      this.fx.center(r.left + r.width / 2, r.top + r.height / 2);
+    } else {
+      // Aún sin medir (primer frame): el centro de la ventana, donde se centra.
+      this.fx.center(window.innerWidth / 2, window.innerHeight / 2);
+    }
   }
 
   get isOpen(): boolean {
