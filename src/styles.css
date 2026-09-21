@@ -1627,32 +1627,31 @@ body {
   max-height: min(86vh, 760px);
   overflow: visible;
   transform-origin: 50% 50%;
+  opacity: 1;
+  transform: scale(1);
+  /* Entrada/salida por TRANSICIÓN, no por keyframes: igual que el menú radial,
+     así no hay saltos de un valor a otro (antes el estado "formando" dejaba
+     scale 0.6 y el keyframe arrancaba en 0.85, y ese brinco se notaba). El
+     relevo con las partículas es un crossfade continuo: la masa se desvanece
+     mientras el cuadro aparece casi en su sitio, sin un rectángulo negro plantado
+     antes de la información. */
+  transition: opacity 0.36s ease, transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Mientras las partículas se juntan, el cuadro espera encogido e invisible. */
+/* Mientras las gotas se juntan, el cuadro espera invisible y solo un pelín
+   encogido (crossfade, no "crecer"). transition:none fija ese estado al instante,
+   sin animar hacia él; al quitar la clase, la transición base lleva el cuadro
+   suavemente a su tamaño real mientras las partículas se funden con él. */
 .help-dialog.is-forming {
   opacity: 0;
-  transform: scale(0.6);
+  transform: scale(0.94);
+  transition: none;
 }
 
-/* Al quitar is-forming, el cuadro crece desde el centro y se funde con la masa. */
-.help-dialog.is-opening {
-  animation: help-scale-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-/* Al cerrar, el cuadro encoge y se desvanece mientras las partículas se dispersan. */
+/* Al cerrar, se desvanece y encoge apenas mientras las gotas se dispersan. */
 .help-dialog.is-closing {
-  animation: help-scale-out 0.3s ease-in both;
-}
-
-@keyframes help-scale-in {
-  from { opacity: 0; transform: scale(0.85); }
-  to { opacity: 1; transform: scale(1); }
-}
-
-@keyframes help-scale-out {
-  from { opacity: 1; transform: scale(1); }
-  to { opacity: 0; transform: scale(0.9); }
+  opacity: 0;
+  transform: scale(0.96);
 }
 
 /* Piel: SVG vectorial que cubre el cuadro y ondula en sus cuatro bordes. Va

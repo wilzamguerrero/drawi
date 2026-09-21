@@ -46,6 +46,13 @@ export interface MateriaFxOptions {
   dots?: number;
   gatherMs?: number;
   scatterMs?: number;
+  /**
+   * Silueta rectangular: el núcleo toma este ancho/alto y las gotas se reparten
+   * por el PERÍMETRO del rectángulo (no por una circunferencia), para que la masa
+   * que se forma tenga la proporción del elemento —un cuadro— en vez de un disco.
+   * Si se omite, la masa es circular (el modo original del menú radial y la rueda).
+   */
+  rect?: { width: number; height: number; radius?: number };
 }
 
 export class MateriaFx {
@@ -58,6 +65,8 @@ export class MateriaFx {
   private reach: number;
   private dots: number;
   private clearTimer = 0;
+  /** Silueta rectangular activa (ancho/alto/radio); null = masa circular. */
+  private rect: { width: number; height: number; radius: number } | null = null;
 
   constructor(opts: MateriaFxOptions = {}) {
     ensureGoo();
@@ -66,6 +75,7 @@ export class MateriaFx {
     this.dots = opts.dots ?? 8;
     this.gatherMs = opts.gatherMs ?? 420;
     this.scatterMs = opts.scatterMs ?? 340;
+    if (opts.rect) this.setRect(opts.rect.width, opts.rect.height, opts.rect.radius);
 
     this.el = document.createElement("div");
     this.el.className = "materia-fx";
@@ -76,6 +86,15 @@ export class MateriaFx {
   center(x: number, y: number): void {
     this.el.style.left = `${x}px`;
     this.el.style.top = `${y}px`;
+  }
+
+  /**
+   * Ajusta la silueta rectangular de la masa (ancho/alto/radio de esquina). Se
+   * llama antes de gather()/scatter() cuando el elemento cambia de tamaño, para
+   * que las partículas formen un rectángulo con su proporción actual.
+   */
+  setRect(width: number, height: number, radius = 26): void {
+    this.rect = { width, height, radius };
   }
 
   /** Las gotas nacen fuera y se juntan en el centro. */
@@ -107,22 +126,54 @@ export class MateriaFx {
     while (this.el.firstChild) this.el.removeChild(this.el.firstChild);
     this.el.classList.remove("is-gathering", "is-scattering", "is-fading");
 
-    // Núcleo: la masa central. Su tamaño lo fija --core en el CSS.
+    // Núcleo: la masa central. En modo rectangular toma el tamaño y radio del
+    // cuadro (sobrescribe el --core circular del CSS); si no, lo fija --core.
     const core = document.createElement("div");
     core.className = "materia-fx-dot materia-fx-core";
+    if (this.rect) {
+      core.style.width = `${this.rect.width}px`;
+      core.style.height = `${this.rect.height}px`;
+      core.style.borderRadius = `${this.rect.radius}px`;
+    }
     this.el.appendChild(core);
 
-    const k = this.core / 112; // escala de las gotas respecto al tamaño base
+    // Escala de las gotas respecto al tamaño base. En modo rectángulo, según el
+    // lado menor, para que las gotas guarden proporción con el cuadro.
+    const base = this.rect ? Math.min(this.rect.width, this.rect.height) : this.core;
+    const k = base / 112;
+
     for (let i = 0; i < this.dots; i++) {
-      const a = (i / this.dots) * TAU + (Math.random() - 0.5) * 0.7;
-      const dist = this.reach * (0.72 + Math.random() * 0.45);
       const size = (16 + Math.random() * 22) * k;
+      let sx: number;
+      let sy: number;
+
+      if (this.rect) {
+        // Punto de partida sobre el PERÍMETRO del rectángulo, empujado hacia
+        // afuera `reach` px en la normal del lado. Así la nube de gotas dibuja un
+        // rectángulo —la forma del cuadro— en vez de un círculo. Se recorre el
+        // perímetro de forma uniforme y se reparte cada gota en su tramo.
+        const hw = this.rect.width / 2;
+        const hh = this.rect.height / 2;
+        const jitter = (Math.random() - 0.5) * 0.6;
+        const u = ((i + 0.5) / this.dots + jitter / this.dots) % 1; // 0..1 por el perímetro
+        const p = perimeterPoint(hw, hh, u);
+        const push = this.reach * (0.6 + Math.random() * 0.4);
+        sx = p.x + p.nx * push;
+        sy = p.y + p.ny * push;
+      } else {
+        // Modo circular original: gotas repartidas por una circunferencia.
+        const a = (i / this.dots) * TAU + (Math.random() - 0.5) * 0.7;
+        const dist = this.reach * (0.72 + Math.random() * 0.45);
+        sx = Math.cos(a) * dist;
+        sy = Math.sin(a) * dist;
+      }
+
       const dot = document.createElement("div");
       dot.className = "materia-fx-dot";
       dot.style.width = `${size.toFixed(1)}px`;
       dot.style.height = `${size.toFixed(1)}px`;
-      dot.style.setProperty("--sx", `${(Math.cos(a) * dist).toFixed(1)}px`);
-      dot.style.setProperty("--sy", `${(Math.sin(a) * dist).toFixed(1)}px`);
+      dot.style.setProperty("--sx", `${sx.toFixed(1)}px`);
+      dot.style.setProperty("--sy", `${sy.toFixed(1)}px`);
       dot.style.animationDelay = `${i * (scatter ? 7 : 11)}ms`;
       this.el.appendChild(dot);
     }
@@ -131,6 +182,27 @@ export class MateriaFx {
     void this.el.offsetWidth;
     this.el.classList.add(scatter ? "is-scattering" : "is-gathering");
   }
+}
+
+/**
+ * Punto sobre el perímetro de un rectángulo centrado (semiejes hw, hh) para un
+ * parámetro u∈[0,1) que lo recorre, y la normal (nx, ny) que apunta hacia afuera
+ * en ese punto. Se usa para lanzar/recoger las gotas desde el contorno del cuadro.
+ */
+function perimeterPoint(hw: number, hh: number, u: number): { x: number; y: number; nx: number; ny: number } {
+  const w = 2 * hw;
+  const h = 2 * hh;
+  const per = 2 * (w + h);
+  let d = u * per;
+
+  // Lado superior (izq→der), derecho (arr→ab), inferior (der→izq), izquierdo (ab→arr).
+  if (d < w) return { x: -hw + d, y: -hh, nx: 0, ny: -1 };
+  d -= w;
+  if (d < h) return { x: hw, y: -hh + d, nx: 1, ny: 0 };
+  d -= h;
+  if (d < w) return { x: hw - d, y: hh, nx: 0, ny: 1 };
+  d -= w;
+  return { x: -hw, y: hh - d, nx: -1, ny: 0 };
 }
 
 /** True si el usuario pide reducir el movimiento (para saltarse las partículas). */

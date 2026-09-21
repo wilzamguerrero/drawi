@@ -120,8 +120,11 @@ export class HelpOverlay {
     this.dialog = el("div", { class: "help-dialog", role: "dialog" }, [this.edge.el, content]);
 
     // Capa de partículas: hermana del diálogo, para que la opacidad del cuadro al
-    // abrir/cerrar no la afecte. Núcleo grande, acorde al tamaño del cuadro.
-    this.fx = new MateriaFx({ coreSize: 260, reach: 230, dots: 14 });
+    // abrir/cerrar no la afecte. Silueta RECTANGULAR (la del cuadro), medida en
+    // vivo: las gotas parten del perímetro del rectángulo, no de un círculo, así
+    // la masa que se forma tiene la proporción del cuadro. reach = cuánto asoman
+    // hacia afuera; dots, repartidas por el contorno.
+    this.fx = new MateriaFx({ reach: 120, dots: 20 });
 
     this.el = el("div", { class: "help-overlay" }, [this.fx.el, this.dialog]);
     this.el.hidden = true;
@@ -141,7 +144,7 @@ export class HelpOverlay {
     this.open = true;
 
     window.clearTimeout(this.fxTimer);
-    this.dialog.classList.remove("is-closing", "is-forming", "is-opening");
+    this.dialog.classList.remove("is-closing", "is-forming");
     this.edge.start();
 
     if (prefersReducedMotion()) {
@@ -150,20 +153,26 @@ export class HelpOverlay {
       return;
     }
 
-    // Las partículas se juntan en el centro del cuadro y lo forman; el diálogo
-    // espera (encogido/oculto por .is-forming) hasta que la masa está hecha. Al
-    // quitar .is-forming, el cuadro entra con su transición y las partículas se
-    // funden con él (mismo negro). El relevo es continuo, igual que el menú radial.
+    // Medir el cuadro a tamaño real ANTES de encogerlo con .is-forming (si no, el
+    // scale falsearía el rectángulo de las partículas).
+    this.syncFxToDialog();
+
+    // Las gotas se juntan formando el rectángulo del cuadro; el diálogo espera
+    // invisible (.is-forming). El relevo NO espera a que la masa esté del todo
+    // hecha: a media reunión el cuadro empieza a aparecer y las gotas a fundirse,
+    // solapados, así la masa "se convierte" en el cuadro de forma fluida en vez de
+    // quedarse plantada como un rectángulo negro y luego mostrar la info de golpe.
     this.dialog.classList.add("is-forming");
-    this.centerFx();
     this.fx.gather();
 
+    // Relevo a ~62% de la reunión: el cuadro aparece con su transición mientras
+    // las últimas gotas aún se están fundiendo (crossfade continuo).
+    const handoff = Math.round(this.fx.gatherMs * 0.62);
     this.fxTimer = window.setTimeout(() => {
       if (!this.open) return;
       this.dialog.classList.remove("is-forming");
-      this.dialog.classList.add("is-opening");
       this.fx.fadeOut();
-    }, this.fx.gatherMs);
+    }, handoff);
   }
 
   hide(): void {
@@ -171,7 +180,7 @@ export class HelpOverlay {
     this.open = false;
 
     window.clearTimeout(this.fxTimer);
-    this.dialog.classList.remove("is-forming", "is-opening");
+    this.dialog.classList.remove("is-forming");
     this.edge.collapse();
 
     if (prefersReducedMotion()) {
@@ -180,9 +189,10 @@ export class HelpOverlay {
       return;
     }
 
-    // El cuadro se desintegra en partículas mientras se va: sale como entró.
+    // El cuadro se desintegra en partículas mientras se va: sale como entró. Se
+    // mide todavía a tamaño real (aún no se le ha aplicado el scale de salida).
+    this.syncFxToDialog();
     this.dialog.classList.add("is-closing");
-    this.centerFx();
     this.fx.scatter();
 
     this.fxTimer = window.setTimeout(() => {
@@ -193,11 +203,18 @@ export class HelpOverlay {
     }, this.fx.scatterMs);
   }
 
-  /** Coloca las partículas en el centro del diálogo (en coords del overlay). */
-  private centerFx(): void {
+  /**
+   * Sincroniza las partículas con el diálogo: las centra en él y les da su
+   * rectángulo (ancho/alto/radio) para que la masa se forme con la proporción del
+   * cuadro. Debe llamarse cuando el diálogo está a tamaño real (sin el scale de
+   * .is-forming/.is-closing), o el rectángulo saldría encogido.
+   */
+  private syncFxToDialog(): void {
     const r = this.dialog.getBoundingClientRect();
     if (r.width > 0) {
       this.fx.center(r.left + r.width / 2, r.top + r.height / 2);
+      // El radio del núcleo iguala al de la piel ondulante (26px del MateriaEdge).
+      this.fx.setRect(r.width, r.height, 26);
     } else {
       // Aún sin medir (primer frame): el centro de la ventana, donde se centra.
       this.fx.center(window.innerWidth / 2, window.innerHeight / 2);
