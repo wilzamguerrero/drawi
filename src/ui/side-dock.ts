@@ -72,6 +72,8 @@ export class SideDock {
 
   private drawer: HTMLElement;
   private edge: MateriaEdge;
+  private content!: HTMLElement;
+  private heightTimer = 0;
   private dynamicsHint: HTMLElement;
   private symmetryCount: HTMLElement;
   private brushPreview: HTMLCanvasElement;
@@ -737,8 +739,8 @@ export class SideDock {
     // contenido, que vive en su propia capa nítida.
     this.edge = new MateriaEdge({ fill: "#161619", radius: 22, amplitude: 11 });
     this.edge.el.classList.add("dock-skin");
-    const content = el("div", { class: "dock-content" }, [head, scroll]);
-    this.drawer = el("div", { class: "dock-drawer" }, [this.edge.el, content]);
+    this.content = el("div", { class: "dock-content" }, [head, scroll]);
+    this.drawer = el("div", { class: "dock-drawer" }, [this.edge.el, this.content]);
 
     // Tira de pestañas, siempre visible en el borde.
     const strip = el("div", { class: "dock-tabs" });
@@ -773,6 +775,12 @@ export class SideDock {
   }
 
   private setOpen(cat: CatId | null): void {
+    // Cambiar de una categoría a otra estando ya abierto: animar la altura del
+    // panel de la anterior a la nueva (si no, saltaría de golpe y se siente
+    // seco). Al abrir desde cerrado o al cerrar no aplica: ahí manda el
+    // deslizamiento lateral.
+    const switching = this.openCat !== null && cat !== null && cat !== this.openCat;
+
     this.openCat = cat;
     // Al abrir, el borde cobra vida; al cerrar, se aplana suavemente a recto
     // mientras el panel se desliza fuera (collapse), así al final no asoma el
@@ -788,8 +796,12 @@ export class SideDock {
     // otra categoría (renderState las intercambia) o se quedan hidden fuera de
     // la ventana, sin coste visual.
     if (cat !== null) {
-      // Abrir o cambiar de categoría: intercambiar páginas normalmente.
-      this.renderState();
+      if (switching) {
+        this.animateHeightSwap();
+      } else {
+        // Abrir desde cerrado: intercambiar páginas normalmente.
+        this.renderState();
+      }
     } else {
       // Cerrar: solo quitar la clase is-open del contenedor y las pestañas,
       // sin tocar las páginas para que el drawer mantenga su tamaño.
@@ -799,6 +811,36 @@ export class SideDock {
         setClass(tab, "is-active", id === this.activeTool);
       }
     }
+  }
+
+  /**
+   * Cambia de página animando la altura (técnica FLIP): mide el alto actual,
+   * intercambia la página, mide el nuevo y transiciona entre ambos con una
+   * altura explícita. El ResizeObserver del borde vivo redibuja la silueta en
+   * cada paso intermedio, así el contorno ondulado acompaña el cambio de tamaño.
+   */
+  private animateHeightSwap(): void {
+    const from = this.content.offsetHeight;
+    // Intercambiar la página visible y actualizar pestañas/título.
+    this.renderState();
+    // Alto natural de la nueva página (con la altura aún sin fijar).
+    this.content.style.height = "auto";
+    const to = this.content.offsetHeight;
+    if (from === to) return;
+
+    // Fijar el alto de partida, forzar reflow y transicionar al de destino.
+    this.content.style.height = `${from}px`;
+    void this.content.offsetHeight; // reflow: fija el punto de partida
+    this.content.classList.add("is-resizing");
+    this.content.style.height = `${to}px`;
+
+    window.clearTimeout(this.heightTimer);
+    this.heightTimer = window.setTimeout(() => {
+      // Al terminar, soltar la altura fija para que vuelva a adaptarse sola
+      // (p.ej. si un control cambia de alto o se abre/cierra una sección).
+      this.content.classList.remove("is-resizing");
+      this.content.style.height = "";
+    }, 340);
   }
 
   /**

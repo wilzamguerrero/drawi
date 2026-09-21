@@ -86,6 +86,19 @@
   padding: 6px 22px 6px 0;
 }
 
+/* Al cambiar de sección estando abierto, el alto se anima de una página a otra
+   (FLIP en JS): aquí va la transición y el recorte para que el contenido nuevo
+   no desborde mientras el panel crece o mengua suavemente. */
+.dock-content.is-resizing {
+  overflow: hidden;
+  transition: height 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes dock-page-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .dock-head {
   display: flex;
   align-items: center;
@@ -149,8 +162,10 @@
   display: none;
 }
 
+/* La página visible; el fundido corto hace que el relevo no sea seco. */
 .dock-page.is-shown {
   display: block;
+  animation: dock-page-in 0.3s ease both;
 }
 
 /* Las secciones dentro del dock heredan el estilo de .panel-section, pero sobre
@@ -265,5 +280,11 @@
   .side-dock,
   .side-dock.is-open {
     transition: none;
+  }
+  .dock-content.is-resizing {
+    transition: none;
+  }
+  .dock-page.is-shown {
+    animation: none;
   }
 }
