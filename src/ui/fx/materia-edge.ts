@@ -12,7 +12,7 @@
  * El movimiento es una suma de senos (dos frecuencias incomensurables) a lo
  * largo del borde derecho, con una envolvente que lo lleva a cero en las esquinas
  * para que estas queden estables y redondeadas. Los lados izquierdo, superior e
- * inferior quedan rectos; el izquierdo se dibuja fuera de pantalla (x=0 del SVG,
+ * inferior quedan rectos; el iz quierdo se dibuja fuera de pantalla (x=0 del SVG,
  * detrás del marco) para que ese lado nunca descubra huecos.
  *
  * Es un sistema compartido: cualquier elemento rectangular que quiera este borde
