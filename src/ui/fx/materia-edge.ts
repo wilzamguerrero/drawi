@@ -50,6 +50,12 @@ export class MateriaEdge {
   private h = 0;
   private running = false;
 
+  // Escala de amplitud (0..1). Al colapsar baja suavemente a 0 para que el borde
+  // quede recto al final del deslizamiento, no ondulado congelado. Al abrir sube
+  // a 1 y el borde cobra vida.
+  private ampScale = 1;
+  private ampTarget = 1;
+
   private radius: number;
   private amp: number;
   private inset: number;
@@ -86,8 +92,11 @@ export class MateriaEdge {
 
   /** Arranca el vaivén. Con movimiento reducido, dibuja una silueta estática. */
   start(): void {
+    // El borde vuelve a cobrar vida: amplitud objetivo 1.
+    this.ampTarget = 1;
     if (this.running) return;
     if (prefersReducedMotion()) {
+      this.ampScale = 0; // sin ondulado
       this.redraw();
       return;
     }
@@ -96,7 +105,24 @@ export class MateriaEdge {
     this.raf = requestAnimationFrame(this.frame);
   }
 
-  /** Detiene el vaivén (ahorra CPU cuando el elemento no se ve). */
+  /**
+   * Colapsa el borde: la amplitud baja suavemente a 0 y, cuando llega, el bucle
+   * se detiene con la silueta recta. Así al replegarse el panel no se ve el
+   * ondulado congelado asomando por el marco, sino un borde limpio.
+   */
+  collapse(): void {
+    this.ampTarget = 0;
+    if (prefersReducedMotion() || !this.running) {
+      // Sin animación: recto de inmediato.
+      this.ampScale = 0;
+      this.stop();
+      this.redraw();
+      return;
+    }
+    // El bucle sigue corriendo hasta que ampScale llega a ~0 (ver frame()).
+  }
+
+  /** Detiene el vaivén de inmediato (ahorra CPU cuando el elemento no se ve). */
   stop(): void {
     this.running = false;
     if (this.raf) cancelAnimationFrame(this.raf);
@@ -116,7 +142,23 @@ export class MateriaEdge {
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     this.t += dt * this.speed;
+
+    // Acercar ampScale a su objetivo. La constante marca la rapidez del
+    // aplanado/rebrote: ~0.36s para pasar de 1 a casi 0, igual que el
+    // deslizamiento del panel, así el borde queda recto justo al replegarse.
+    const k = Math.min(1, dt * 9);
+    this.ampScale += (this.ampTarget - this.ampScale) * k;
+
     this.redraw();
+
+    // Al colapsar, cuando el ondulado ya es imperceptible, congelar recto y
+    // parar el bucle para no gastar CPU con el panel plegado.
+    if (this.ampTarget === 0 && this.ampScale < 0.01) {
+      this.ampScale = 0;
+      this.redraw();
+      this.stop();
+      return;
+    }
     this.raf = requestAnimationFrame(this.frame);
   };
 
@@ -143,8 +185,8 @@ export class MateriaEdge {
     const r = Math.max(0, Math.min(this.radius, H / 2 - 1));
     const cx = W - this.inset;
     const step = 5;
-    const a = this.amp;         // amplitud
-    const t = this.t;           // tiempo acumulado
+    const a = this.amp * this.ampScale; // amplitud (0 = borde recto al colapsar)
+    const t = this.t;                   // tiempo acumulado
 
     // -------- funciones de ondulado --------
 

@@ -39,18 +39,19 @@
   position: relative;
   width: var(--inspector, 306px);
   max-height: 82vh;
-  /* Sombra del panel aquí (sin filtrar), no en la piel. */
-  filter: drop-shadow(10px 0 28px rgba(0, 0, 0, 0.5));
   /* El SVG de la piel dibuja las olas fuera del recuadro del cajón; no recortar. */
   overflow: visible;
-  opacity: 0;
+  /* Al colapsar, el cajón no desaparece con fade: simplemente se desliza con el
+     conjunto (transform de .side-dock) y queda fuera de la ventana. Solo se
+     deshabilitan los clics cuando está plegado, sin cambiar opacidad. */
   pointer-events: none;
-  transition: opacity 0.2s ease;
 }
 
 .side-dock.is-open .dock-drawer {
-  opacity: 1;
   pointer-events: auto;
+  /* Sombra solo cuando el panel está abierto. Fuera de .is-open el filter
+     no existe, así que no interfiere con la animación de deslizamiento. */
+  filter: drop-shadow(10px 0 28px rgba(0, 0, 0, 0.5));
 }
 
 /* Piel: el relleno del panel, dibujado como un SVG vectorial (MateriaEdge) que

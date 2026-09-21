@@ -774,10 +774,31 @@ export class SideDock {
 
   private setOpen(cat: CatId | null): void {
     this.openCat = cat;
-    // El borde vivo solo se anima mientras el cajón se ve (ahorra CPU plegado).
+    // Al abrir, el borde cobra vida; al cerrar, se aplana suavemente a recto
+    // mientras el panel se desliza fuera (collapse), así al final no asoma el
+    // ondulado congelado por el marco.
     if (cat) this.edge.start();
-    else this.edge.stop();
-    this.renderState();
+    else this.edge.collapse();
+
+    // Al CERRAR (cat === null), NO ocultar las páginas todavía: el cajón se
+    // desliza fuera de la ventana con su contenido intacto (misma altura). Si
+    // quitáramos display:none ahora, el contenido desaparecería primero, el
+    // drawer se encogiría a 0 y la animación se vería como un "achicamiento"
+    // en vez de un deslizamiento limpio. Las páginas se ocultan cuando se abra
+    // otra categoría (renderState las intercambia) o se quedan hidden fuera de
+    // la ventana, sin coste visual.
+    if (cat !== null) {
+      // Abrir o cambiar de categoría: intercambiar páginas normalmente.
+      this.renderState();
+    } else {
+      // Cerrar: solo quitar la clase is-open del contenedor y las pestañas,
+      // sin tocar las páginas para que el drawer mantenga su tamaño.
+      setClass(this.el, "is-open", false);
+      for (const [id, tab] of this.tabs) {
+        setClass(tab, "is-open", false);
+        setClass(tab, "is-active", id === this.activeTool);
+      }
+    }
   }
 
   /**
