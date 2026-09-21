@@ -83,7 +83,10 @@
   display: flex;
   flex-direction: column;
   max-height: 82vh;
-  padding: 6px 22px 6px 0;
+  /* Padding derecho de 32px: la tira de pestañas solapa 28px el borde del panel,
+     así que la barra de scroll (a la derecha de .dock-scroll) queda despejada, a
+     la izquierda de ese solapamiento, y no la tapa la tira. */
+  padding: 6px 32px 6px 0;
 }
 
 /* Al cambiar de sección estando abierto, el alto se anima de una página a otra
@@ -92,6 +95,14 @@
 .dock-content.is-resizing {
   overflow: hidden;
   transition: height 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Mientras dura la animación de altura, el scroll interno se apaga: si no,
+   aparecería la barra un instante (cuando la altura fijada es menor que la
+   natural) y luego desaparecería, viéndose como un salto de la información.
+   El contenido asoma recortado por .dock-content, que ya lleva overflow:hidden. */
+.dock-content.is-resizing .dock-scroll {
+  overflow-y: hidden;
 }
 
 @keyframes dock-page-in {
@@ -143,6 +154,10 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-bottom: 16px;
+  /* Reservar SIEMPRE el hueco de la barra de scroll: así el ancho del contenido
+     no cambia cuando la barra aparece o desaparece, y el texto no da el salto
+     horizontal que se veía al redimensionar. */
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: #3a3a42 transparent;
 }
