@@ -41,17 +41,15 @@
   max-height: 82vh;
   /* El SVG de la piel dibuja las olas fuera del recuadro del cajón; no recortar. */
   overflow: visible;
-  /* Al colapsar, el cajón no desaparece con fade: simplemente se desliza con el
-     conjunto (transform de .side-dock) y queda fuera de la ventana. Solo se
-     deshabilitan los clics cuando está plegado, sin cambiar opacidad. */
+  /* SIN filter ni z-index propios: así el drawer NO crea un contexto de
+     apilamiento y sus hijos (piel y contenido) compiten directamente con la tira
+     de pestañas. La piel queda debajo de la tira (para que el ondulado no rebase
+     los botones) y el contenido —con la barra de scroll— por encima. */
   pointer-events: none;
 }
 
 .side-dock.is-open .dock-drawer {
   pointer-events: auto;
-  /* Sombra solo cuando el panel está abierto. Fuera de .is-open el filter
-     no existe, así que no interfiere con la animación de deslizamiento. */
-  filter: drop-shadow(10px 0 28px rgba(0, 0, 0, 0.5));
 }
 
 /* Piel: el relleno del panel, dibujado como un SVG vectorial (MateriaEdge) que
@@ -70,7 +68,12 @@
      (superior, inferior, derecho) se dibujen fuera del recorte del cajón. El
      SVG cubre exactamente el cajón; las olas asoman por fuera. */
   overflow: visible;
+  /* Debajo de la tira de pestañas (z-index 0 < 2): así el ondulado de la piel
+     nunca rebasa por encima de los botones. La sombra va aquí, no en el drawer,
+     para no crear un contexto de apilamiento que atrape el contenido; como es
+     un SVG, la sombra sigue la forma ondulada del borde. */
   z-index: 0;
+  filter: drop-shadow(10px 0 28px rgba(0, 0, 0, 0.5));
 }
 
 /* Contenido nítido, por encima de la piel ondulante. Padding a la derecha para
@@ -79,14 +82,15 @@
    inferior sin que el contenido asome por fuera de la silueta. */
 .dock-content {
   position: relative;
-  z-index: 1;
+  /* Por ENCIMA de la tira de pestañas (z-index 3 > 2). El contenido es
+     transparente salvo el texto y la barra de scroll, así que la barra —pegada
+     al borde— se ve sobre la tira, y a la vez la tira sigue tapando por debajo
+     la costura del ondulado (el texto va inset por el padding, no la alcanza). */
+  z-index: 3;
   display: flex;
   flex-direction: column;
   max-height: 82vh;
-  /* Padding derecho de 32px: la tira de pestañas solapa 28px el borde del panel,
-     así que la barra de scroll (a la derecha de .dock-scroll) queda despejada, a
-     la izquierda de ese solapamiento, y no la tapa la tira. */
-  padding: 6px 32px 6px 0;
+  padding: 6px 22px 6px 0;
 }
 
 /* Al cambiar de sección estando abierto, el alto se anima de una página a otra
