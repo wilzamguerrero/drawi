@@ -17,9 +17,11 @@
   display: flex;
   align-items: center;
   /* Plegado: el cajón (ancho --inspector) queda fuera de la ventana a la
-     izquierda; solo la tira asoma en el marco. La tira se mete 10px dentro del
-     panel (margin-left), así que se descuentan para que siga tocando el marco. */
-  transform: translate(calc(-1 * var(--inspector, 306px) + 10px), -50%);
+     izquierda; solo la parte visible de la tira asoma en el marco. La tira se
+     mete 28px dentro del panel (margin-left negativo), de los cuales 20px son
+     padding izquierdo que desaparece tras el marco y solo asoman los iconos. Se
+     descuentan solo 8px (~28-20) para que en reposo no asome el padding vacío. */
+  transform: translate(calc(-1 * var(--inspector, 306px) + 8px), -50%);
   transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
   /* El hueco alrededor no captura clics; cada pieza reactiva los suyos. */
   pointer-events: none;
@@ -37,8 +39,10 @@
   position: relative;
   width: var(--inspector, 306px);
   max-height: 82vh;
-  /* Sombra del panel aquí (sin filtrar), no en la piel: el goo se la comería. */
+  /* Sombra del panel aquí (sin filtrar), no en la piel. */
   filter: drop-shadow(10px 0 28px rgba(0, 0, 0, 0.5));
+  /* El SVG de la piel dibuja las olas fuera del recuadro del cajón; no recortar. */
+  overflow: visible;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
@@ -61,22 +65,24 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  /* Deja respirar el ondulado del borde derecho más allá del ancho del cajón sin
-     que el SVG recorte el pico de la ola. */
+  /* overflow visible para que los picos de las ondulaciones de los tres bordes
+     (superior, inferior, derecho) se dibujen fuera del recorte del cajón. El
+     SVG cubre exactamente el cajón; las olas asoman por fuera. */
   overflow: visible;
   z-index: 0;
 }
 
-/* Contenido nítido, por encima de la piel ondulante. Un margen a la derecha deja
-   sitio a que el borde vivo respire sin descubrir el texto y separa la info de la
-   tira de iconos. */
+/* Contenido nítido, por encima de la piel ondulante. Padding a la derecha para
+   que el texto no quede demasiado cerca del borde ondulante ni de la tira de
+   pestañas. Padding arriba/abajo para dejar espacio al ondulado superior e
+   inferior sin que el contenido asome por fuera de la silueta. */
 .dock-content {
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
   max-height: 82vh;
-  padding-right: 22px;
+  padding: 6px 22px 6px 0;
 }
 
 .dock-head {
@@ -165,12 +171,20 @@
  */
 .dock-tabs {
   position: relative;
+  /* Por ENCIMA de la piel ondulante: la tira tapa la costura con su propio
+     relleno del mismo color (#161619) que la silueta del panel, así la
+     superposición es invisible — nunca se nota que una pieza está sobre otra. */
   z-index: 2;
-  margin-left: -10px;
+  /* Se mete bien dentro del panel. Con 28px de solapamiento la amplitud del
+     ondulado (11px) nunca descubre un hueco: la tira siempre cubre la zona
+     donde el borde respira. */
+  margin-left: -28px;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 16px 5px;
+  /* Padding izquierdo compensa el solapamiento para centrar los iconos en la
+     parte visible (la que asoma fuera del panel). */
+  padding: 28px 6px 28px 20px;
   background: #161619;
   border-radius: 0 18px 18px 0;
   box-shadow: 8px 0 22px rgba(0, 0, 0, 0.4);

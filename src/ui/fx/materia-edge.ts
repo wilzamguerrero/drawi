@@ -126,49 +126,98 @@ export class MateriaEdge {
   }
 
   /**
-   * Silueta: lados izquierdo/superior/inferior rectos, borde derecho ondulante.
-   * El izquierdo va en x=0 (fuera de pantalla, tras el marco). Las esquinas
-   * derechas se redondean con un cuarto de curva y el ondulado se anula en ellas
-   * (envolvente senoidal) para que queden fijas.
+   * Silueta con tres bordes vivos (superior, derecho, inferior) y el izquierdo
+   * recto pegado al marco.
+   *
+   * Los bordes superior e inferior ondulan en Y (picos hacia arriba/abajo) y el
+   * derecho ondula en X (picos hacia el lienzo). Las esquinas derechas se
+   * redondean con un cuarto de arco y la envolvente anula el ondulado cerca de
+   * ellas para que no haya un salto discontinuo entre el tramo recto y el curvo.
+   *
+   * El izquierdo va en x=0 y siempre recto: pegado al marco de la ventana.
    */
   private buildPath(): string {
     const W = this.w;
     const H = this.h;
     if (W <= 0 || H <= 0) return "";
     const r = Math.max(0, Math.min(this.radius, H / 2 - 1));
-    const cx = W - this.inset; // centro del ondulado
-    const span = H - 2 * r;
+    const cx = W - this.inset;
+    const step = 5;
+    const a = this.amp;         // amplitud
+    const t = this.t;           // tiempo acumulado
 
-    // x del borde derecho a la altura y (con envolvente que se apaga en esquinas).
-    const edgeX = (y: number): number => {
+    // -------- funciones de ondulado --------
+
+    // Ondulado vertical para el borde derecho (desplazamiento en X).
+    const rightSpan = H - 2 * r;
+    const rightX = (y: number): number => {
       let env = 1;
-      if (span > 0) {
-        const p = Math.max(0, Math.min(1, (y - r) / span));
-        env = Math.sin(p * Math.PI); // 0 en esquinas, 1 en el centro
+      if (rightSpan > 0) {
+        const p = Math.max(0, Math.min(1, (y - r) / rightSpan));
+        env = Math.sin(p * Math.PI);
       }
       const wave =
-        0.62 * Math.sin(y * 0.020 + this.t * 1.1) +
-        0.38 * Math.sin(y * 0.034 - this.t * 0.7 + 1.3);
-      return cx + this.amp * env * wave;
+        0.62 * Math.sin(y * 0.020 + t * 1.1) +
+        0.38 * Math.sin(y * 0.034 - t * 0.7 + 1.3);
+      return cx + a * env * wave;
     };
 
-    const topX = edgeX(r);
-    const botX = edgeX(H - r);
+    // Ondulado horizontal para bordes superior/inferior (desplazamiento en Y).
+    // La envolvente va de 0 en el punto izquierdo (para que quede recto ahí) a
+    // 1 en el centro del borde y vuelve a 0 en la esquina derecha (donde está
+    // el arco).
+    const topSpan = cx - r;     // ancho del tramo recto del borde superior
+    const topY = (x: number): number => {
+      if (topSpan <= 0) return 0;
+      const p = Math.max(0, Math.min(1, x / topSpan));
+      const env = Math.sin(p * Math.PI);
+      const wave =
+        0.62 * Math.sin(x * 0.025 + t * 0.9 + 2.0) +
+        0.38 * Math.sin(x * 0.041 - t * 0.6 + 0.5);
+      return a * 0.7 * env * wave;
+    };
 
+    const botY = (x: number): number => {
+      if (topSpan <= 0) return H;
+      const p = Math.max(0, Math.min(1, x / topSpan));
+      const env = Math.sin(p * Math.PI);
+      const wave =
+        0.62 * Math.sin(x * 0.022 - t * 1.0 + 3.7) +
+        0.38 * Math.sin(x * 0.038 + t * 0.55 + 1.1);
+      return H + a * 0.7 * env * wave;
+    };
+
+    // -------- construir el path --------
+
+    // Empezar en la esquina superior izquierda (siempre fija).
     let d = `M 0 0`;
-    d += ` L ${(topX - r).toFixed(2)} 0`;
-    d += ` Q ${topX.toFixed(2)} 0 ${topX.toFixed(2)} ${r.toFixed(2)}`;
 
-    // Borde derecho: muestreo denso de una función suave. Los segmentos rectos
-    // entre puntos muy juntos los antialiasea el rasterizador vectorial, así que
-    // se ve como una curva continua, sin facetas ni pixelado.
-    const step = 5;
-    for (let y = r + step; y < H - r; y += step) {
-      d += ` L ${edgeX(y).toFixed(2)} ${y.toFixed(2)}`;
+    // Borde SUPERIOR: izquierda → derecha, ondulando en Y.
+    for (let x = step; x < topSpan; x += step) {
+      d += ` L ${x.toFixed(2)} ${topY(x).toFixed(2)}`;
     }
 
-    d += ` L ${botX.toFixed(2)} ${(H - r).toFixed(2)}`;
-    d += ` Q ${botX.toFixed(2)} ${H.toFixed(2)} ${(botX - r).toFixed(2)} ${H.toFixed(2)}`;
+    // Esquina superior derecha: del tramo recto al arco.
+    const trX = rightX(r);
+    d += ` L ${(trX - r).toFixed(2)} ${topY(topSpan).toFixed(2)}`;
+    d += ` Q ${trX.toFixed(2)} 0 ${trX.toFixed(2)} ${r.toFixed(2)}`;
+
+    // Borde DERECHO: arriba → abajo, ondulando en X.
+    for (let y = r + step; y < H - r; y += step) {
+      d += ` L ${rightX(y).toFixed(2)} ${y.toFixed(2)}`;
+    }
+
+    // Esquina inferior derecha: del borde derecho al arco inferior.
+    const brX = rightX(H - r);
+    d += ` L ${brX.toFixed(2)} ${(H - r).toFixed(2)}`;
+    d += ` Q ${brX.toFixed(2)} ${H.toFixed(2)} ${(brX - r).toFixed(2)} ${botY(topSpan).toFixed(2)}`;
+
+    // Borde INFERIOR: derecha → izquierda, ondulando en Y.
+    for (let x = topSpan - step; x > 0; x -= step) {
+      d += ` L ${x.toFixed(2)} ${botY(x).toFixed(2)}`;
+    }
+
+    // Vuelta a la esquina inferior izquierda y cierre.
     d += ` L 0 ${H.toFixed(2)}`;
     d += ` Z`;
     return d;
