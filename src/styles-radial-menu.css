@@ -368,6 +368,27 @@
   transition: all 0.1s ease-out;
 }
 
+/* Marca apilada en el centro (estado de reposo): ZENCE y DRAW del mismo tamaño,
+   uno debajo del otro. Sin el ellipsis/nowrap del texto normal para que las dos
+   palabras quepan enteras. */
+.rm-center-label.is-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-width: none;
+  overflow: visible;
+}
+
+.rm-brand-zence,
+.rm-brand-draw {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-indent: 0.12em;
+  line-height: 1;
+}
+
 .rm-center-btn.can-back .rm-center-label {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.75);

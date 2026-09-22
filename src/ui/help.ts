@@ -102,7 +102,10 @@ export class HelpOverlay {
     close.addEventListener("click", () => this.hide());
 
     const head = el("div", { class: "help-head" }, [
-      el("h2", { class: "help-title", text: "drawi" }),
+      el("h2", { class: "help-title brand-lockup" }, [
+        el("span", { class: "brand-zence", text: "ZENCE" }),
+        el("span", { class: "brand-draw", text: "DRAW" }),
+      ]),
       el("p", { class: "help-sub", text: "Dibujo generativo con materia que se funde." }),
       close,
     ]);

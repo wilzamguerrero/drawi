@@ -60,7 +60,6 @@ export class TopBar {
 
     this.el = el("header", { class: "topbar" }, [
       el("div", { class: "topbar-group topbar-brand" }, [
-        el("span", { class: "brand-mark", text: "drawi" }),
         this.nameInput,
       ]),
       el("div", { class: "topbar-group" }, [this.undoBtn.el, this.redoBtn.el]),

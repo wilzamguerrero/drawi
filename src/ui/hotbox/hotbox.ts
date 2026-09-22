@@ -135,7 +135,7 @@ export class Hotbox {
     this.el.style.pointerEvents = "auto";
     this.ring.style.left = `${this.cx}px`;
     this.ring.style.top = `${this.cy}px`;
-    this.stack = [{ nodes: buildRoot(this.editor, this.editor.state, this.hooks), label: "drawi" }];
+    this.stack = [{ nodes: buildRoot(this.editor, this.editor.state, this.hooks), label: "Zence" }];
     this.path = [];
     this.dial = null;
     this.expanded = -1;
@@ -206,7 +206,7 @@ export class Hotbox {
   /** Reconstruye siguiendo el camino de ids (para toggles con keepOpen). */
   private refresh(): void {
     const root = buildRoot(this.editor, this.editor.state, this.hooks);
-    const levels: Level[] = [{ nodes: root, label: "drawi" }];
+    const levels: Level[] = [{ nodes: root, label: "Zence" }];
     let nodes = root;
     for (const id of this.path) {
       const parent = nodes.find((n) => n.id === id);

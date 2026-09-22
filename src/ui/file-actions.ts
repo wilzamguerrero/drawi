@@ -110,4 +110,4 @@ const sanitize = (name: string): string =>
     .trim()
     .replace(/[^\p{L}\p{N}_-]+/gu, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "drawi";
+    .slice(0, 48) || "zence-draw";

@@ -218,7 +218,7 @@ export class App {
     this.topBar.update(state);
     this.statusBar.update(state);
     this.sideDock.update(state);
-    document.title = `${state.name} — drawi`;
+    document.title = `${state.name} — Zence Draw`;
   }
 
   private scheduleAutosave(): void {

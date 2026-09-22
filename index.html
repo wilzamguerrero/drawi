@@ -7,9 +7,9 @@
     <meta name="theme-color" content="#101217" />
     <meta
       name="description"
-      content="drawi: dibujo generativo con lapiz de alta respuesta, simetria movil y materia que se funde."
+      content="Zence Draw: dibujo generativo con lapiz de alta respuesta, simetria movil y materia que se funde."
     />
-    <title>drawi</title>
+    <title>Zence Draw</title>
 
     <!--
       Splash de arranque.
@@ -62,12 +62,29 @@
         position: relative;
         z-index: 1;
         margin: 0;
-        font-size: clamp(28px, 8vw, 52px);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: clamp(4px, 1vw, 8px);
+        line-height: 1;
+        color: #ffffff;
+      }
+
+      /* ZENCE: el peso de la portada. DRAW: pequeño y espaciado justo debajo,
+         como bajada de marca. Ambos en blanco para quedar recortados sobre la
+         materia negra que pasa por detras. */
+      .splash-zence {
+        font-size: clamp(30px, 9vw, 58px);
         font-weight: 800;
         letter-spacing: .18em;
         text-indent: .18em;
-        text-transform: lowercase;
-        color: #ffffff;
+      }
+
+      .splash-draw {
+        font-size: clamp(11px, 2.4vw, 15px);
+        font-weight: 600;
+        letter-spacing: .62em;
+        text-indent: .62em;
       }
 
       /* --------------------------------------------------------------- la firma
@@ -110,9 +127,12 @@
   <body>
     <div id="app"></div>
 
-    <div id="splash" role="status" aria-label="Cargando drawi">
+    <div id="splash" role="status" aria-label="Cargando Zence Draw">
       <canvas id="splash-canvas" aria-hidden="true"></canvas>
-      <h1 class="splash-name">drawi</h1>
+      <h1 class="splash-name">
+        <span class="splash-zence">ZENCE</span>
+        <span class="splash-draw">DRAW</span>
+      </h1>
       <p class="splash-dev"><span class="splash-dev-tag">DEV</span>wilzamguerrero</p>
     </div>
 

@@ -8,6 +8,25 @@ import { buildRoot, type HotNode, type MenuHooks } from "./menu";
 
 const NS = "http://www.w3.org/2000/svg";
 
+/**
+ * Pinta la etiqueta central del menú. Con `label` es texto plano (el nombre del
+ * nodo bajo el cursor); sin él (`null`), la marca apilada: ZENCE y, debajo, DRAW
+ * del mismo tamaño. La marca es el estado de reposo (raíz del menú).
+ */
+function setBrandLabel(node: HTMLElement, label: string | null): void {
+  if (label !== null) {
+    node.classList.remove("is-brand");
+    node.textContent = label;
+    return;
+  }
+  node.classList.add("is-brand");
+  node.textContent = "";
+  node.append(
+    el("span", { class: "rm-brand-zence", text: "ZENCE" }),
+    el("span", { class: "rm-brand-draw", text: "DRAW" }),
+  );
+}
+
 // Configuración del menú radial - todo en un solo lugar
 const CONFIG = {
   // Radios principales
@@ -118,7 +137,8 @@ export class RadialMenu {
 
     this.svg = this.createSVG();
     this.iconsContainer = el("div", { class: "rm-icons" });
-    this.centerLabel = el("span", { class: "rm-center-label", text: "drawi" });
+    this.centerLabel = el("span", { class: "rm-center-label" });
+    setBrandLabel(this.centerLabel, null);
     this.centerButton = el("button", {
       class: "rm-center-btn materia-blob",
       type: "button"
@@ -650,7 +670,7 @@ export class RadialMenu {
       if (isHovered) hoveredNode = sector.node;
     }
 
-    this.centerLabel.textContent = hoveredNode ? hoveredNode.label : "drawi";
+    setBrandLabel(this.centerLabel, hoveredNode ? hoveredNode.label : null);
 
     // Refresca el resaltado del camino y el haz central sin reconstruir.
     this.updateActivePathVisuals();
@@ -725,7 +745,7 @@ export class RadialMenu {
   private updateCenterButton(): void {
     // El botón central siempre cierra; se muestra el título de la raíz.
     setClass(this.centerButton, "can-back", false);
-    if (this.hoveredPath === null) this.centerLabel.textContent = "drawi";
+    if (this.hoveredPath === null) setBrandLabel(this.centerLabel, null);
   }
 
   private refresh(): void {

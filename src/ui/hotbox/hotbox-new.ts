@@ -76,7 +76,7 @@ export class HotboxNew {
     // Hub central (sin tooltip separado)
     this.centerHub = el("div", { class: "hb-hub" }, [
       el("span", { class: "hb-hub-icon", html: icon("back") }),
-      el("span", { class: "hb-hub-label", text: "drawi" }),
+      el("span", { class: "hb-hub-label", text: "Zence" }),
     ]);
 
     this.root = el("div", { class: "hb-ring" }, [
@@ -119,7 +119,7 @@ export class HotboxNew {
     this.root.style.left = `${this.cx}px`;
     this.root.style.top = `${this.cy}px`;
 
-    this.stack = [{ nodes: buildRoot(this.editor, this.editor.state, this.hooks), label: "drawi" }];
+    this.stack = [{ nodes: buildRoot(this.editor, this.editor.state, this.hooks), label: "Zence" }];
     this.path = [];
     this.expandedIndex = -1;
     this.hoveredSector = null;
@@ -414,7 +414,7 @@ export class HotboxNew {
 
   private refresh(): void {
     const root = buildRoot(this.editor, this.editor.state, this.hooks);
-    this.stack = [{ nodes: root, label: "drawi" }];
+    this.stack = [{ nodes: root, label: "Zence" }];
     // Reconstruir path
     // TODO: Navegar por el path guardado
     this.rebuild();
