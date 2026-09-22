@@ -1612,8 +1612,25 @@ body {
   display: grid;
   place-items: center;
   padding: 20px;
+}
+
+/* El fondo (oscurecido + desenfoque) va en un pseudo-elemento propio para poder
+   desvanecerlo con transición SIN tocar la opacidad de las partículas ni del
+   cuadro (que animan por su cuenta). Entra/sale al alternar .is-visible. */
+.help-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
   background: rgba(5, 7, 10, 0.62);
   backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity 0.32s ease;
+  pointer-events: none;
+}
+
+.help-overlay.is-visible::before {
+  opacity: 1;
 }
 
 /* El cuadro flota: la piel (MateriaEdge) dibuja su relleno ondulante y el
@@ -1634,8 +1651,13 @@ body {
      scale 0.6 y el keyframe arrancaba en 0.85, y ese brinco se notaba). El
      relevo con las partículas es un crossfade continuo: la masa se desvanece
      mientras el cuadro aparece casi en su sitio, sin un rectángulo negro plantado
-     antes de la información. */
-  transition: opacity 0.36s ease, transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+     antes de la información. La curva del transform tiene un asentamiento suave
+     (ease-out expo) para que el cuadro "pose" sin rebote barato; la opacidad va
+     algo más rápida, así ya es sólido cuando termina de asentarse. */
+  transition:
+    opacity 0.3s ease,
+    transform 0.52s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
 }
 
 /* Mientras las gotas se juntan, el cuadro espera invisible y solo un pelín
@@ -1644,14 +1666,14 @@ body {
    suavemente a su tamaño real mientras las partículas se funden con él. */
 .help-dialog.is-forming {
   opacity: 0;
-  transform: scale(0.94);
+  transform: scale(0.92) translateY(6px);
   transition: none;
 }
 
 /* Al cerrar, se desvanece y encoge apenas mientras las gotas se dispersan. */
 .help-dialog.is-closing {
   opacity: 0;
-  transform: scale(0.96);
+  transform: scale(0.965) translateY(4px);
 }
 
 /* Piel: SVG vectorial que cubre el cuadro y ondula en sus cuatro bordes. Va
@@ -1690,6 +1712,49 @@ body {
   background: #3a3a42;
   border-radius: 6px;
   border: 3px solid #161619;
+}
+
+/* Cascada del contenido: cada bloque (cabecera, columnas, notas) arranca un
+   pelín abajo y transparente, y sube a su sitio con un retardo escalonado (--i)
+   cuando el diálogo recibe .is-revealed —justo en el relevo de las partículas—.
+   Así el texto "cuaja" de arriba abajo sobre el cuadro recién formado en vez de
+   aparecer entero de golpe. El blur inicial da esa sensación de enfocar. */
+.help-rise {
+  opacity: 0;
+  transform: translateY(12px);
+  filter: blur(6px);
+  transition:
+    opacity 0.42s ease,
+    transform 0.52s cubic-bezier(0.16, 1, 0.3, 1),
+    filter 0.42s ease;
+  transition-delay: calc(var(--i, 0) * 55ms);
+}
+
+.help-dialog.is-revealed .help-rise {
+  opacity: 1;
+  transform: none;
+  filter: none;
+}
+
+/* Al recoger (cerrar) el texto se va rápido y a la vez, sin escalonar: el cuadro
+   debe quedar vacío antes de desintegrarse, no ir desapareciendo por partes. */
+.help-dialog:not(.is-revealed) .help-rise {
+  transition-duration: 0.16s, 0.16s, 0.16s;
+  transition-delay: 0s;
+}
+
+/* Movimiento reducido: nada de cascada, fondo ni desenfoque de enfoque. El
+   contenido aparece ya en su sitio; la visibilidad la controla el JS. */
+@media (prefers-reduced-motion: reduce) {
+  .help-overlay::before {
+    transition: none;
+  }
+  .help-rise {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    transition: none;
+  }
 }
 
 .help-head {

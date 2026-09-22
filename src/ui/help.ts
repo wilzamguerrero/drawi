@@ -101,16 +101,29 @@ export class HelpOverlay {
     const close = el("button", { class: "btn btn-icon help-close", type: "button", title: "Cerrar", html: icon("close") });
     close.addEventListener("click", () => this.hide());
 
+    const head = el("div", { class: "help-head" }, [
+      el("h2", { class: "help-title", text: "drawi" }),
+      el("p", { class: "help-sub", text: "Dibujo generativo con materia que se funde." }),
+      close,
+    ]);
+
+    const notesBlock = el("div", { class: "help-notes" }, notes);
+
     // Contenido nítido, por encima de la piel ondulante.
     const content = el("div", { class: "help-content" }, [
-      el("div", { class: "help-head" }, [
-        el("h2", { class: "help-title", text: "drawi" }),
-        el("p", { class: "help-sub", text: "Dibujo generativo con materia que se funde." }),
-        close,
-      ]),
+      head,
       el("div", { class: "help-columns" }, columns),
-      el("div", { class: "help-notes" }, notes),
+      notesBlock,
     ]);
+
+    // Bloques que entran en cascada tras el relevo de las partículas: cada uno
+    // sube y aparece con un retardo escalonado (--i). El texto no se planta de
+    // golpe, "cuaja" de arriba abajo justo cuando la masa termina de hacerse
+    // cuadro. La cabecera y las columnas van una a una; las notas, en bloque.
+    [head, ...columns, notesBlock].forEach((node, i) => {
+      node.classList.add("help-rise");
+      node.style.setProperty("--i", String(i));
+    });
 
     // Piel: el relleno del cuadro, dibujado como SVG vectorial con los cuatro
     // bordes vivos. Mismo negro (#161619) que el dock y el menú radial.
@@ -124,7 +137,11 @@ export class HelpOverlay {
     // vivo: las gotas parten del perímetro del rectángulo, no de un círculo, así
     // la masa que se forma tiene la proporción del cuadro. reach = cuánto asoman
     // hacia afuera; dots, repartidas por el contorno.
-    this.fx = new MateriaFx({ reach: 120, dots: 20 });
+    //
+    // solidCore:false → SIN núcleo sólido: solo las gotas gooey convergiendo. Un
+    // rectángulo plano detrás desentonaba con los bordes vivos de la piel; ahora
+    // el relleno lo pone la piel ondulante al aparecer, no un bloque recto.
+    this.fx = new MateriaFx({ reach: 120, dots: 26, solidCore: false });
 
     this.el = el("div", { class: "help-overlay" }, [this.fx.el, this.dialog]);
     this.el.hidden = true;
@@ -145,32 +162,45 @@ export class HelpOverlay {
 
     window.clearTimeout(this.fxTimer);
     this.dialog.classList.remove("is-closing", "is-forming");
+    this.setRevealed(false);
     this.edge.start();
 
     if (prefersReducedMotion()) {
-      // Sin movimiento: aparición directa, sin partículas.
+      // Sin movimiento: aparición directa, sin partículas ni cascada.
+      this.el.classList.add("is-visible");
+      this.setRevealed(true);
       this.fx.clear();
       return;
     }
+
+    // El fondo (oscurecido + desenfoque) entra con su propia transición, sin
+    // esperar a las partículas: un reflow forzado fija el estado "oculto" antes de
+    // marcar .is-visible, para que el navegador anime el fade en vez de saltarlo.
+    void this.el.offsetWidth;
+    this.el.classList.add("is-visible");
 
     // Medir el cuadro a tamaño real ANTES de encogerlo con .is-forming (si no, el
     // scale falsearía el rectángulo de las partículas).
     this.syncFxToDialog();
 
-    // Las gotas se juntan formando el rectángulo del cuadro; el diálogo espera
-    // invisible (.is-forming). El relevo NO espera a que la masa esté del todo
-    // hecha: a media reunión el cuadro empieza a aparecer y las gotas a fundirse,
-    // solapados, así la masa "se convierte" en el cuadro de forma fluida en vez de
-    // quedarse plantada como un rectángulo negro y luego mostrar la info de golpe.
+    // Las gotas parten del perímetro del cuadro y convergen fundiéndose; el
+    // diálogo espera invisible (.is-forming). Sin núcleo sólido, la masa es solo
+    // esas gotas, así que el relevo se solapa pronto: a media reunión la piel
+    // ondulante empieza a aparecer y las gotas a fundirse a la vez, y es la piel
+    // —con sus bordes vivos— la que "rellena" el cuadro, sin que llegue a verse un
+    // rectángulo plano ni un hueco entre los blobs y la caja.
     this.dialog.classList.add("is-forming");
     this.fx.gather();
 
-    // Relevo a ~62% de la reunión: el cuadro aparece con su transición mientras
-    // las últimas gotas aún se están fundiendo (crossfade continuo).
-    const handoff = Math.round(this.fx.gatherMs * 0.62);
+    // Relevo a ~50% de la reunión: la piel aparece con su transición mientras las
+    // gotas aún convergen (crossfade continuo, sin bloque recto). Y en ese mismo
+    // instante arranca la cascada del contenido: el texto "cuaja" de arriba abajo
+    // sobre el cuadro recién formado, en vez de mostrarse todo de golpe.
+    const handoff = Math.round(this.fx.gatherMs * 0.5);
     this.fxTimer = window.setTimeout(() => {
       if (!this.open) return;
       this.dialog.classList.remove("is-forming");
+      this.setRevealed(true);
       this.fx.fadeOut();
     }, handoff);
   }
@@ -181,13 +211,20 @@ export class HelpOverlay {
 
     window.clearTimeout(this.fxTimer);
     this.dialog.classList.remove("is-forming");
+    // El contenido se recoge de inmediato (fade rápido) para que el cuadro quede
+    // "vacío" antes de desintegrarse: primero se va el texto, luego la masa.
+    this.setRevealed(false);
     this.edge.collapse();
 
     if (prefersReducedMotion()) {
+      this.el.classList.remove("is-visible");
       this.el.hidden = true;
       this.dialog.classList.remove("is-closing");
       return;
     }
+
+    // El fondo se desvanece a la vez que el cuadro se va.
+    this.el.classList.remove("is-visible");
 
     // El cuadro se desintegra en partículas mientras se va: sale como entró. Se
     // mide todavía a tamaño real (aún no se le ha aplicado el scale de salida).
@@ -201,6 +238,11 @@ export class HelpOverlay {
       this.dialog.classList.remove("is-closing");
       this.fx.clear();
     }, this.fx.scatterMs);
+  }
+
+  /** Activa/desactiva la cascada del contenido (clase en el contenedor raíz). */
+  private setRevealed(on: boolean): void {
+    this.dialog.classList.toggle("is-revealed", on);
   }
 
   /**

@@ -53,6 +53,15 @@ export interface MateriaFxOptions {
    * Si se omite, la masa es circular (el modo original del menú radial y la rueda).
    */
   rect?: { width: number; height: number; radius?: number };
+  /**
+   * Dibuja el núcleo sólido central (la masa "llena"). Por defecto `true`. Ponlo
+   * en `false` para que la masa la formen SOLO las gotas gooey al fundirse, sin un
+   * bloque sólido detrás. Útil cuando otra capa (p. ej. la piel ondulante de un
+   * cuadro) hace de relleno: el núcleo recto se vería como un rectángulo plano que
+   * desentona con los bordes vivos, así que se prescinde de él y solo quedan los
+   * blobs orgánicos convergiendo.
+   */
+  solidCore?: boolean;
 }
 
 export class MateriaFx {
@@ -64,6 +73,7 @@ export class MateriaFx {
   private core: number;
   private reach: number;
   private dots: number;
+  private solidCore: boolean;
   private clearTimer = 0;
   /** Silueta rectangular activa (ancho/alto/radio); null = masa circular. */
   private rect: { width: number; height: number; radius: number } | null = null;
@@ -73,6 +83,7 @@ export class MateriaFx {
     this.core = opts.coreSize ?? 112;
     this.reach = opts.reach ?? this.core * 0.85;
     this.dots = opts.dots ?? 8;
+    this.solidCore = opts.solidCore ?? true;
     this.gatherMs = opts.gatherMs ?? 420;
     this.scatterMs = opts.scatterMs ?? 340;
     if (opts.rect) this.setRect(opts.rect.width, opts.rect.height, opts.rect.radius);
@@ -126,16 +137,21 @@ export class MateriaFx {
     while (this.el.firstChild) this.el.removeChild(this.el.firstChild);
     this.el.classList.remove("is-gathering", "is-scattering", "is-fading");
 
-    // Núcleo: la masa central. En modo rectangular toma el tamaño y radio del
-    // cuadro (sobrescribe el --core circular del CSS); si no, lo fija --core.
-    const core = document.createElement("div");
-    core.className = "materia-fx-dot materia-fx-core";
-    if (this.rect) {
-      core.style.width = `${this.rect.width}px`;
-      core.style.height = `${this.rect.height}px`;
-      core.style.borderRadius = `${this.rect.radius}px`;
+    // Núcleo: la masa central "llena". En modo rectangular tomaría el tamaño y
+    // radio del cuadro (sobrescribe el --core circular del CSS); si no, lo fija
+    // --core. Se omite cuando solidCore=false: entonces la masa la forman solo las
+    // gotas al fundirse, sin un bloque recto detrás (p. ej. el cuadro de ayuda,
+    // cuyo relleno lo pone su piel ondulante, no un rectángulo plano).
+    if (this.solidCore) {
+      const core = document.createElement("div");
+      core.className = "materia-fx-dot materia-fx-core";
+      if (this.rect) {
+        core.style.width = `${this.rect.width}px`;
+        core.style.height = `${this.rect.height}px`;
+        core.style.borderRadius = `${this.rect.radius}px`;
+      }
+      this.el.appendChild(core);
     }
-    this.el.appendChild(core);
 
     // Escala de las gotas respecto al tamaño base. En modo rectángulo, según el
     // lado menor, para que las gotas guarden proporción con el cuadro.
