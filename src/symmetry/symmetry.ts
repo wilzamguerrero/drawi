@@ -19,12 +19,14 @@ export interface SymmetryState {
 }
 
 export const DEFAULT_SYMMETRY: SymmetryState = {
-  mode: "none",
+  // Al iniciar: espejo activo, eje vertical (90° → reflejo izquierda/derecha) y la
+  // guia (gizmo) oculta. El origen (0,0) es el centro de la vista al arrancar.
+  mode: "mirror",
   x: 0,
   y: 0,
-  angle: 0,
+  angle: Math.PI / 2,
   count: 6,
-  visible: true,
+  visible: false,
   locked: false,
 };
 
