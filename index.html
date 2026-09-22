@@ -173,23 +173,45 @@
 
         function rand(a, b) { return a + Math.random() * (b - a); }
 
-        // Las gotas viven en pixeles CSS. Se atraen suavemente al centro para acabar
-        // en una sola masa fundida. El campo se evalua a resolucion completa (solo en
-        // el recuadro que ocupan), asi el borde sale limpio, sin pixelado ni blur.
+        // Las gotas viven en pixeles CSS. Se atraen suavemente a una BANDA horizontal
+        // (no a un punto), asi la masa fundida acaba como un ovalo ANCHO que envuelve
+        // el lockup "ZENCE / DRAW" —mas ancho que alto— en vez de un disco que dejaba
+        // el texto cortado por los lados. El campo se evalua a resolucion completa
+        // (solo en el recuadro que ocupan), asi el borde sale limpio, sin pixelado.
         var unit = Math.min(W, H);
-        var N = 7;
+        // Ancho de la banda objetivo: cubre el ZENCE mas largo (acotado en pantallas
+        // grandes). La altura es una fraccion de ese ancho para el ovalo horizontal.
+        var bandW = Math.min(W * 0.62, 520);
+        var bandH = bandW * 0.34;
+        var cx0 = W / 2, cy0 = H / 2;
+        var N = 9;
         var balls = [];
         for (var i = 0; i < N; i++) {
           var ang = rand(0, Math.PI * 2);
           var sp = rand(0.25, 0.7);
+          // Objetivo de cada gota repartido por la banda: la mayoria a lo ancho, con
+          // poca dispersion vertical, para que al fundirse formen el ovalo del logo.
+          var spreadX = (i / (N - 1) - 0.5) * bandW + rand(-0.06, 0.06) * bandW;
           balls.push({
-            x: rand(0.4, 0.6) * W,
-            y: rand(0.38, 0.62) * H,
+            x: rand(0.32, 0.68) * W,
+            y: rand(0.4, 0.6) * H,
             vx: Math.cos(ang) * sp,
             vy: Math.sin(ang) * sp,
-            r: rand(unit * 0.018, unit * 0.032),
-            born: i * 150, // aparecen escalonadas, al azar
+            r: rand(unit * 0.022, unit * 0.038),
+            tx: cx0 + spreadX,
+            ty: cy0 + rand(-0.5, 0.5) * bandH,
+            born: i * 130, // aparecen escalonadas, al azar
           });
+        }
+
+        // Con movimiento reducido no hay bucle: las gotas se pintan una sola vez, asi
+        // que arrancan ya en su objetivo para que el ovalo del logo salga formado.
+        if (reduce) {
+          for (var j = 0; j < balls.length; j++) {
+            balls[j].x = balls[j].tx;
+            balls[j].y = balls[j].ty;
+            balls[j].born = 0;
+          }
         }
 
         var THRESH = 1.0; // umbral del campo: dentro = materia
@@ -202,14 +224,15 @@
           if (start === null) start = t;
           var elapsed = t - start;
 
-          // Mover y atraer al centro; rebotar en los bordes.
+          // Mover y atraer a su objetivo en la banda; rebotar en los bordes. La
+          // atraccion en Y es mas fuerte que en X para que la masa se aplane a lo
+          // ancho (ovalo horizontal) en vez de volver a juntarse en un disco.
           if (!reduce) {
-            var cx = W / 2, cy = H / 2;
             for (var i = 0; i < balls.length; i++) {
               var b = balls[i];
               if (elapsed < b.born) continue;
-              b.vx += (cx - b.x) * 0.00045;
-              b.vy += (cy - b.y) * 0.00045;
+              b.vx += (b.tx - b.x) * 0.00035;
+              b.vy += (b.ty - b.y) * 0.00075;
               b.vx *= 0.99;
               b.vy *= 0.99;
               b.x += b.vx;
