@@ -140,6 +140,10 @@ export class CommandPalette {
   /** Partículas (metaball) que forman/deshacen el cuadro. Sistema compartido. */
   private fx: MateriaFx;
   private fxTimer = 0;
+  /** Pausa breve tras el gather: el círculo formado descansa un instante (como el
+      menú radial) antes de abrirse, para que se vea "las partículas llegando al
+      círculo". */
+  private holdTimer = 0;
   /** Tiempo de la expansión (círculo → cuadro con más partículas). */
   private bloomTimer = 0;
   /** Segundo tiempo: revela el buscador una vez la caja está llena. */
@@ -195,10 +199,13 @@ export class CommandPalette {
 
     // Capa de partículas: hermana del diálogo, para que la opacidad del cuadro al
     // abrir/cerrar no la afecte. Núcleo REDONDO y pequeño en el centro, como el
-    // menú radial: la masa "aparece desde el centro". Nada de gotas repartidas por
-    // el perímetro (eso daba el remolino que da la vuelta); solo un blob central
-    // que luego el cuadro, al crecer, rebasa hasta llenar los bordes.
-    this.fx = new MateriaFx({ coreSize: 120, reach: 86, dots: 16, solidCore: true, gatherMs: 340, scatterMs: 300 });
+    // menú radial: la masa "aparece desde el centro". Mismos parámetros que el menú
+    // radial (coreSize 112, reach 96, 8 gotas) para que el arranque se vea igual:
+    // varias gotas VIAJAN desde fuera hacia el centro y ahí cuaja el círculo (el
+    // `reach` mayor que el radio del núcleo es lo que hace visible ese viaje; con un
+    // reach pegado al borde las gotas no se movían y solo "aparecía" un blob). Luego
+    // el cuadro, al crecer (bloom), rebasa este círculo hasta llenar los bordes.
+    this.fx = new MateriaFx({ coreSize: 112, reach: 96, dots: 8, solidCore: true, gatherMs: 420, scatterMs: 300 });
 
     this.el = el("div", { class: "cmd-overlay" }, [this.fx.el, this.dialog]);
     this.el.hidden = true;
@@ -267,30 +274,37 @@ export class CommandPalette {
     const rh = r.height > 0 ? r.height : 340;
     this.fx.center(cx, cy);
 
-    // Secuencia en tres tiempos, como pidió el usuario:
-    //  1) La masa aparece en el CENTRO como un CÍRCULO (núcleo redondo, igual que
-    //     el menú radial). La caja espera invisible (.is-forming).
-    //  2) Ese círculo se EXPANDE con más partículas hasta abarcar el cuadro: el
-    //     núcleo se cuadra y las gotas brotan hacia los bordes (fx.bloom).
-    //  3) Cuando la masa ya cubre el cuadro, APARECE el buscador: la caja hace
-    //     crossfade sobre la masa (fadeOut) y el contenido entra en cascada.
+    // Secuencia, como pidió el usuario:
+    //  1) GATHER idéntico al menú radial: varias gotas viajan desde fuera y cuajan
+    //     un CÍRCULO en el centro. Al terminar, ese círculo DESCANSA formado un
+    //     instante (holdTimer) —igual que el círculo del menú radial queda hecho
+    //     antes de crecer— para que se perciba "las partículas llegando al círculo"
+    //     y el bloom no lo borre el mismo frame en que cuaja.
+    //  2) Ese mismo círculo se ABRE en partículas hasta abarcar el cuadro (bloom):
+    //     las gotas brotan del centro YA visibles y se reparten por el rectángulo.
+    //  3) Cubierto el cuadro, APARECE el buscador: la caja hace crossfade sobre la
+    //     masa (fadeOut) y el contenido entra en cascada.
     this.dialog.classList.add("is-forming");
     this.fx.gather();
 
     this.fxTimer = window.setTimeout(() => {
       if (!this.open) return;
-      this.fx.bloom(rw, rh, 22); // el círculo se expande hasta cubrir el cuadro
-      this.bloomTimer = window.setTimeout(() => {
+      // El círculo ya cuajó (gather = 0.42s). Déjalo verse un momento antes de abrir.
+      this.holdTimer = window.setTimeout(() => {
         if (!this.open) return;
-        this.dialog.classList.remove("is-forming"); // la caja aparece sobre la masa
-        this.fx.fadeOut();
-        this.revealTimer = window.setTimeout(() => {
+        this.fx.bloom(rw, rh, 22); // el círculo se abre y cubre el cuadro
+        this.bloomTimer = window.setTimeout(() => {
           if (!this.open) return;
-          this.setRevealed(true); // ...y con ella, el buscador
-          this.playRowCascade();
-          this.focusInput();
-        }, 240);
-      }, this.fx.bloomMs);
+          this.dialog.classList.remove("is-forming"); // la caja aparece sobre la masa
+          this.fx.fadeOut();
+          this.revealTimer = window.setTimeout(() => {
+            if (!this.open) return;
+            this.setRevealed(true); // ...y con ella, el buscador
+            this.playRowCascade();
+            this.focusInput();
+          }, 240);
+        }, this.fx.bloomMs);
+      }, 160);
     }, this.fx.gatherMs);
   }
 
@@ -299,6 +313,8 @@ export class CommandPalette {
     this.open = false;
 
     window.clearTimeout(this.fxTimer);
+    window.clearTimeout(this.holdTimer);
+    window.clearTimeout(this.bloomTimer);
     window.clearTimeout(this.revealTimer);
     window.clearTimeout(this.rowCascadeTimer);
     this.results.classList.remove("is-entering");

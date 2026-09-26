@@ -30,8 +30,16 @@
   pointer-events: none;
 }
 
+/* El fondo entra CON RETARDO (~0.5s), no de inmediato: durante el gather no debe
+   haber oscurecido: si lo hay, las gotas negras (#161619) viajan sobre un fondo
+   oscuro y se pierden —solo se veía el núcleo central—. El menú radial no tiene
+   fondo y por eso sus partículas se ven llegar de los lados; aquí replicamos eso
+   dejando el lienzo despejado mientras las gotas convergen, y solo después (cuando
+   el círculo se abre y aparece el cuadro) oscurecemos el fondo. Al cerrar (quitar
+   is-visible) se usa la transición base, sin retardo, así el fondo se va enseguida. */
 .cmd-overlay.is-visible::before {
   opacity: 1;
+  transition: opacity 0.42s ease 0.5s;
 }
 
 /* El cuadro flota: la piel (MateriaEdge) dibuja su relleno ondulante y el

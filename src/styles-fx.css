@@ -110,9 +110,13 @@
   animation: materia-bloom 0.44s cubic-bezier(0.2, 1, 0.3, 1) both;
 }
 
+/* Las gotas de la expansión BROTAN del centro YA visibles (opacity 1), desde la
+   propia masa que dejó el gather, y se abren hacia sus destinos (--bx,--by). Así el
+   círculo formado no se apaga de golpe para que otra masa entre desde cero (eso daba
+   el parpadeo). Los destinos NO cambian: la forma rectangular que dibujan las gotas
+   es la misma; solo cambia su entrada, del centro hacia afuera. */
 @keyframes materia-bloom {
-  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
-  35% { opacity: 1; }
+  0% { opacity: 1; transform: translate(-50%, -50%) scale(0.7); }
   100% {
     opacity: 1;
     transform: translate(calc(-50% + var(--bx)), calc(-50% + var(--by))) scale(1);

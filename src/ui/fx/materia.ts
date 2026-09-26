@@ -186,13 +186,13 @@ export class MateriaFx {
   clear(): void {
     window.clearTimeout(this.clearTimer);
     while (this.el.firstChild) this.el.removeChild(this.el.firstChild);
-    this.el.classList.remove("is-gathering", "is-scattering", "is-fading");
+    this.el.classList.remove("is-gathering", "is-scattering", "is-fading", "is-blooming");
   }
 
   private seed(scatter: boolean): void {
     window.clearTimeout(this.clearTimer);
     while (this.el.firstChild) this.el.removeChild(this.el.firstChild);
-    this.el.classList.remove("is-gathering", "is-scattering", "is-fading");
+    this.el.classList.remove("is-gathering", "is-scattering", "is-fading", "is-blooming");
 
     // Núcleo: la masa central "llena". En modo rectangular tomaría el tamaño y
     // radio del cuadro (sobrescribe el --core circular del CSS); si no, lo fija
