@@ -116,13 +116,13 @@
    cuadro "cuaja" en vez de aparecer entero de golpe; el blur da el enfoque. */
 .cmd-rise {
   opacity: 0;
-  transform: translateY(10px);
-  filter: blur(5px);
+  transform: translateY(9px);
+  filter: blur(4px);
   transition:
-    opacity 0.42s ease,
-    transform 0.5s cubic-bezier(0.16, 1, 0.3, 1),
-    filter 0.42s ease;
-  transition-delay: calc(var(--i, 0) * 55ms);
+    opacity 0.3s ease,
+    transform 0.38s cubic-bezier(0.16, 1, 0.3, 1),
+    filter 0.3s ease;
+  transition-delay: calc(var(--i, 0) * 40ms);
 }
 
 .cmd-dialog.is-revealed .cmd-rise {
@@ -236,8 +236,8 @@
    vez de plantarse. `backwards` mantiene el estado inicial durante el retardo. Solo
    al abrir: escribir quita .is-entering (renderResults) y el filtrado es al vuelo. */
 .cmd-results.is-entering .cmd-row {
-  animation: cmd-row-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-  animation-delay: calc(var(--row, 0) * 26ms);
+  animation: cmd-row-in 0.28s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--row, 0) * 20ms);
 }
 
 @keyframes cmd-row-in {
