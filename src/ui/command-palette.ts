@@ -140,10 +140,6 @@ export class CommandPalette {
   /** Partículas (metaball) que forman/deshacen el cuadro. Sistema compartido. */
   private fx: MateriaFx;
   private fxTimer = 0;
-  /** Pausa breve tras el gather: el círculo formado descansa un instante (como el
-      menú radial) antes de abrirse, para que se vea "las partículas llegando al
-      círculo". */
-  private holdTimer = 0;
   /** Tiempo de la expansión (círculo → cuadro con más partículas). */
   private bloomTimer = 0;
   /** Segundo tiempo: revela el buscador una vez la caja está llena. */
@@ -274,14 +270,14 @@ export class CommandPalette {
     const rh = r.height > 0 ? r.height : 340;
     this.fx.center(cx, cy);
 
-    // Secuencia, como pidió el usuario:
-    //  1) GATHER idéntico al menú radial: varias gotas viajan desde fuera y cuajan
-    //     un CÍRCULO en el centro. Al terminar, ese círculo DESCANSA formado un
-    //     instante (holdTimer) —igual que el círculo del menú radial queda hecho
-    //     antes de crecer— para que se perciba "las partículas llegando al círculo"
-    //     y el bloom no lo borre el mismo frame en que cuaja.
-    //  2) Ese mismo círculo se ABRE en partículas hasta abarcar el cuadro (bloom):
-    //     las gotas brotan del centro YA visibles y se reparten por el rectángulo.
+    // Secuencia, como pidió el usuario: un solo gesto continuo, sin que el círculo
+    // llegue a "descansar" formado en medio.
+    //  1) GATHER como el menú radial: varias gotas viajan desde fuera hacia el
+    //     centro. Su curva es ease-out fuerte, así que a ~0.6 de la duración las
+    //     gotas ya están prácticamente juntas.
+    //  2) En ese punto —sin pausa— disparamos el BLOOM: el mismo impulso que las
+    //     juntó las abre hacia la forma del cuadro. Al solaparse con la cola del
+    //     gather no se percibe un círculo en reposo ni un corte entre fases.
     //  3) Cubierto el cuadro, APARECE el buscador: la caja hace crossfade sobre la
     //     masa (fadeOut) y el contenido entra en cascada.
     this.dialog.classList.add("is-forming");
@@ -289,23 +285,19 @@ export class CommandPalette {
 
     this.fxTimer = window.setTimeout(() => {
       if (!this.open) return;
-      // El círculo ya cuajó (gather = 0.42s). Déjalo verse un momento antes de abrir.
-      this.holdTimer = window.setTimeout(() => {
+      this.fx.bloom(rw, rh, 22); // el impulso sigue hacia afuera y cubre el cuadro
+      this.bloomTimer = window.setTimeout(() => {
         if (!this.open) return;
-        this.fx.bloom(rw, rh, 22); // el círculo se abre y cubre el cuadro
-        this.bloomTimer = window.setTimeout(() => {
+        this.dialog.classList.remove("is-forming"); // la caja aparece sobre la masa
+        this.fx.fadeOut();
+        this.revealTimer = window.setTimeout(() => {
           if (!this.open) return;
-          this.dialog.classList.remove("is-forming"); // la caja aparece sobre la masa
-          this.fx.fadeOut();
-          this.revealTimer = window.setTimeout(() => {
-            if (!this.open) return;
-            this.setRevealed(true); // ...y con ella, el buscador
-            this.playRowCascade();
-            this.focusInput();
-          }, 240);
-        }, this.fx.bloomMs);
-      }, 160);
-    }, this.fx.gatherMs);
+          this.setRevealed(true); // ...y con ella, el buscador
+          this.playRowCascade();
+          this.focusInput();
+        }, 240);
+      }, this.fx.bloomMs);
+    }, Math.round(this.fx.gatherMs * 0.6));
   }
 
   hide(): void {
@@ -313,7 +305,6 @@ export class CommandPalette {
     this.open = false;
 
     window.clearTimeout(this.fxTimer);
-    window.clearTimeout(this.holdTimer);
     window.clearTimeout(this.bloomTimer);
     window.clearTimeout(this.revealTimer);
     window.clearTimeout(this.rowCascadeTimer);
