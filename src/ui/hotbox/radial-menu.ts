@@ -4,9 +4,39 @@ import { el, setClass } from "../dom";
 import { MateriaFx, prefersReducedMotion } from "../fx/materia";
 import { icon } from "../icons";
 import type { Panels } from "../panels";
-import { buildRoot, type HotNode, type MenuHooks } from "./menu";
+import { buildRoot, type DialNode, type HotNode, type MenuHooks } from "./menu";
 
 const NS = "http://www.w3.org/2000/svg";
+
+/**
+ * Valor de un dial a partir de la posición `t` (0..1) a lo largo de su arco, y a la
+ * inversa. Misma curva `gamma` que los deslizadores del panel (ui/controls.ts): con
+ * gamma>1 el recorrido reparte más resolución en los valores bajos. `step` cuantiza.
+ */
+function dialValueFromT(node: DialNode, t: number): number {
+  const g = node.gamma ?? 1;
+  const tt = Math.pow(clamp(t, 0, 1), g);
+  const v = node.min + tt * (node.max - node.min);
+  const step = node.step ?? 0;
+  return step > 0 ? Math.round(v / step) * step : v;
+}
+
+/** Posición `t` (0..1) sobre el arco que corresponde al valor actual del dial. */
+function dialTFromValue(node: DialNode): number {
+  const norm = (node.value - node.min) / (node.max - node.min || 1);
+  const g = node.gamma ?? 1;
+  return clamp(Math.pow(clamp(norm, 0, 1), 1 / g), 0, 1);
+}
+
+/** Texto compacto del valor de un dial (para el arco). Con `withUnit`, añade la unidad. */
+function dialText(node: DialNode, withUnit: boolean): string {
+  const step = node.step ?? 0;
+  const decimals = step > 0 && step < 1 ? 2 : 0;
+  const txt = decimals > 0 ? node.value.toFixed(2) : String(Math.round(node.value));
+  if (!withUnit || !node.unit) return txt;
+  const unit = node.unit === "deg" ? "°" : ` ${node.unit}`;
+  return `${txt}${unit}`;
+}
 
 /**
  * Pinta la etiqueta central del menú. Con `label` es texto plano (el nombre del
@@ -68,6 +98,15 @@ interface RadialSector {
   angleStart: number;
   angleEnd: number;
   angleMid: number;
+  /** Capas extra cuando el nodo es un dial: se controla arrastrando por el arco. */
+  dial?: {
+    /** Arco de relleno desde el inicio hasta el valor actual. */
+    fill: SVGPathElement;
+    /** Aguja radial en la posición del valor. */
+    thumb: SVGPathElement;
+    /** Etiqueta (en la capa de iconos) con la lectura del valor. */
+    valueLabel: HTMLElement;
+  };
 }
 
 /** Distribución calculada de un anillo antes de dibujarlo. */
@@ -118,6 +157,10 @@ export class RadialMenu {
   private openIndices: number[] = [];
   /** Camino completo hasta el sector bajo el cursor (para el rastro y el resaltado). */
   private hoveredPath: number[] | null = null;
+
+  /** Dial que se está arrastrando ahora mismo (o null). Mientras dura, el
+      pointermove ajusta su valor en vez de mover el hover. */
+  private dragDial: RadialSector | null = null;
 
   private sectors: RadialSector[] = [];
   /** Claves de los anillos ya dibujados en el rebuild anterior. Sirve para animar
@@ -227,6 +270,8 @@ export class RadialMenu {
   private setupEvents(): void {
     this.container.addEventListener("pointermove", (e) => this.onPointerMove(e));
     this.container.addEventListener("pointerdown", (e) => this.onPointerDown(e));
+    this.container.addEventListener("pointerup", (e) => this.onPointerUp(e));
+    this.container.addEventListener("pointercancel", (e) => this.onPointerUp(e));
     // El botón central limpia toda la expansión (vuelve a la raíz). Si ya está
     // en la raíz, cierra el menú.
     this.centerButton.addEventListener("click", () => this.collapseOrClose());
@@ -448,7 +493,7 @@ export class RadialMenu {
       }
       this.iconsContainer.appendChild(iconEl);
 
-      this.sectors.push({
+      const sector: RadialSector = {
         node: s.node,
         ringLevel: ring.ringLevel,
         index: s.index,
@@ -458,8 +503,54 @@ export class RadialMenu {
         angleStart: s.a0,
         angleEnd: s.a1,
         angleMid: s.amid,
-      });
+      };
+      this.sectors.push(sector);
+
+      // Dial: capas de relleno + aguja sobre el arco, para arrastrarlo como slider.
+      if (s.node.kind === "dial") this.decorateDial(sector, animate ? delay : null);
     }
+  }
+
+  /**
+   * Convierte el sector de un dial en un slider con forma de arco: un arco de
+   * relleno que crece desde el inicio hasta el valor actual y una aguja radial en
+   * esa posición. El valor se ajusta arrastrando por el propio arco (onPointerMove
+   * mientras `dragDial` apunta a este sector).
+   */
+  private decorateDial(sector: RadialSector, delay: string | null): void {
+    const fill = document.createElementNS(NS, "path") as SVGPathElement;
+    fill.setAttribute("class", "rm-dial-fill");
+    const thumb = document.createElementNS(NS, "path") as SVGPathElement;
+    thumb.setAttribute("class", "rm-dial-thumb");
+
+    if (delay !== null) {
+      fill.classList.add("is-deploying");
+      thumb.classList.add("is-deploying");
+      fill.style.animationDelay = delay;
+      thumb.style.animationDelay = delay;
+    }
+
+    // Van tras el sector base (encima de él) y antes de los siguientes sectores.
+    this.svg.appendChild(fill);
+    this.svg.appendChild(thumb);
+
+    sector.dial = { fill, thumb, valueLabel: sector.icon };
+    this.updateDialVisual(sector);
+  }
+
+  /** Repinta el relleno, la aguja y la lectura de un dial según su valor actual. */
+  private updateDialVisual(sector: RadialSector): void {
+    if (!sector.dial) return;
+    const node = sector.node as DialNode;
+    const innerR = this.ringInner(sector.ringLevel);
+    const outerR = this.ringOuter(sector.ringLevel);
+    const t = dialTFromValue(node);
+    const aVal = sector.angleStart + t * (sector.angleEnd - sector.angleStart);
+
+    // Relleno vacío cuando el valor está al mínimo (arco degenerado: se oculta).
+    sector.dial.fill.setAttribute("d", t <= 0.002 ? "" : this.arcD(innerR, outerR, sector.angleStart, aVal));
+    sector.dial.thumb.setAttribute("d", this.needleD(innerR, outerR, aVal));
+    sector.dial.valueLabel.textContent = dialText(node, false);
   }
 
   /**
@@ -516,6 +607,14 @@ export class RadialMenu {
   }
 
   private createArc(innerR: number, outerR: number, startA: number, endA: number): SVGPathElement {
+    const path = document.createElementNS(NS, "path") as SVGPathElement;
+    path.setAttribute("d", this.arcD(innerR, outerR, startA, endA));
+    return path;
+  }
+
+  /** El atributo `d` de un sector anular (con el hueco de ancho constante). Lo
+      comparten el sector base y el relleno de los dials. */
+  private arcD(innerR: number, outerR: number, startA: number, endA: number): string {
     const c = this.center;
 
     // Hueco de ancho constante: el desfase angular en cada borde es gapPx/radio.
@@ -539,17 +638,25 @@ export class RadialMenu {
 
     const largeArc = (endOut - startOut) > Math.PI ? 1 : 0;
 
-    const d = [
+    return [
       `M ${x1.toFixed(2)} ${y1.toFixed(2)}`,
       `A ${outerR} ${outerR} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`,
       `L ${x3.toFixed(2)} ${y3.toFixed(2)}`,
       `A ${innerR} ${innerR} 0 ${largeArc} 0 ${x4.toFixed(2)} ${y4.toFixed(2)}`,
       `Z`,
     ].join(" ");
+  }
 
-    const path = document.createElementNS(NS, "path") as SVGPathElement;
-    path.setAttribute("d", d);
-    return path;
+  /** Aguja radial (del borde interior al exterior) en un ángulo dado: el "pulgar"
+      del dial que marca la posición del valor sobre el arco. */
+  private needleD(innerR: number, outerR: number, angle: number): string {
+    const c = this.center;
+    const pad = 3;
+    const xi = c + Math.cos(angle) * (innerR + pad);
+    const yi = c + Math.sin(angle) * (innerR + pad);
+    const xo = c + Math.cos(angle) * (outerR - pad);
+    const yo = c + Math.sin(angle) * (outerR - pad);
+    return `M ${xi.toFixed(2)} ${yi.toFixed(2)} L ${xo.toFixed(2)} ${yo.toFixed(2)}`;
   }
 
   private createIcon(node: HotNode, angle: number, radius: number, size: number, isSub: boolean): HTMLElement {
@@ -567,7 +674,11 @@ export class RadialMenu {
       },
     });
 
-    if (node.accent && node.id.startsWith("swatch-")) {
+    if (node.kind === "dial") {
+      // El dial muestra su valor (no un icono): la lectura vive en el centro del arco.
+      iconEl.classList.add("rm-icon-dial");
+      iconEl.textContent = dialText(node, false);
+    } else if (node.accent && node.id.startsWith("swatch-")) {
       iconEl.style.background = node.accent;
       iconEl.classList.add("rm-icon-swatch");
     } else if (node.icon) {
@@ -598,6 +709,7 @@ export class RadialMenu {
     if (node.active) path.classList.add("is-active");
     if (node.disabled) path.classList.add("is-disabled");
     if (node.kind === "submenu") path.classList.add("has-submenu");
+    if (node.kind === "dial") path.classList.add("is-dial");
     // El resaltado del camino (is-onpath) lo aplica updateActivePathVisuals, que
     // se refresca en cada hover sin reconstruir los sectores.
   }
@@ -605,6 +717,12 @@ export class RadialMenu {
   // -------------------------------------------------------------- interacción
 
   private onPointerMove(e: PointerEvent): void {
+    // Arrastrando un dial: el movimiento ajusta su valor, no el hover.
+    if (this.dragDial) {
+      this.applyDialDrag(e, this.dragDial);
+      return;
+    }
+
     const rect = this.container.getBoundingClientRect();
     const dx = e.clientX - rect.left - this.center;
     const dy = e.clientY - rect.top - this.center;
@@ -670,10 +788,28 @@ export class RadialMenu {
       if (isHovered) hoveredNode = sector.node;
     }
 
-    setBrandLabel(this.centerLabel, hoveredNode ? hoveredNode.label : null);
+    this.setCenterLabel(hoveredNode);
 
     // Refresca el resaltado del camino y el haz central sin reconstruir.
     this.updateActivePathVisuals();
+  }
+
+  /** Etiqueta central según el nodo bajo el cursor: la marca en reposo, el nombre
+      de un nodo normal, o nombre + lectura cuando es un dial (para verlo al
+      arrastrar). */
+  private setCenterLabel(node: HotNode | null): void {
+    if (node && node.kind === "dial") {
+      this.centerLabel.classList.remove("is-brand");
+      this.centerLabel.classList.add("is-dial");
+      this.centerLabel.textContent = "";
+      this.centerLabel.append(
+        el("span", { class: "rm-dial-name", text: node.label }),
+        el("span", { class: "rm-dial-read", text: dialText(node, true) }),
+      );
+      return;
+    }
+    this.centerLabel.classList.remove("is-dial");
+    setBrandLabel(this.centerLabel, node ? node.label : null);
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -695,7 +831,48 @@ export class RadialMenu {
       return;
     }
 
+    // Dial: empieza el arrastre. El valor salta ya a donde se pulsó (como tocar un
+    // slider) y luego sigue el cursor por el arco hasta soltar.
+    if (node.kind === "dial") {
+      this.dragDial = hovered;
+      this.container.classList.add("is-dial-drag");
+      try { this.container.setPointerCapture(e.pointerId); } catch { /* sin captura: no pasa nada */ }
+      this.applyDialDrag(e, hovered);
+      return;
+    }
+
     this.executeNode(node);
+  }
+
+  private onPointerUp(e: PointerEvent): void {
+    if (!this.dragDial) return;
+    this.dragDial = null;
+    this.container.classList.remove("is-dial-drag");
+    try { this.container.releasePointerCapture(e.pointerId); } catch { /* ya liberado */ }
+  }
+
+  /** Ajusta el valor de un dial según el ángulo del cursor sobre su arco. */
+  private applyDialDrag(e: PointerEvent, sector: RadialSector): void {
+    const node = sector.node as DialNode;
+    const rect = this.container.getBoundingClientRect();
+    const dx = e.clientX - rect.left - this.center;
+    const dy = e.clientY - rect.top - this.center;
+    const angle = Math.atan2(dy, dx);
+
+    // Lleva el ángulo del cursor al rango continuo del sector [angleStart, angleEnd]
+    // (que puede ser negativo o mayor que TAU), y saca la posición t (0..1).
+    let a = angle;
+    while (a < sector.angleStart - Math.PI) a += TAU;
+    while (a > sector.angleStart + Math.PI) a -= TAU;
+    const t = clamp((a - sector.angleStart) / (sector.angleEnd - sector.angleStart || 1), 0, 1);
+
+    const v = dialValueFromT(node, t);
+    if (v !== node.value) {
+      node.value = v;
+      node.onInput(v);
+    }
+    this.updateDialVisual(sector);
+    this.setCenterLabel(node);
   }
 
   private findSector(path: number[]): RadialSector | null {
@@ -737,7 +914,8 @@ export class RadialMenu {
         break;
       }
       case "dial":
-        // TODO: modo dial (ajuste por arrastre). Por ahora no hace nada.
+        // El dial se ajusta arrastrando por su arco (onPointerDown → dragDial),
+        // no ejecutando una acción; aquí no hay nada que hacer.
         break;
     }
   }

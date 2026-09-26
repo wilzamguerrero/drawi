@@ -184,6 +184,99 @@
   /* Indicador visual de que tiene submenú */
 }
 
+/* ============================================================
+   Dials: opciones que se controlan como un SLIDER con la forma del propio sector.
+   El sector es la pista; un arco de acento la rellena desde el inicio hasta el
+   valor y una aguja marca la posición. Se arrastra por el arco (o se toca para
+   saltar). Ver `case "dial"` / decorateDial en radial-menu.ts.
+   ============================================================ */
+
+/* La pista se mantiene oscura y NO se tiñe de azul al pasar el cursor (eso lo
+   hace el relleno): así el nivel del slider siempre se lee. Solo brilla el rim. */
+.rm-sector.is-dial {
+  fill: #17171b;
+  stroke: #17171b;
+  cursor: ew-resize;
+}
+
+.rm-sector.is-dial.is-hover {
+  fill: #202027;
+  stroke: #5a9fd4;
+  stroke-width: 4;
+}
+
+/* Arco de relleno: crece desde el inicio del sector hasta el valor actual. */
+.rm-dial-fill {
+  fill: #35618c;
+  stroke: #35618c;
+  stroke-width: 4;
+  stroke-linejoin: round;
+  pointer-events: none;
+  transition: fill 0.18s ease, stroke 0.18s ease;
+}
+
+/* Aguja radial en la posición del valor: el "pulgar" del slider. */
+.rm-dial-thumb {
+  fill: none;
+  stroke: #eaf3fb;
+  stroke-width: 4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px rgba(90, 159, 212, 0.7));
+  pointer-events: none;
+}
+
+/* Entrada de las capas del dial junto con su anillo recién desplegado. */
+.rm-dial-fill.is-deploying,
+.rm-dial-thumb.is-deploying {
+  animation: rm-sub-icon-in 0.24s ease backwards;
+}
+
+/* Lectura del valor sobre el arco (en la capa de iconos, por encima del relleno). */
+.rm-icon-dial {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.96);
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rm-icon-dial.is-hover {
+  transform: translate(-50%, -50%) scale(1.12);
+}
+
+/* Cursor de arrastre mientras se ajusta un dial. */
+.rm-container.is-dial-drag,
+.rm-container.is-dial-drag .rm-sector {
+  cursor: ew-resize;
+}
+
+/* Lectura en el centro al pasar/arrastrar un dial: nombre arriba, valor debajo. */
+.rm-center-label.is-dial {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-width: none;
+  overflow: visible;
+  white-space: normal;
+}
+
+.rm-dial-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  line-height: 1.1;
+}
+
+.rm-dial-read {
+  font-size: 17px;
+  font-weight: 700;
+  color: #eaf3fb;
+  line-height: 1.15;
+  letter-spacing: 0.01em;
+}
+
 /* Contenedor de iconos */
 .rm-icons {
   position: absolute;
@@ -444,6 +537,12 @@
   .rm-icon svg,
   .rm-center-btn,
   .rm-center-label {
+    transition: none;
+    animation: none;
+  }
+
+  .rm-dial-fill,
+  .rm-dial-thumb {
     transition: none;
     animation: none;
   }
