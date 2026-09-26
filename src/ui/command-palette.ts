@@ -278,8 +278,11 @@ export class CommandPalette {
     //  2) En ese punto —sin pausa— disparamos el BLOOM: el mismo impulso que las
     //     juntó las abre hacia la forma del cuadro. Al solaparse con la cola del
     //     gather no se percibe un círculo en reposo ni un corte entre fases.
-    //  3) Cubierto el cuadro, APARECE el buscador: la caja hace crossfade sobre la
-    //     masa (fadeOut) y el contenido entra en cascada.
+    //  3) SIN esperar a que el bloom acabe: cuando las gotas ya casi cubren el
+    //     cuadro (~0.65 de bloomMs; su curva ease-out ya las llevó a su sitio) la
+    //     caja empieza su crossfade y la masa su fadeOut A LA VEZ. Así las últimas
+    //     gotas se funden con la aparición del buscador en vez de frenar y luego
+    //     dar paso a la caja: el relevo masa→caja es un mismo movimiento.
     this.dialog.classList.add("is-forming");
     this.fx.gather();
 
@@ -296,7 +299,7 @@ export class CommandPalette {
           this.playRowCascade();
           this.focusInput();
         }, 240);
-      }, this.fx.bloomMs);
+      }, Math.round(this.fx.bloomMs * 0.65));
     }, Math.round(this.fx.gatherMs * 0.6));
   }
 
