@@ -5,6 +5,8 @@ import { HelpOverlay } from "./help";
 import { StatusBar } from "./status-bar";
 import { TopBar } from "./top-bar";
 import { RadialMenu } from "./hotbox/radial-menu";
+import type { MenuHooks } from "./hotbox/menu";
+import { CommandPalette } from "./command-palette";
 import { PantoneWheel } from "./pantone-wheel";
 import { Panels } from "./panels";
 import { SideDock } from "./side-dock";
@@ -27,6 +29,7 @@ export class App {
   private statusBar: StatusBar;
   private help: HelpOverlay;
   private hotbox: RadialMenu;
+  private commandPalette: CommandPalette;
   private pantone: PantoneWheel;
   private panels: Panels;
   private sideDock: SideDock;
@@ -59,7 +62,9 @@ export class App {
     });
     this.panels = new Panels();
     this.sideDock = new SideDock(this.editor);
-    this.hotbox = new RadialMenu(this.editor, {
+    // Puertos de alto nivel compartidos por el menú radial y el paletón: ambos
+    // solo declaran intención y es la app quien la resuelve (panel, diálogo...).
+    const hooks: MenuHooks = {
       toggleWheel: () => this.pantone.toggle(),
       help: () => this.help.toggle(),
       newDoc: () => this.editor.status(newDocument(this.editor)),
@@ -67,7 +72,9 @@ export class App {
       save: () => this.editor.status(saveProject(this.editor)),
       exportPng: () => void exportImage(this.editor).then((m) => this.editor.status(m)),
       exportSvg: () => this.editor.status(exportVector(this.editor)),
-    }, this.panels);
+    };
+    this.hotbox = new RadialMenu(this.editor, hooks, this.panels);
+    this.commandPalette = new CommandPalette(this.editor, hooks);
 
     // HUD superior derecho: barra de acciones + información de estado. La
     // legibilidad sobre cualquier fondo la da mix-blend-mode: difference en el
@@ -83,6 +90,7 @@ export class App {
     this.panels.mount(root);
     this.sideDock.mount(root);
     this.hotbox.mount(root);
+    this.commandPalette.mount(root);
 
     this.editor.events.on("state", (s) => this.queue(s));
     this.editor.events.on("status", (m) => this.statusBar.setMessage(m));
@@ -100,8 +108,24 @@ export class App {
     window.addEventListener("pointermove", this.pointerHandler, { passive: true });
 
     this.keyHandler = (e: KeyboardEvent) => {
+      // Ctrl/Cmd+K: el paletón de órdenes. Va antes del filtro de INPUT/TEXTAREA
+      // para poder alternarlo (abrir/cerrar) también desde su propio campo de texto.
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        this.commandPalette.toggle();
+        return;
+      }
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      // Tab abre el paletón de órdenes (buscar la herramienta escribiendo). Va tras
+      // el filtro de INPUT para no robar el tabulado de un campo; dentro del propio
+      // paletón su input maneja Tab para navegar la lista, así que aquí solo abre
+      // cuando está cerrado. Ctrl/Cmd+K (arriba) sigue funcionando como alternativa.
+      if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !this.commandPalette.isOpen) {
+        e.preventDefault();
+        this.commandPalette.show();
+        return;
+      }
       if (e.key === "?" || (e.key === "/" && e.shiftKey)) {
         e.preventDefault();
         this.help.toggle();
@@ -131,7 +155,7 @@ export class App {
     if (restoreAutosave(this.editor)) {
       this.editor.status("Sesion anterior recuperada");
     } else {
-      this.editor.status("Dibuja. Clic derecho o Q para las herramientas.");
+      this.editor.status("Dibuja. Clic derecho o Q para las herramientas; Tab para buscarlas.");
     }
     this.queue(this.editor.state);
     this.revealHud();

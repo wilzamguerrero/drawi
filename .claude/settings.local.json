@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -f tmp-bundle-ui.mjs tmp-dev.log tmp-patch.mjs tmp-shim.mjs tmp-ui-smoke.ts tmp-ui-smoke2.ts)",
+      "Bash(rm -rf tmp-out)",
+      "Bash(rm -f \"E:/tmp/shim-old.mjs\" \"E:/tmp/shim-new.mjs\")",
+      "Bash(rmdir \"E:/tmp\")",
+      "Bash(git --no-pager diff --stat)",
+      "Bash(git --no-pager diff --stat HEAD)"
+    ]
+  }
+}

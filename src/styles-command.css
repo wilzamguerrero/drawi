@@ -1,0 +1,311 @@
+/* ==========================================================================
+   Paletón de órdenes (Ctrl/Cmd+K).
+
+   Un cuadro flotante para buscar herramientas y acciones escribiendo. Comparte
+   la entrada/salida del panel de ayuda (partículas MateriaFx + piel ondulante
+   MateriaEdge), así que su CSS es hermano del de `.help-*`: mismos tiempos,
+   mismas curvas, misma cascada. La lógica vive en `ui/command-palette.ts`.
+   ========================================================================== */
+
+.cmd-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+/* Fondo (oscurecido + desenfoque) en un pseudo-elemento propio, para desvanecerlo
+   con transición sin tocar la opacidad de las partículas ni del cuadro. */
+.cmd-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(5, 7, 10, 0.5);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity 0.32s ease;
+  pointer-events: none;
+}
+
+.cmd-overlay.is-visible::before {
+  opacity: 1;
+}
+
+/* El cuadro flota: la piel (MateriaEdge) dibuja su relleno ondulante y el
+   contenido va nítido por encima. Entra y sale como el panel de ayuda: las
+   partículas lo forman/deshacen y estas transiciones hacen el relevo. */
+.cmd-dialog {
+  position: relative;
+  width: min(600px, 100%);
+  /* Más bajo que ancho: un rectángulo apaisado. Se centra en la página (overlay
+     place-items:center). */
+  max-height: min(46vh, 360px);
+  overflow: visible;
+  transform-origin: 50% 50%;
+  opacity: 1;
+  transform: scale(1);
+  /* La caja NACE en el centro (un punto) y CRECE hasta llenar los bordes: el
+     transform escala desde muy pequeño hasta 1 con un rebote suave al final
+     (y>1 en la curva = rebasa un pelín y se asienta), para que el crecimiento se
+     sienta vivo. La opacidad entra rápida, así la piel ya es sólida mientras crece
+     y se ve el cuadro llenándose, no un fundido plano. */
+  transition:
+    opacity 0.24s ease,
+    transform 0.54s cubic-bezier(0.2, 1.2, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+/* Mientras la masa se junta en el centro, la caja espera diminuta ahí (un punto),
+   lista para crecer desde ese mismo sitio. transition:none fija el estado al
+   instante; al quitar la clase, la transición base la hace crecer hasta los bordes. */
+.cmd-dialog.is-forming {
+  opacity: 0;
+  transform: scale(0.16);
+  transition: none;
+}
+
+/* Al cerrar, la caja se encoge de vuelta hacia el centro y se funde mientras las
+   gotas se dispersan: sale como entró, colapsando a un punto. */
+.cmd-dialog.is-closing {
+  opacity: 0;
+  transform: scale(0.24);
+  transition:
+    opacity 0.22s ease,
+    transform 0.26s cubic-bezier(0.4, 0, 0.7, 0.2);
+}
+
+/* Piel: SVG vectorial que cubre el cuadro y ondula en sus cuatro bordes. Va
+   detrás del contenido; overflow visible para que los picos asomen fuera. Mismo
+   negro que el dock, los paneles laterales y el menú radial. */
+.cmd-skin {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  z-index: 0;
+  filter: drop-shadow(0 12px 34px rgba(0, 0, 0, 0.5));
+}
+
+/* Contenido nítido, por encima de la piel. El padding generoso deja respirar el
+   contenido lejos del borde ondulante: el relleno vivo (inset 16 + amplitud 9)
+   entra hasta ~25px, así que el contenido arranca más adentro para no rozarlo. */
+.cmd-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  max-height: min(46vh, 360px);
+  padding: 24px 30px 26px;
+}
+
+/* Cascada de bloques (cabecera y lista): arrancan un pelín abajo, transparentes y
+   desenfocados, y suben a su sitio con un leve escalonado (--i) al recibir
+   .is-revealed —en el relevo de las partículas—, como el panel de atajos. Así el
+   cuadro "cuaja" en vez de aparecer entero de golpe; el blur da el enfoque. */
+.cmd-rise {
+  opacity: 0;
+  transform: translateY(10px);
+  filter: blur(5px);
+  transition:
+    opacity 0.42s ease,
+    transform 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+    filter 0.42s ease;
+  transition-delay: calc(var(--i, 0) * 55ms);
+}
+
+.cmd-dialog.is-revealed .cmd-rise {
+  opacity: 1;
+  transform: none;
+  filter: none;
+}
+
+/* Al cerrar, el contenido se va rápido y a la vez: el cuadro debe quedar vacío
+   antes de desintegrarse. */
+.cmd-dialog:not(.is-revealed) .cmd-rise {
+  transition-duration: 0.16s, 0.16s, 0.16s;
+  transition-delay: 0s;
+}
+
+/* ------------------------------------------------------------- cabecera (buscar) */
+
+.cmd-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 2px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.cmd-search-ico {
+  display: inline-flex;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.cmd-search-ico svg {
+  width: 19px;
+  height: 19px;
+}
+
+.cmd-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: 500 16px/1.4 var(--font);
+  letter-spacing: 0.01em;
+}
+
+.cmd-input::placeholder {
+  color: var(--muted-2);
+}
+
+.cmd-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font: 500 10.5px/1 var(--mono);
+  letter-spacing: 0.04em;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cmd-hint svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ------------------------------------------------------------- resultados */
+
+.cmd-results {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a42 transparent;
+}
+
+.cmd-results::-webkit-scrollbar {
+  width: 10px;
+}
+
+.cmd-results::-webkit-scrollbar-thumb {
+  background: #3a3a42;
+  border-radius: 6px;
+  border: 3px solid #161619;
+}
+
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+  /* Solo el fondo transiciona: al mover con las flechas el resaltado no arrastra. */
+  transition: background-color 0.12s ease;
+}
+
+.cmd-row.is-active {
+  background: var(--accent-soft);
+}
+
+/* Cascada fila a fila al abrir: la lista lleva .is-entering y cada fila entra con
+   un retardo según su índice (--row), así los resultados "caen" de arriba abajo en
+   vez de plantarse. `backwards` mantiene el estado inicial durante el retardo. Solo
+   al abrir: escribir quita .is-entering (renderResults) y el filtrado es al vuelo. */
+.cmd-results.is-entering .cmd-row {
+  animation: cmd-row-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--row, 0) * 26ms);
+}
+
+@keyframes cmd-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.cmd-ico {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.cmd-ico svg {
+  width: 18px;
+  height: 18px;
+}
+
+.cmd-row.is-active .cmd-ico {
+  color: var(--accent);
+}
+
+.cmd-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Letras acertadas de la búsqueda: acento, sin caja, para que se lean como parte
+   de la palabra y no como una etiqueta pegada encima. */
+.cmd-hit {
+  background: none;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cmd-group {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font: 600 10px/1 var(--font);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.cmd-empty {
+  list-style: none;
+  padding: 18px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Movimiento reducido: sin cascada, fondo ni desenfoque de enfoque. */
+@media (prefers-reduced-motion: reduce) {
+  .cmd-overlay::before {
+    transition: none;
+  }
+  .cmd-rise {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    transition: none;
+  }
+  .cmd-results.is-entering .cmd-row {
+    animation: none;
+  }
+}
+
+
+

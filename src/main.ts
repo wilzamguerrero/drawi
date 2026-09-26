@@ -3,6 +3,7 @@ import "./styles-fx.css";
 import "./styles-radial-menu.css";
 import "./styles-panels.css";
 import "./styles-side-dock.css";
+import "./styles-command.css";
 import { App } from "./ui/app";
 
 const root = document.getElementById("app");

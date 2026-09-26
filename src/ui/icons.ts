@@ -83,6 +83,8 @@ export const ICONS: Record<string, string> = {
   palette: svg(`<circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="10" r="1.5"/><circle cx="15.5" cy="10" r="1.5"/><circle cx="12" cy="15" r="1.5"/>`),
   image: svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m4 15 4-4 5 5 5-6 2 2v4H4Z"/>`),
   panel: svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M14 4v16"/>`),
+  search: svg(`<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4 4"/>`),
+  enter: svg(`<path d="M20 6v5a3 3 0 0 1-3 3H5"/><path d="m9 10-4 4 4 4"/>`),
 };
 
 export function icon(name: keyof typeof ICONS | string): string {

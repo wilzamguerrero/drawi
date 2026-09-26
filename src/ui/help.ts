@@ -7,6 +7,7 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
   {
     title: "Herramientas",
     rows: [
+      ["Tab", "Buscar herramienta o accion (paleton)"],
       ["B", "Pincel"],
       ["F", "Forma fisica"],
       ["M", "Mover materia"],
