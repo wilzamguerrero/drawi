@@ -188,9 +188,24 @@ export class CommandPalette {
     this.edge = new MateriaEdge({ fill: "#161619", radius: 22, amplitude: 9, inset: 16, full: true });
     this.edge.el.classList.add("cmd-skin");
 
+    // Emblema en la esquina superior derecha: tres círculos de la misma materia
+    // negra del menú radial. El grande lleva el logo y ondula como el núcleo del
+    // radial (.materia-blob) mientras deriva suave y "al azar"; los dos pequeños lo
+    // acompañan con su propia deriva. Decorativo (aria-hidden); el logo es un icono
+    // de relleno que el usuario sustituirá por el suyo. Como el logo va DENTRO del
+    // círculo grande, hereda su deriva y se mantiene centrado y nítido.
+    const brand = el("div", { class: "cmd-brand", aria: { hidden: "true" } }, [
+      el("span", { class: "cmd-brand-dot cmd-brand-a" }),
+      el("span", { class: "cmd-brand-dot cmd-brand-b" }),
+      el("span", { class: "cmd-brand-core" }, [
+        el("span", { class: "cmd-brand-logo", html: icon("shape") }),
+      ]),
+    ]);
+
     this.dialog = el("div", { class: "cmd-dialog", role: "dialog", aria: { label: "Paleta de ordenes" } }, [
       this.edge.el,
       content,
+      brand,
     ]);
 
     // Capa de partículas: hermana del diálogo, para que la opacidad del cuadro al
