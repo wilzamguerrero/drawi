@@ -140,6 +140,8 @@ export class CommandPalette {
   /** Partículas (metaball) que forman/deshacen el cuadro. Sistema compartido. */
   private fx: MateriaFx;
   private fxTimer = 0;
+  /** Tiempo de la expansión (círculo → cuadro con más partículas). */
+  private bloomTimer = 0;
   /** Segundo tiempo: revela el buscador una vez la caja está llena. */
   private revealTimer = 0;
   /** Temporizador de la cascada fila a fila (solo al abrir). */
@@ -234,6 +236,7 @@ export class CommandPalette {
     this.renderResults();
 
     window.clearTimeout(this.fxTimer);
+    window.clearTimeout(this.bloomTimer);
     window.clearTimeout(this.revealTimer);
     window.clearTimeout(this.rowCascadeTimer);
     this.results.classList.remove("is-entering");
@@ -255,31 +258,39 @@ export class CommandPalette {
     void this.el.offsetWidth;
     this.el.classList.add("is-visible");
 
-    // Centrar el núcleo en el centro del cuadro (a tamaño real) para que la masa
-    // aparezca justo donde nacerá el buscador.
-    this.syncFxToDialog();
+    // Medir el cuadro a tamaño real (sin el scale de .is-forming) para centrar la
+    // masa y para saber hasta dónde debe expandirse en la fase de bloom.
+    const r = this.dialog.getBoundingClientRect();
+    const cx = r.width > 0 ? r.left + r.width / 2 : window.innerWidth / 2;
+    const cy = r.height > 0 ? r.top + r.height / 2 : window.innerHeight / 2;
+    const rw = r.width > 0 ? r.width : 560;
+    const rh = r.height > 0 ? r.height : 340;
+    this.fx.center(cx, cy);
 
     // Secuencia en tres tiempos, como pidió el usuario:
-    //  1) La masa se forma en el CENTRO (núcleo redondo, como el menú radial): la
-    //     caja espera diminuta ahí (.is-forming = scale minúsculo).
-    //  2) Hecha la masa, la caja CRECE desde el centro hasta llenar los bordes
-    //     (quitar .is-forming: el diálogo se escala hasta 1 con un rebote suave) y
-    //     el núcleo se funde con ella (fadeOut) —relevo continuo—.
-    //  3) Cuando la caja ya está llena, APARECE el buscador: el contenido entra en
-    //     cascada y la lista cuaja fila a fila.
+    //  1) La masa aparece en el CENTRO como un CÍRCULO (núcleo redondo, igual que
+    //     el menú radial). La caja espera invisible (.is-forming).
+    //  2) Ese círculo se EXPANDE con más partículas hasta abarcar el cuadro: el
+    //     núcleo se cuadra y las gotas brotan hacia los bordes (fx.bloom).
+    //  3) Cuando la masa ya cubre el cuadro, APARECE el buscador: la caja hace
+    //     crossfade sobre la masa (fadeOut) y el contenido entra en cascada.
     this.dialog.classList.add("is-forming");
     this.fx.gather();
 
     this.fxTimer = window.setTimeout(() => {
       if (!this.open) return;
-      this.dialog.classList.remove("is-forming"); // la caja crece hasta los bordes
-      this.fx.fadeOut();
-      this.revealTimer = window.setTimeout(() => {
+      this.fx.bloom(rw, rh, 22); // el círculo se expande hasta cubrir el cuadro
+      this.bloomTimer = window.setTimeout(() => {
         if (!this.open) return;
-        this.setRevealed(true);
-        this.playRowCascade();
-        this.focusInput();
-      }, 400);
+        this.dialog.classList.remove("is-forming"); // la caja aparece sobre la masa
+        this.fx.fadeOut();
+        this.revealTimer = window.setTimeout(() => {
+          if (!this.open) return;
+          this.setRevealed(true); // ...y con ella, el buscador
+          this.playRowCascade();
+          this.focusInput();
+        }, 240);
+      }, this.fx.bloomMs);
     }, this.fx.gatherMs);
   }
 

@@ -93,6 +93,32 @@
   100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 
+/* ---------------------------------------------------- expansión (bloom)
+ *
+ * Fase intermedia (la usa el paletón): el núcleo circular ya formado crece hasta
+ * el rectángulo del cuadro y brotan MÁS gotas del centro hacia afuera, hasta
+ * cubrirlo, antes de que aparezca la caja. El núcleo transiciona su tamaño y
+ * radio (círculo → cuadro); las gotas salen del centro a su destino (--bx,--by). */
+.materia-fx-core-bloom {
+  transition:
+    width 0.42s cubic-bezier(0.2, 1, 0.3, 1),
+    height 0.42s cubic-bezier(0.2, 1, 0.3, 1),
+    border-radius 0.42s ease;
+}
+
+.materia-fx.is-blooming .materia-fx-dot:not(.materia-fx-core) {
+  animation: materia-bloom 0.44s cubic-bezier(0.2, 1, 0.3, 1) both;
+}
+
+@keyframes materia-bloom {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
+  35% { opacity: 1; }
+  100% {
+    opacity: 1;
+    transform: translate(calc(-50% + var(--bx)), calc(-50% + var(--by))) scale(1);
+  }
+}
+
 @keyframes materia-scatter {
   0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   100% {

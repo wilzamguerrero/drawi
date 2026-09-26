@@ -46,6 +46,8 @@ export interface MateriaFxOptions {
   dots?: number;
   gatherMs?: number;
   scatterMs?: number;
+  /** Duración de la fase de expansión (bloom): el círculo crece hasta el rectángulo. */
+  bloomMs?: number;
   /**
    * Silueta rectangular: el núcleo toma este ancho/alto y las gotas se reparten
    * por el PERÍMETRO del rectángulo (no por una circunferencia), para que la masa
@@ -69,6 +71,7 @@ export class MateriaFx {
   readonly el: HTMLElement;
   readonly gatherMs: number;
   readonly scatterMs: number;
+  readonly bloomMs: number;
 
   private core: number;
   private reach: number;
@@ -86,6 +89,7 @@ export class MateriaFx {
     this.solidCore = opts.solidCore ?? true;
     this.gatherMs = opts.gatherMs ?? 420;
     this.scatterMs = opts.scatterMs ?? 340;
+    this.bloomMs = opts.bloomMs ?? 440;
     if (opts.rect) this.setRect(opts.rect.width, opts.rect.height, opts.rect.radius);
 
     this.el = document.createElement("div");
@@ -116,6 +120,59 @@ export class MateriaFx {
   /** La masa central se deshace en gotas que salen despedidas. */
   scatter(): void {
     this.seed(true);
+  }
+
+  /**
+   * Fase de expansión: la masa circular YA formada en el centro (por gather) crece
+   * hasta el rectángulo dado y brotan MÁS gotas del centro hacia afuera, dándole
+   * cuerpo, hasta cubrirlo. Es el paso intermedio entre el círculo y la caja: el
+   * núcleo redondo se convierte en la silueta del cuadro mientras las gotas lo
+   * llenan. Recibe el rectángulo por argumento (no usa `setRect`), para no alterar
+   * el modo circular de gather/scatter de esta instancia.
+   */
+  bloom(width: number, height: number, radius = 24): void {
+    window.clearTimeout(this.clearTimer);
+    while (this.el.firstChild) this.el.removeChild(this.el.firstChild);
+    this.el.classList.remove("is-gathering", "is-scattering", "is-fading", "is-blooming");
+
+    // Núcleo: arranca circular (--core, del tamaño de la masa ya formada) y, en el
+    // siguiente frame, transiciona hasta el rectángulo del cuadro.
+    const core = document.createElement("div");
+    core.className = "materia-fx-dot materia-fx-core materia-fx-core-bloom";
+    core.style.width = `${this.core}px`;
+    core.style.height = `${this.core}px`;
+    core.style.borderRadius = "50%";
+    this.el.appendChild(core);
+
+    // MÁS gotas que brotan del centro y se reparten por el interior del rectángulo:
+    // le dan cuerpo orgánico a la expansión mientras el núcleo se cuadra.
+    const hw = width / 2;
+    const hh = height / 2;
+    const k = Math.min(width, height) / 220;
+    const n = this.dots + 12;
+    for (let i = 0; i < n; i++) {
+      const bx = (Math.random() * 2 - 1) * hw * 0.92;
+      const by = (Math.random() * 2 - 1) * hh * 0.92;
+      const size = (14 + Math.random() * 20) * k;
+      const dot = document.createElement("div");
+      dot.className = "materia-fx-dot";
+      dot.style.width = `${size.toFixed(1)}px`;
+      dot.style.height = `${size.toFixed(1)}px`;
+      dot.style.setProperty("--bx", `${bx.toFixed(1)}px`);
+      dot.style.setProperty("--by", `${by.toFixed(1)}px`);
+      dot.style.animationDelay = `${i * 5}ms`;
+      this.el.appendChild(dot);
+    }
+
+    void this.el.offsetWidth;
+    this.el.classList.add("is-blooming");
+    // Siguiente frame: fijar el tamaño rectangular para que la transición del núcleo
+    // (círculo → cuadro) arranque desde el estado circular ya pintado.
+    requestAnimationFrame(() => {
+      core.style.width = `${width}px`;
+      core.style.height = `${height}px`;
+      core.style.borderRadius = `${radius}px`;
+    });
   }
 
   /** Desvanece la capa (crossfade con el elemento real) y la limpia luego. */

@@ -47,23 +47,23 @@
   transform-origin: 50% 50%;
   opacity: 1;
   transform: scale(1);
-  /* La caja NACE en el centro (un punto) y CRECE hasta llenar los bordes: el
-     transform escala desde muy pequeño hasta 1 con un rebote suave al final
-     (y>1 en la curva = rebasa un pelín y se asienta), para que el crecimiento se
-     sienta vivo. La opacidad entra rápida, así la piel ya es sólida mientras crece
-     y se ve el cuadro llenándose, no un fundido plano. */
+  /* La masa de partículas ya ha crecido hasta cubrir el cuadro (fase bloom); la
+     caja solo hace un CROSSFADE suave sobre esa masa, entrando casi a tamaño real
+     (un pelín más pequeña) para que el relevo partículas→caja sea imperceptible y
+     no un segundo crecimiento encima del de las gotas. */
   transition:
-    opacity 0.24s ease,
-    transform 0.54s cubic-bezier(0.2, 1.2, 0.3, 1);
+    opacity 0.26s ease,
+    transform 0.3s cubic-bezier(0.2, 1, 0.3, 1);
   will-change: transform, opacity;
 }
 
-/* Mientras la masa se junta en el centro, la caja espera diminuta ahí (un punto),
-   lista para crecer desde ese mismo sitio. transition:none fija el estado al
-   instante; al quitar la clase, la transición base la hace crecer hasta los bordes. */
+/* Mientras la masa se junta y luego se expande (bloom) hasta cubrir el cuadro, la
+   caja espera invisible y casi a tamaño real, lista para revelarse encima de la
+   masa con un crossfade —no con un segundo crecimiento—. transition:none fija el
+   estado al instante; al quitar la clase, la transición base la funde. */
 .cmd-dialog.is-forming {
   opacity: 0;
-  transform: scale(0.16);
+  transform: scale(0.985);
   transition: none;
 }
 
