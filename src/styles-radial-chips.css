@@ -202,21 +202,35 @@
    ROTAR abajo. Ver RingHub en src/ui/hotbox/radial-chips.ts.
    ============================================================ */
 
-/* El círculo, centrado en cx,cy (lo coloca JS). Negro pleno como los trozos, con su
-   sombra; el ondulado lo aporta la clase compartida .materia-blob (no fijar aquí otra
-   animation que la pise). No captura el puntero salvo en sus dos botones. */
+/* El círculo, centrado en cx,cy (lo coloca JS). Negro pleno como los trozos, con la
+   misma sombra profunda que el hub de la rueda (var(--shadow-2)). Ondula como materia,
+   pero con SU PROPIO patrón de deformación y tempo (rm-hub-blob) para que el contorno
+   no se deforme idéntico al hub de la rueda; el círculo NO se traslada, solo muta su
+   borde. No captura el puntero salvo en sus dos botones. */
 .rm-hub {
   position: absolute;
   transform: translate(-50%, -50%);
   width: 76px;
   height: 76px;
   background: #161619;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-2);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   pointer-events: none;
   z-index: 1;
+  animation: rm-hub-blob 7s ease-in-out infinite;
+}
+
+/* Ondulado propio del hub: mismos radios orbitando el 50% que la materia, pero con
+   valores y ritmo distintos a @keyframes materia-blob, para que se note que no es la
+   misma deformación que la del hub de la rueda. */
+@keyframes rm-hub-blob {
+  0% { border-radius: 52% 48% 43% 57% / 48% 55% 45% 52%; }
+  25% { border-radius: 44% 56% 52% 48% / 56% 44% 56% 44%; }
+  50% { border-radius: 57% 43% 50% 50% / 45% 52% 48% 55%; }
+  75% { border-radius: 48% 52% 56% 44% / 53% 47% 55% 45%; }
+  100% { border-radius: 52% 48% 43% 57% / 48% 55% 45% 52%; }
 }
 
 /* Cada botón ocupa media altura del círculo, transparente (el fondo lo pone el
@@ -265,6 +279,15 @@
   cursor: grabbing;
   background: rgba(53, 97, 140, 0.9);
   color: #eaf3fb;
+}
+
+/* Sin movimiento: círculo quieto y limpio, sin ondulado ni deriva. */
+@media (prefers-reduced-motion: reduce) {
+  .rm-hub {
+    animation: none;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+  }
 }
 
 /* ============================================================ */

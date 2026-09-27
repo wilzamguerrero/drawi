@@ -921,10 +921,11 @@ class RingHub {
     this.groupId = groupId;
     this.host = host;
     // Un solo círculo de materia (como el hub de la rueda); dentro, mover arriba y
-    // rotar abajo, sin corte ni división.
+    // rotar abajo, sin corte ni división. El ondulado lo pone el CSS de .rm-hub con su
+    // propio patrón de deformación para que el borde no mute idéntico al hub de la rueda.
     this.moveHalf = el("button", { class: "rm-hub-half rm-hub-move", type: "button", title: "Mover grupo", html: icon("grip") });
     this.rotateHalf = el("button", { class: "rm-hub-half rm-hub-rotate", type: "button", title: "Rotar grupo", html: icon("rotate") });
-    this.el = el("div", { class: "rm-hub materia-blob" }, [this.moveHalf, this.rotateHalf]);
+    this.el = el("div", { class: "rm-hub" }, [this.moveHalf, this.rotateHalf]);
     this.moveHalf.addEventListener("pointerdown", (e) => this.beginMove(e));
     this.rotateHalf.addEventListener("pointerdown", (e) => this.beginRotate(e));
   }
