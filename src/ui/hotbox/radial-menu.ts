@@ -878,8 +878,17 @@ export class RadialMenu {
     // Tap sobre una acción (sin long-press ni arrastre): ejecutarla ahora.
     if (press) {
       const sector = this.findSector(press.path);
-      if (sector && !sector.node.disabled && sector.node.kind === "action") {
-        this.executeNode(sector.node);
+      if (sector && !sector.node.disabled) {
+        if (sector.node.kind === "action") {
+          this.executeNode(sector.node);
+        } else if (sector.node.kind === "submenu" && sector.node.onSelect) {
+          // Un submenú que además es una elección (p. ej. un modo de pincel):
+          // toca = activa ese modo y la herramienta. Ya quedó expandido en el
+          // pointerdown; refresh() reconstruye el árbol con el nuevo estado
+          // (opciones del modo, marca activa) manteniéndolo abierto.
+          sector.node.onSelect();
+          this.refresh();
+        }
       }
     }
   }

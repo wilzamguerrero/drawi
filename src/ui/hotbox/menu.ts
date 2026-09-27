@@ -1,9 +1,9 @@
 import type { Editor, EditorState } from "../../app/editor";
+import { DEFAULT_PALETTES } from "../../core/color";
 import { SHAPE_LABELS, type ShapeKind } from "../../physics/shapes";
 import { DYNAMICS_INFO, type BrushMode, type StrokeDynamics } from "../../stroke/types";
 import { SYMMETRY_LABELS, type SymmetryMode } from "../../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../../tools/pull-shapes";
-import { TOOL_LABELS, type ToolId } from "../../tools/types";
 
 /**
  * Modelo declarativo del hotbox.
@@ -43,6 +43,13 @@ export interface ActionNode extends NodeBase {
 export interface SubmenuNode extends NodeBase {
   kind: "submenu";
   children: HotNode[];
+  /**
+   * Efecto al SELECCIONAR (tap) el submenú, además de expandirlo. Sirve para
+   * grupos que también son una elección: p. ej. cada modo de pincel activa ese
+   * modo (y la herramienta) al tocarlo, y al expandirse muestra sus opciones.
+   * Se dispara en el pointerup (como las acciones), no al pasar el cursor.
+   */
+  onSelect?: () => void;
 }
 
 export interface DialNode extends NodeBase {
@@ -75,82 +82,50 @@ const MODE_LABELS: Record<BrushMode, string> = {
   pull: "Arrastre",
 };
 
-// ------------------------------------------------------------ submenus por herramienta
+const MODE_ICONS: Record<BrushMode, string> = {
+  stroke: "brush",
+  fill: "droplet",
+  pull: "matter",
+};
 
-function toolNode(editor: Editor, state: EditorState, id: ToolId, ic: string): ActionNode {
-  return {
-    kind: "action",
-    id: `tool-${id}`,
-    label: TOOL_LABELS[id],
-    icon: ic,
-    active: state.tool === id,
-    run: () => editor.setTool(id),
-  };
-}
+// ------------------------------------------------------------ pincel por modos
 
-function toolsSubmenu(editor: Editor, state: EditorState): SubmenuNode {
-  return {
-    kind: "submenu",
-    id: "tools",
-    label: "Dibujar",
-    icon: "brush",
-    hint: "Elige con que actuas sobre el lienzo",
-    children: [
-      toolNode(editor, state, "brush", "brush"),
-      // Forma y Materia se fusionan en un solo grupo "Materia" con Crear/Mover.
-      {
-        kind: "submenu",
-        id: "matter-tools",
-        label: "Materia",
-        icon: "matter",
-        hint: "Crea formas y muévelas como materia física",
-        children: [
-          { kind: "action", id: "tool-shape", label: "Crear", icon: "shape", active: state.tool === "shape", run: () => editor.setTool("shape") },
-          { kind: "action", id: "tool-matter", label: "Mover", icon: "matter", active: state.tool === "matter", run: () => editor.setTool("matter") },
-        ],
-      },
-      toolNode(editor, state, "picker", "picker"),
-      toolNode(editor, state, "hand", "hand"),
-    ],
-  };
-}
-
-function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
+/**
+ * Opciones de un modo de pincel, iguales a las que el dock muestra según el modo
+ * activo. Tamaño/opacidad/dinámica/respuesta/perfil/degradado/splat son comunes a
+ * los tres modos; solo "Arrastre" (pull) añade la Familia de formas —igual que en
+ * el dock, donde el grupo Familia solo aparece en modo Arrastre—.
+ */
+function brushOptions(editor: Editor, state: EditorState, forMode: BrushMode): HotNode[] {
   const b = state.brush;
-  const mode = (m: BrushMode): ActionNode => ({
-    kind: "action",
-    id: `mode-${m}`,
-    label: MODE_LABELS[m],
-    active: b.mode === m,
-    keepOpen: true,
-    run: () => editor.setBrush({ mode: m }),
-  });
-  const children: HotNode[] = [
-    { kind: "submenu", id: "mode", label: "Modo", icon: "spark", children: [mode("stroke"), mode("fill"), mode("pull")] },
-    {
-      kind: "dial",
-      id: "size",
-      label: "Tamano",
-      icon: "plus",
-      min: 0.5,
-      max: 400,
-      step: 0.5,
-      gamma: 2.2,
-      unit: "px",
-      value: b.size,
-      onInput: (v) => editor.setBrush({ size: v }),
-    },
-    {
-      kind: "dial",
-      id: "opacity",
-      label: "Opacidad",
-      icon: "droplet",
-      min: 0.02,
-      max: 1,
-      step: 0.01,
-      value: b.opacity,
-      onInput: (v) => editor.setBrush({ opacity: v }),
-    },
+
+  // La misma condición que atenúa (is-dim) los grupos de presión/velocidad en el
+  // dock. Aquí, en vez de atenuar, podamos: la dinámica activa decide qué diales
+  // entran, para no ofrecer ajustes inertes (mismo criterio que shapeConfigNode).
+  const usesPressure = b.dynamics === "pressure" || b.dynamics === "pressure-velocity";
+  const usesVelocity = b.dynamics === "velocity" || b.dynamics === "pressure-velocity";
+
+  // "Respuesta del lápiz": cómo el filtro y la dinámica moldean el ancho. Reúne lo
+  // que el dock reparte entre la sección "Respuesta del lapiz" (suavizado,
+  // estabilizador) y los grupos de ancho mínimo / presión / velocidad.
+  const responseChildren: HotNode[] = [
+    { kind: "dial", id: "smoothing", label: "Suavizado", icon: "spark", min: 0, max: 1, step: 0.01, value: b.smoothing, onInput: (v) => editor.setBrush({ smoothing: v }) },
+    { kind: "dial", id: "streamline", label: "Estabilizador", icon: "spark", min: 0, max: 0.95, step: 0.01, value: b.streamline, onInput: (v) => editor.setBrush({ streamline: v }) },
+    { kind: "dial", id: "min-ratio", label: "Ancho minimo", min: 0, max: 1, step: 0.01, value: b.minRatio, onInput: (v) => editor.setBrush({ minRatio: v }) },
+  ];
+  if (usesPressure) {
+    responseChildren.push({ kind: "dial", id: "pressure-curve", label: "Curva de presion", min: -1, max: 1, step: 0.05, value: b.pressureCurve, onInput: (v) => editor.setBrush({ pressureCurve: v }) });
+  }
+  if (usesVelocity) {
+    responseChildren.push(
+      { kind: "dial", id: "velocity-scale", label: "Escala velocidad", min: 0.2, max: 6, step: 0.05, unit: "px/ms", value: b.velocityScale, onInput: (v) => editor.setBrush({ velocityScale: v }) },
+      { kind: "action", id: "velocity-invert", label: "Rapido = grueso", icon: "spark", active: b.velocityInvert, keepOpen: true, run: () => editor.setBrush({ velocityInvert: !b.velocityInvert }) },
+    );
+  }
+
+  const opts: HotNode[] = [
+    { kind: "dial", id: "size", label: "Tamano", icon: "plus", min: 0.5, max: 400, step: 0.5, gamma: 2.2, unit: "px", value: b.size, onInput: (v) => editor.setBrush({ size: v }) },
+    { kind: "dial", id: "opacity", label: "Opacidad", icon: "droplet", min: 0.02, max: 1, step: 0.01, value: b.opacity, onInput: (v) => editor.setBrush({ opacity: v }) },
     {
       kind: "submenu",
       id: "dynamics",
@@ -165,25 +140,31 @@ function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
         run: () => editor.setBrush({ dynamics: k }),
       })),
     },
+    { kind: "submenu", id: "response", label: "Respuesta", icon: "tune", hint: "Cómo el lápiz responde a presión y velocidad", children: responseChildren },
     {
-      kind: "dial",
-      id: "smoothing",
-      label: "Suavizado",
-      icon: "spark",
-      min: 0,
-      max: 1,
-      step: 0.01,
-      value: b.smoothing,
-      onInput: (v) => editor.setBrush({ smoothing: v }),
+      kind: "submenu",
+      id: "profile",
+      label: "Perfil",
+      icon: "brush",
+      hint: "Afilado de los extremos y textura del trazo",
+      children: [
+        { kind: "dial", id: "taper-in", label: "Afilado inicial", min: 0, max: 0.5, step: 0.01, value: b.taperIn, onInput: (v) => editor.setBrush({ taperIn: v }) },
+        { kind: "dial", id: "taper-out", label: "Afilado final", min: 0, max: 0.5, step: 0.01, value: b.taperOut, onInput: (v) => editor.setBrush({ taperOut: v }) },
+        { kind: "dial", id: "jitter", label: "Temblor", min: 0, max: 1, step: 0.01, value: b.jitter, onInput: (v) => editor.setBrush({ jitter: v }) },
+      ],
     },
     { kind: "action", id: "gradient", label: "Degradado", icon: "layers", active: b.gradient, keepOpen: true, run: () => editor.setBrush({ gradient: !b.gradient }) },
     { kind: "action", id: "splat", label: "Splat", icon: "droplet", active: b.splat, keepOpen: true, run: () => editor.setBrush({ splat: !b.splat }) },
   ];
-  if (b.mode === "pull") {
-    children.push({
+
+  // Solo Arrastre añade la Familia de formas, igual que el dock oculta el grupo
+  // Familia salvo en modo Arrastre.
+  if (forMode === "pull") {
+    opts.push({
       kind: "submenu",
       id: "pull-family",
       label: "Familia",
+      icon: "matter",
       children: (Object.keys(PULL_LABELS) as (PullFamily | "random")[]).map((k) => ({
         kind: "action" as const,
         id: `pull-${k}`,
@@ -193,7 +174,36 @@ function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
       })),
     });
   }
-  return { kind: "submenu", id: "brush", label: "Pincel", icon: "tune", children };
+  return opts;
+}
+
+/**
+ * Pincel: primero los 3 modos (Trazo/Relleno/Arrastre) como en el dock. Cada modo
+ * es un submenú que, al TOCARLO, activa la herramienta pincel y ese modo (onSelect)
+ * y, al expandirse, muestra las opciones de ese modo. Así "al seleccionar alguno ya
+ * puedes usarlo, pero dentro de cada uno con las opciones que tenga".
+ */
+function brushSubmenu(editor: Editor, state: EditorState): SubmenuNode {
+  const b = state.brush;
+  const modeNode = (m: BrushMode): SubmenuNode => ({
+    kind: "submenu",
+    id: `mode-${m}`,
+    label: MODE_LABELS[m],
+    icon: MODE_ICONS[m],
+    active: state.tool === "brush" && b.mode === m,
+    onSelect: () => {
+      editor.setTool("brush");
+      editor.setBrush({ mode: m });
+    },
+    children: brushOptions(editor, state, m),
+  });
+  return {
+    kind: "submenu",
+    id: "brush",
+    label: "Pincel",
+    icon: "brush",
+    children: [modeNode("stroke"), modeNode("fill"), modeNode("pull")],
+  };
 }
 
 /**
@@ -310,7 +320,9 @@ function symmetrySubmenu(editor: Editor, state: EditorState): SubmenuNode {
       { kind: "dial", id: "sym-count", label: "Sectores", min: 2, max: 64, step: 1, gamma: 1.4, value: sym.count, onInput: (v) => editor.setSymmetry({ count: Math.round(v) }) },
       { kind: "dial", id: "sym-angle", label: "Angulo", min: -180, max: 180, step: 1, unit: "deg", value: (sym.angle * 180) / Math.PI, onInput: (v) => editor.setSymmetry({ angle: (v * Math.PI) / 180 }) },
       { kind: "action", id: "sym-center", label: "Centrar", run: () => editor.setSymmetry({ x: editor.camera.x, y: editor.camera.y }) },
+      { kind: "action", id: "sym-straighten", label: "Enderezar", run: () => editor.setSymmetry({ angle: 0 }) },
       { kind: "action", id: "sym-visible", label: "Guia", active: sym.visible, keepOpen: true, run: () => editor.setSymmetry({ visible: !sym.visible }) },
+      { kind: "action", id: "sym-locked", label: "Bloquear", active: sym.locked, keepOpen: true, run: () => editor.setSymmetry({ locked: !sym.locked }) },
     ],
   };
 }
@@ -345,7 +357,7 @@ function matterSubmenu(editor: Editor, state: EditorState): SubmenuNode {
   };
 }
 
-function viewSubmenu(editor: Editor): SubmenuNode {
+function viewSubmenu(editor: Editor, state: EditorState): SubmenuNode {
   return {
     kind: "submenu",
     id: "view",
@@ -356,6 +368,9 @@ function viewSubmenu(editor: Editor): SubmenuNode {
       { kind: "action", id: "zoom-out", label: "Alejar", icon: "zoomOut", keepOpen: true, run: () => editor.zoomBy(1 / 1.25) },
       { kind: "action", id: "fit", label: "Encajar", icon: "fit", run: () => editor.fitView() },
       { kind: "action", id: "reset-view", label: "Reiniciar", icon: "grid", run: () => editor.resetView() },
+      // La mano (desplazar el lienzo) es explorar la vista: vive aquí en vez de en
+      // un grupo de herramientas suelto.
+      { kind: "action", id: "tool-hand", label: "Mano", icon: "hand", active: state.tool === "hand", run: () => editor.setTool("hand") },
     ],
   };
 }
@@ -388,6 +403,36 @@ function colorSubmenu(editor: Editor, state: EditorState, hooks: MenuHooks): Sub
     accent: state.color,
     children: [
       { kind: "action", id: "wheel", label: "Rueda", icon: "wheel", run: () => hooks.toggleWheel() },
+      // Cuentagotas: tomar un color del lienzo. Es una acción sobre el color, así
+      // que vive en el grupo Color en vez de en un grupo de herramientas suelto.
+      { kind: "action", id: "tool-picker", label: "Cuentagotas", icon: "picker", active: state.tool === "picker", run: () => editor.setTool("picker") },
+      // Paletas fijas: cada una es un subgrupo con sus colores. Elegir un color
+      // marca esa paleta como activa (setPalette) y aplica el color (setColor),
+      // igual que las pestañas + pozos de color del dock.
+      {
+        kind: "submenu",
+        id: "palette",
+        label: "Paleta",
+        icon: "palette",
+        children: DEFAULT_PALETTES.map((p, i) => ({
+          kind: "submenu" as const,
+          id: `palette-${i}`,
+          label: p.name,
+          active: state.paletteIndex === i,
+          children: p.colors.map((hex, j) => ({
+            kind: "action" as const,
+            id: `palette-${i}-${j}`,
+            label: hex.toUpperCase(),
+            accent: hex,
+            active: hex.toLowerCase() === state.color.toLowerCase(),
+            keepOpen: true,
+            run: () => {
+              editor.setPalette(i);
+              editor.setColor(hex);
+            },
+          })),
+        })),
+      },
       // Últimos colores usados (no la paleta fija): lo que de verdad has tocado.
       ...state.recentColors.map((hex, i) => ({
         kind: "action" as const,
@@ -405,31 +450,20 @@ function colorSubmenu(editor: Editor, state: EditorState, hooks: MenuHooks): Sub
 /**
  * Raiz del hotbox, reconstruida a partir del estado.
  *
- * El orden importa: el primer elemento aterriza arriba (norte) y el resto gira
- * en el sentido del reloj. Por eso el ajuste de la herramienta activa va primero
- * —es el sector que el gesto alcanza sin mirar—, y simetria/materia solo entran
- * cuando aportan al contexto.
+ * El orden importa: el primer elemento aterriza arriba (norte) y el resto gira en
+ * el sentido del reloj. Los grupos principales están SIEMPRE presentes y en un
+ * orden fijo —igual que las pestañas del dock izquierdo, que no cambian con la
+ * herramienta activa— para que las mismas opciones se alcancen siempre desde el
+ * mismo sitio. Empieza por Archivo (la hoja) y sigue por Pincel, tal como pidió el
+ * usuario; la herramienta activa se marca (active) pero no reordena.
  */
 export function buildRoot(editor: Editor, state: EditorState, hooks: MenuHooks): HotNode[] {
-  const tool = state.tool;
-  const nodes: HotNode[] = [];
-
-  // Ajuste de la herramienta activa como primer sector. Forma y Materia
-  // comparten el mismo grupo unificado (crear/mover + física + acabado).
-  if (tool === "brush" || tool === "picker" || tool === "hand") nodes.push(brushSubmenu(editor, state));
-  else if (tool === "shape" || tool === "matter") nodes.push(matterSubmenu(editor, state));
-  else if (tool === "symmetry") nodes.push(symmetrySubmenu(editor, state));
-
-  nodes.push(toolsSubmenu(editor, state));
-  nodes.push(colorSubmenu(editor, state, hooks));
-
-  if (tool !== "symmetry") nodes.push(symmetrySubmenu(editor, state));
-  // El grupo Materia también aparece suelto cuando ya hay cuerpos y no es el
-  // sector activo, para tener la simulación a mano sin cambiar de herramienta.
-  if (tool !== "shape" && tool !== "matter" && state.bodies > 0) nodes.push(matterSubmenu(editor, state));
-
-  nodes.push(viewSubmenu(editor));
-  nodes.push(fileSubmenu(editor, state, hooks));
-
-  return nodes;
+  return [
+    fileSubmenu(editor, state, hooks),
+    brushSubmenu(editor, state),
+    colorSubmenu(editor, state, hooks),
+    matterSubmenu(editor, state),
+    symmetrySubmenu(editor, state),
+    viewSubmenu(editor, state),
+  ];
 }
