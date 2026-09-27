@@ -109,7 +109,7 @@
   stroke-linejoin: round;
   /* Cambio de hover suave: al pasar de un sector a otro el color y el borde se
      funden en vez de saltar de golpe. */
-  transition: fill 0.22s ease, stroke 0.22s ease, stroke-width 0.22s ease;
+  transition: fill 0.22s ease, stroke 0.22s ease, stroke-width 0.22s ease, filter 0.22s ease;
   cursor: pointer;
 }
 
@@ -142,24 +142,46 @@
   }
 }
 
-/* Estados de sector. Rellenos planos de acento (sin opacidad); el trazo más
-   claro deja un fino rim que además mantiene las esquinas redondeadas. */
+/* Jerarquía de estados: TRES lenguajes distintos para que no se confundan entre sí.
+   El orden en el archivo importa (a igual especificidad gana el último), así que van
+   de más débil a más fuerte: camino → hover → seleccionado → seleccionado+hover.
+
+   1) CAMINO (is-onpath): los submenús abiertos que forman el corredor. Casi neutro
+   (un leve realce sobre el negro base); NO se tiñe de azul —quien marca el camino es
+   el arco de acento del borde interno (.rm-onpath-mark)—. Así el corredor no compite
+   con lo que de verdad está seleccionado. */
+.rm-sector.is-onpath {
+  fill: #1d1d23;
+  stroke: #1d1d23;
+}
+
+/* 2) HOVER (bajo el cursor): un "foco" transitorio. Realce gris elevado con un filo
+   frío fino; SIN relleno azul, para no confundirse con la selección. Dice "estás
+   apuntando aquí", no "esto está elegido". */
 .rm-sector.is-hover {
-  fill: #35618c;
-  stroke: #5a9fd4;
+  fill: #2b2b33;
+  stroke: #6aa6da;
   stroke-width: 4;
 }
 
+/* 3) SELECCIONADO (is-active): lo elegido/activo. Es lo ÚNICO con relleno azul pleno
+   y, sobre todo, lo único que BRILLA (halo). Gana sobre camino y hover porque va
+   después y con más especificidad en el combinado de abajo. */
 .rm-sector.is-active {
-  fill: #2a4d6e;
-  stroke: #3f6f9c;
+  fill: #3a6ea5;
+  stroke: #8cc4f0;
+  stroke-width: 5;
+  filter: drop-shadow(0 0 6px rgba(124, 184, 232, 0.65));
 }
 
-/* Sectores en el camino recorrido (ancestros del sector bajo el cursor):
-   tinte de acento para marcar por dónde se bajó de nivel. */
-.rm-sector.is-onpath {
-  fill: #2d5175;
-  stroke: #3f6f9c;
+/* Seleccionado Y bajo el cursor a la vez: el mismo azul con halo, un punto más vivo,
+   para que pasar por encima de lo ya elegido siga dando realimentación sin perder su
+   identidad de "seleccionado". */
+.rm-sector.is-active.is-hover {
+  fill: #4179b4;
+  stroke: #ade0ff;
+  stroke-width: 5;
+  filter: drop-shadow(0 0 8px rgba(140, 196, 240, 0.8));
 }
 
 /* Marca del camino: arco grueso de acento pegado al borde interno (el inicio) de
