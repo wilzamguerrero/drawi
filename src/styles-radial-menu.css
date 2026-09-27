@@ -184,6 +184,26 @@
   /* Indicador visual de que tiene submenú */
 }
 
+/* Armado del long-press (mantener pulsado ~3 s para arrancar el sector como
+   trozo flotante): un pulso de acento que crece durante esos 3 s como
+   realimentación. Al soltar o mover, se quita la clase y el pulso se corta. */
+.rm-sector.is-arming {
+  animation: rm-arming 3s linear forwards;
+}
+
+@keyframes rm-arming {
+  0% {
+    fill: #161619;
+    stroke: #161619;
+  }
+  100% {
+    fill: #5a9fd4;
+    stroke: #eaf3fb;
+    stroke-width: 5;
+  }
+}
+
+
 /* ============================================================
    Dials: opciones que se controlan como un SLIDER con la forma del propio sector.
    El sector es la pista; un arco de acento la rellena desde el inicio hasta el

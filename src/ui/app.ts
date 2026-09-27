@@ -5,6 +5,7 @@ import { HelpOverlay } from "./help";
 import { StatusBar } from "./status-bar";
 import { TopBar } from "./top-bar";
 import { RadialMenu } from "./hotbox/radial-menu";
+import { RadialChips } from "./hotbox/radial-chips";
 import type { MenuHooks } from "./hotbox/menu";
 import { CommandPalette } from "./command-palette";
 import { PantoneWheel } from "./pantone-wheel";
@@ -29,6 +30,7 @@ export class App {
   private statusBar: StatusBar;
   private help: HelpOverlay;
   private hotbox: RadialMenu;
+  private radialChips: RadialChips;
   private commandPalette: CommandPalette;
   private pantone: PantoneWheel;
   private panels: Panels;
@@ -76,6 +78,12 @@ export class App {
     this.hotbox = new RadialMenu(this.editor, hooks, this.panels);
     this.commandPalette = new CommandPalette(this.editor, hooks);
 
+    // Trozos arrancables: viven en una capa flotante propia. El menú arranca un
+    // sector (long-press) → spawn; un trozo-submenú reabre el menú expandido ahí.
+    this.radialChips = new RadialChips(this.editor, hooks);
+    this.hotbox.onTearOff = (desc) => this.radialChips.spawn(desc);
+    this.radialChips.onReopenMenu = (path, x, y) => this.hotbox.show(x, y, path);
+
     // HUD superior derecho: barra de acciones + información de estado. La
     // legibilidad sobre cualquier fondo la da mix-blend-mode: difference en el
     // CSS (invierte cada píxel del texto contra el color del lienzo debajo);
@@ -90,6 +98,7 @@ export class App {
     this.panels.mount(root);
     this.sideDock.mount(root);
     this.hotbox.mount(root);
+    this.radialChips.mount(root);
     this.commandPalette.mount(root);
 
     this.editor.events.on("state", (s) => this.queue(s));
@@ -159,6 +168,8 @@ export class App {
     }
     this.queue(this.editor.state);
     this.revealHud();
+    // Restaurar los trozos guardados una vez el editor tiene su estado.
+    this.radialChips.restore();
   }
 
   /**
@@ -242,6 +253,9 @@ export class App {
     this.topBar.update(state);
     this.statusBar.update(state);
     this.sideDock.update(state);
+    // Los trozos flotantes también reflejan el estado (un dial cambiado en otro
+    // sitio repinta su arco); se salta el trozo que se esté arrastrando.
+    this.radialChips.syncFromEditor();
     document.title = `${state.name} — Zence Draw`;
   }
 
@@ -263,6 +277,7 @@ export class App {
     window.removeEventListener("pointermove", this.pointerHandler);
     this.topBar.dispose();
     this.hotbox.dispose();
+    this.radialChips.dispose();
     this.pantone.dispose();
     this.panels.dispose();
     this.editor.dispose();

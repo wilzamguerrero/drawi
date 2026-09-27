@@ -4,39 +4,10 @@ import { el, setClass } from "../dom";
 import { MateriaFx, prefersReducedMotion } from "../fx/materia";
 import { icon } from "../icons";
 import type { Panels } from "../panels";
+import { arcPathD, dialText, dialTFromValue, dialValueFromT, needlePathD } from "./arc-geometry";
 import { buildRoot, type DialNode, type HotNode, type MenuHooks } from "./menu";
 
 const NS = "http://www.w3.org/2000/svg";
-
-/**
- * Valor de un dial a partir de la posición `t` (0..1) a lo largo de su arco, y a la
- * inversa. Misma curva `gamma` que los deslizadores del panel (ui/controls.ts): con
- * gamma>1 el recorrido reparte más resolución en los valores bajos. `step` cuantiza.
- */
-function dialValueFromT(node: DialNode, t: number): number {
-  const g = node.gamma ?? 1;
-  const tt = Math.pow(clamp(t, 0, 1), g);
-  const v = node.min + tt * (node.max - node.min);
-  const step = node.step ?? 0;
-  return step > 0 ? Math.round(v / step) * step : v;
-}
-
-/** Posición `t` (0..1) sobre el arco que corresponde al valor actual del dial. */
-function dialTFromValue(node: DialNode): number {
-  const norm = (node.value - node.min) / (node.max - node.min || 1);
-  const g = node.gamma ?? 1;
-  return clamp(Math.pow(clamp(norm, 0, 1), 1 / g), 0, 1);
-}
-
-/** Texto compacto del valor de un dial (para el arco). Con `withUnit`, añade la unidad. */
-function dialText(node: DialNode, withUnit: boolean): string {
-  const step = node.step ?? 0;
-  const decimals = step > 0 && step < 1 ? 2 : 0;
-  const txt = decimals > 0 ? node.value.toFixed(2) : String(Math.round(node.value));
-  if (!withUnit || !node.unit) return txt;
-  const unit = node.unit === "deg" ? "°" : ` ${node.unit}`;
-  return `${txt}${unit}`;
-}
 
 /**
  * Pinta la etiqueta central del menú. Con `label` es texto plano (el nombre del
@@ -86,6 +57,33 @@ const CONFIG = {
 
   get outerRadius() { return this.innerRadius + this.ringThickness; },
 };
+
+/** Pulsación sostenida (sin mover) que arranca el sector como trozo flotante. */
+const LONG_PRESS_MS = 3000;
+/** Si el puntero se aleja más que esto (px) del inicio, ya no es long-press: es un
+    arrastre de dial o un gesto normal, y se cancela el armado. */
+const LONG_PRESS_MOVE_TOL = 8;
+
+/**
+ * Descriptor que emite el menú al arrancar un sector: lo que un `RadialChip`
+ * necesita para nacer en el sitio y quedar vivo. `path` liga el trozo al árbol
+ * (para re-resolver el nodo y su `onInput` fresco); `viewport` es dónde aparece.
+ */
+export interface TearOffDescriptor {
+  node: HotNode;
+  /** Camino de índices desde la raíz (para re-resolver el nodo contra el árbol). */
+  path: number[];
+  ringLevel: number;
+  /** Ancho angular del sector original (a1 − a0). */
+  angleWidth: number;
+  /** Ángulo medio del sector (radianes). */
+  angleMid: number;
+  /** Radios interior/exterior del anillo de origen (informativo; el trozo normaliza). */
+  innerR: number;
+  outerR: number;
+  /** Punto medio del arco en coordenadas de viewport (dónde estaba en el menú). */
+  viewport: { x: number; y: number };
+}
 
 interface RadialSector {
   node: HotNode;
@@ -161,6 +159,20 @@ export class RadialMenu {
   /** Dial que se está arrastrando ahora mismo (o null). Mientras dura, el
       pointermove ajusta su valor en vez de mover el hover. */
   private dragDial: RadialSector | null = null;
+
+  /** Punto y sector donde empezó la pulsación actual (para distinguir tap, arrastre
+      y long-press). null si no hay pulsación en curso. */
+  private pressStart: { x: number; y: number; path: number[] } | null = null;
+  /** Timer del long-press que arranca el sector como trozo. */
+  private longPressTimer = 0;
+  /** Sector con el armado visual (is-arming) puesto, o null. */
+  private armingPath: number[] | null = null;
+  /** true tras arrancar un trozo en esta pulsación: corta el pointerup siguiente
+      para que el mismo gesto no ejecute la acción ni cierre nada dos veces. */
+  private torn = false;
+
+  /** Callback al arrancar un sector (long-press): la app crea el trozo flotante. */
+  onTearOff: ((desc: TearOffDescriptor) => void) | null = null;
 
   private sectors: RadialSector[] = [];
   /** Claves de los anillos ya dibujados en el rebuild anterior. Sirve para animar
@@ -271,7 +283,7 @@ export class RadialMenu {
     this.container.addEventListener("pointermove", (e) => this.onPointerMove(e));
     this.container.addEventListener("pointerdown", (e) => this.onPointerDown(e));
     this.container.addEventListener("pointerup", (e) => this.onPointerUp(e));
-    this.container.addEventListener("pointercancel", (e) => this.onPointerUp(e));
+    this.container.addEventListener("pointercancel", (e) => this.onPointerCancel(e));
     // El botón central limpia toda la expansión (vuelve a la raíz). Si ya está
     // en la raíz, cierra el menú.
     this.centerButton.addEventListener("click", () => this.collapseOrClose());
@@ -292,7 +304,7 @@ export class RadialMenu {
     return this.isOpen;
   }
 
-  show(x: number, y: number): void {
+  show(x: number, y: number, openPath?: number[]): void {
     this.rootNodes = buildRoot(this.editor, this.editor.state, this.hooks);
 
     // Dimensionar el SVG para la profundidad real del árbol.
@@ -313,8 +325,9 @@ export class RadialMenu {
     this.container.style.top = `${this.posY}px`;
 
     // Recordar la expansión anterior, pero validarla: el árbol pudo cambiar
-    // (otra herramienta activa) y algún índice ya no apuntar a un submenú.
-    this.openIndices = this.validateOpenIndices(this.openIndices);
+    // (otra herramienta activa) y algún índice ya no apuntar a un submenú. Con
+    // `openPath` (reabrir desde un trozo-submenú) se fuerza esa rama en su lugar.
+    this.openIndices = this.validateOpenIndices(openPath ?? this.openIndices);
     this.hoveredPath = null;
 
     // Empezar de cero: en la apertura, todos los anillos expandidos se animan.
@@ -460,6 +473,9 @@ export class RadialMenu {
 
     this.updateCenterButton();
     this.updateHover();
+    // El rebuild recreó los sectores: vuelve a poner el armado del long-press si
+    // lo hay (p. ej. al expandir un submenú manteniéndolo pulsado).
+    this.applyArmingVisual();
   }
 
   private drawRing(ring: RingLayout, animate: boolean): void {
@@ -613,50 +629,25 @@ export class RadialMenu {
   }
 
   /** El atributo `d` de un sector anular (con el hueco de ancho constante). Lo
-      comparten el sector base y el relleno de los dials. */
+      comparten el sector base y el relleno de los dials. Envoltorio fino sobre
+      `arcPathD` (arc-geometry.ts) que pasa el centro del menú y `CONFIG.gapPx`. */
   private arcD(innerR: number, outerR: number, startA: number, endA: number): string {
-    const c = this.center;
-
-    // Hueco de ancho constante: el desfase angular en cada borde es gapPx/radio.
-    const halfGap = CONFIG.gapPx / 2;
-    const outGap = halfGap / outerR;
-    const inGap = halfGap / innerR;
-
-    const startOut = startA + outGap;
-    const endOut = endA - outGap;
-    const startIn = startA + inGap;
-    const endIn = endA - inGap;
-
-    const x1 = c + Math.cos(startOut) * outerR;
-    const y1 = c + Math.sin(startOut) * outerR;
-    const x2 = c + Math.cos(endOut) * outerR;
-    const y2 = c + Math.sin(endOut) * outerR;
-    const x3 = c + Math.cos(endIn) * innerR;
-    const y3 = c + Math.sin(endIn) * innerR;
-    const x4 = c + Math.cos(startIn) * innerR;
-    const y4 = c + Math.sin(startIn) * innerR;
-
-    const largeArc = (endOut - startOut) > Math.PI ? 1 : 0;
-
-    return [
-      `M ${x1.toFixed(2)} ${y1.toFixed(2)}`,
-      `A ${outerR} ${outerR} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`,
-      `L ${x3.toFixed(2)} ${y3.toFixed(2)}`,
-      `A ${innerR} ${innerR} 0 ${largeArc} 0 ${x4.toFixed(2)} ${y4.toFixed(2)}`,
-      `Z`,
-    ].join(" ");
+    return arcPathD({
+      cx: this.center,
+      cy: this.center,
+      innerR,
+      outerR,
+      a0: startA,
+      a1: endA,
+      gapPx: CONFIG.gapPx,
+    });
   }
 
   /** Aguja radial (del borde interior al exterior) en un ángulo dado: el "pulgar"
-      del dial que marca la posición del valor sobre el arco. */
+      del dial que marca la posición del valor sobre el arco. Envoltorio fino sobre
+      `needlePathD` (arc-geometry.ts). */
   private needleD(innerR: number, outerR: number, angle: number): string {
-    const c = this.center;
-    const pad = 3;
-    const xi = c + Math.cos(angle) * (innerR + pad);
-    const yi = c + Math.sin(angle) * (innerR + pad);
-    const xo = c + Math.cos(angle) * (outerR - pad);
-    const yo = c + Math.sin(angle) * (outerR - pad);
-    return `M ${xi.toFixed(2)} ${yi.toFixed(2)} L ${xo.toFixed(2)} ${yo.toFixed(2)}`;
+    return needlePathD(this.center, this.center, innerR, outerR, angle);
   }
 
   private createIcon(node: HotNode, angle: number, radius: number, size: number, isSub: boolean): HTMLElement {
@@ -717,6 +708,14 @@ export class RadialMenu {
   // -------------------------------------------------------------- interacción
 
   private onPointerMove(e: PointerEvent): void {
+    // Si hay una pulsación armada y el puntero se aleja del inicio, ya no es un
+    // long-press: es un arrastre (de dial) o un gesto normal. Se cancela el armado.
+    if (this.pressStart) {
+      const dx = e.clientX - this.pressStart.x;
+      const dy = e.clientY - this.pressStart.y;
+      if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOL) this.cancelLongPress();
+    }
+
     // Arrastrando un dial: el movimiento ajusta su valor, no el hover.
     if (this.dragDial) {
       this.applyDialDrag(e, this.dragDial);
@@ -815,6 +814,9 @@ export class RadialMenu {
   private onPointerDown(e: PointerEvent): void {
     e.preventDefault();
 
+    this.torn = false;
+    this.cancelLongPress();
+
     const hovered = this.hoveredPath ? this.findSector(this.hoveredPath) : null;
     if (!hovered) {
       this.close();
@@ -824,15 +826,25 @@ export class RadialMenu {
     const node = hovered.node;
     if (node.disabled) return;
 
-    // Los submenús ya se expanden al pasar el cursor; el clic no reemplaza nada.
+    // Cualquier sector se puede arrancar como trozo flotante manteniéndolo pulsado
+    // (sin mover) ~3 s. Se arma aquí; onPointerMove lo cancela si el puntero se
+    // aleja y onPointerUp/onPointerCancel al soltar antes de tiempo.
+    this.pressStart = { x: e.clientX, y: e.clientY, path: [...hovered.path] };
+    this.armLongPress(hovered);
+
+    // Los submenús se expanden al pulsar (además de al pasar el cursor). El rebuild
+    // vuelve a aplicar el armado (ver rebuild()).
     if (node.kind === "submenu") {
-      this.openIndices = [...hovered.path];
-      this.rebuild();
+      if (!pathEq([...hovered.path], this.openIndices)) {
+        this.openIndices = [...hovered.path];
+        this.rebuild();
+      }
       return;
     }
 
     // Dial: empieza el arrastre. El valor salta ya a donde se pulsó (como tocar un
-    // slider) y luego sigue el cursor por el arco hasta soltar.
+    // slider) y luego sigue el cursor por el arco hasta soltar. Si el puntero se
+    // queda quieto, salta el long-press y se arranca en vez de ajustar.
     if (node.kind === "dial") {
       this.dragDial = hovered;
       this.container.classList.add("is-dial-drag");
@@ -841,14 +853,106 @@ export class RadialMenu {
       return;
     }
 
-    this.executeNode(node);
+    // Acción: ya NO se ejecuta aquí. Se ejecuta en onPointerUp si no hubo long-press
+    // ni movimiento, para no dispararse durante el armado del trozo.
   }
 
   private onPointerUp(e: PointerEvent): void {
-    if (!this.dragDial) return;
-    this.dragDial = null;
-    this.container.classList.remove("is-dial-drag");
-    try { this.container.releasePointerCapture(e.pointerId); } catch { /* ya liberado */ }
+    const wasTorn = this.torn;
+    const press = this.pressStart;
+    const draggedDial = this.dragDial;
+
+    this.cancelLongPress();
+
+    if (this.dragDial) {
+      this.dragDial = null;
+      this.container.classList.remove("is-dial-drag");
+      try { this.container.releasePointerCapture(e.pointerId); } catch { /* ya liberado */ }
+    }
+
+    // El gesto arrancó un trozo: no se ejecuta nada más (el menú ya se cerró).
+    if (wasTorn) return;
+    // Un dial se ajustó arrastrando: nada que ejecutar al soltar.
+    if (draggedDial) return;
+
+    // Tap sobre una acción (sin long-press ni arrastre): ejecutarla ahora.
+    if (press) {
+      const sector = this.findSector(press.path);
+      if (sector && !sector.node.disabled && sector.node.kind === "action") {
+        this.executeNode(sector.node);
+      }
+    }
+  }
+
+  private onPointerCancel(e: PointerEvent): void {
+    this.cancelLongPress();
+    if (this.dragDial) {
+      this.dragDial = null;
+      this.container.classList.remove("is-dial-drag");
+      try { this.container.releasePointerCapture(e.pointerId); } catch { /* ya liberado */ }
+    }
+  }
+
+  /** Arranca el temporizador del long-press sobre un sector y le pone el armado
+      visual (is-arming: relleno que crece ~3 s como realimentación). Al cumplirse,
+      arranca el trozo. */
+  private armLongPress(sector: RadialSector): void {
+    window.clearTimeout(this.longPressTimer);
+    this.armingPath = [...sector.path];
+    this.applyArmingVisual();
+    this.longPressTimer = window.setTimeout(() => {
+      // Re-resolver por si un rebuild (expandir submenú) recreó los sectores.
+      const target = this.pressStart ? this.findSector(this.pressStart.path) : null;
+      if (target) this.tearOff(target);
+    }, LONG_PRESS_MS);
+  }
+
+  /** Cancela el long-press en curso (soltar, mover o arrancar) y quita el armado. */
+  private cancelLongPress(): void {
+    window.clearTimeout(this.longPressTimer);
+    this.longPressTimer = 0;
+    this.pressStart = null;
+    this.armingPath = null;
+    this.applyArmingVisual();
+  }
+
+  /** Refleja `armingPath` en el DOM: solo ese sector lleva `is-arming`. */
+  private applyArmingVisual(): void {
+    for (const sector of this.sectors) {
+      setClass(sector.path_el, "is-arming", this.armingPath !== null && pathEq(sector.path, this.armingPath));
+    }
+  }
+
+  /**
+   * Arranca un sector como trozo flotante: construye el descriptor (nodo, camino,
+   * geometría y punto medio del arco en viewport) y lo emite por `onTearOff`; luego
+   * cierra el menú. `torn` corta el pointerup para que el mismo gesto no ejecute la
+   * acción ni ajuste el dial.
+   */
+  private tearOff(sector: RadialSector): void {
+    this.torn = true;
+    this.cancelLongPress();
+
+    const midR = this.ringMid(sector.ringLevel);
+    // El contenedor está centrado en (posX, posY) con translate(-50%,-50%): un punto
+    // del SVG a ángulo a, radio r, cae en viewport (posX + cos a·r, posY + sin a·r).
+    const viewport = {
+      x: this.posX + Math.cos(sector.angleMid) * midR,
+      y: this.posY + Math.sin(sector.angleMid) * midR,
+    };
+
+    this.onTearOff?.({
+      node: sector.node,
+      path: [...sector.path],
+      ringLevel: sector.ringLevel,
+      angleWidth: sector.angleEnd - sector.angleStart,
+      angleMid: sector.angleMid,
+      innerR: this.ringInner(sector.ringLevel),
+      outerR: this.ringOuter(sector.ringLevel),
+      viewport,
+    });
+
+    this.close();
   }
 
   /** Ajusta el valor de un dial según el ángulo del cursor sobre su arco. */

@@ -1,6 +1,7 @@
 import "./styles.css";
 import "./styles-fx.css";
 import "./styles-radial-menu.css";
+import "./styles-radial-chips.css";
 import "./styles-panels.css";
 import "./styles-side-dock.css";
 import "./styles-command.css";

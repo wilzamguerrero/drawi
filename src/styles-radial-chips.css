@@ -1,0 +1,189 @@
+/* ============================================================
+   Trozos arrancables del menú radial (tear-off chips).
+
+   Un trozo es la misma tajada anular del menú, ahora flotando sola en el
+   viewport con dos punticos de materia (mover / cerrar). Reutiliza el look de
+   `.rm-sector` / `.rm-dial-*` (styles-radial-menu.css) y la marca de materia de
+   `.cmd-brand-*` (styles-command.css) para que se sienta parte del mismo
+   lenguaje visual. Ver src/ui/hotbox/radial-chips.ts.
+   ============================================================ */
+
+/* Capa a pantalla completa: no captura el puntero salvo en los propios trozos,
+   así el lienzo de debajo sigue vivo. */
+.rm-chips {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 45;
+}
+
+/* Un trozo: contenedor absoluto colocado por JS (left/top = cx−R1, cy−R1). Sus
+   hijos interactivos reactivan el puntero uno a uno. */
+.rm-chip {
+  position: absolute;
+  pointer-events: none;
+  transform-origin: center;
+  transition: opacity 0.3s ease,
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Oculto mientras las partículas se juntan; al quitarlo, el trozo se funde
+   (crece desde el centro) en relevo con la masa. Igual patrón que .panel-card,
+   pero con su propio ámbito. */
+.rm-chip.materia-hidden {
+  opacity: 0;
+  transform: scale(0.62);
+}
+
+/* Al cerrar: se encoge y se apaga rápido mientras las partículas se dispersan. */
+.rm-chip.materia-hiding {
+  opacity: 0;
+  transform: scale(0.86);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+/* El SVG ocupa la caja del trozo; solo el path del sector captura el puntero. */
+.rm-chip-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* La tajada: mismo negro plano y esquinas redondeadas que .rm-sector. */
+.rm-chip-sector {
+  fill: #161619;
+  stroke: #161619;
+  stroke-width: 4;
+  stroke-linejoin: round;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: fill 0.22s ease, stroke 0.22s ease;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.4));
+}
+
+.rm-chip-sector:hover {
+  fill: #35618c;
+  stroke: #5a9fd4;
+}
+
+/* Relleno + aguja del dial: mismo look que en el menú (.rm-dial-*). */
+.rm-chip-fill {
+  fill: #35618c;
+  stroke: #35618c;
+  stroke-width: 4;
+  stroke-linejoin: round;
+  pointer-events: none;
+  transition: fill 0.18s ease, stroke 0.18s ease;
+}
+
+.rm-chip-thumb {
+  fill: none;
+  stroke: #eaf3fb;
+  stroke-width: 4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px rgba(90, 159, 212, 0.7));
+  pointer-events: none;
+}
+
+/* Un dial se ajusta arrastrando el arco: cursor de deslizar. */
+.rm-chip.is-active .rm-chip-sector {
+  cursor: ew-resize;
+}
+
+/* Contenido del centro del arco: valor, icono, muestra de color o texto. */
+.rm-chip-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.96);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.rm-chip-label.rm-chip-icon svg,
+.rm-chip-label.rm-chip-icon {
+  width: 26px;
+  height: 26px;
+}
+
+/* Muestra/relleno de color: un disco del acento del nodo. */
+.rm-chip-swatch,
+.rm-chip-color {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* Los dos punticos de materia, anclados al borde exterior-medio del arco. Mismo
+   negro y sombra que la marca del paletón (.cmd-brand-dot). */
+.rm-chip-dot {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #161619;
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  transition: transform 0.16s ease, background 0.16s ease;
+}
+
+.rm-chip-dot svg {
+  width: 16px;
+  height: 16px;
+}
+
+.rm-chip-dot:hover {
+  background: #202027;
+}
+
+.rm-chip-move {
+  cursor: grab;
+}
+
+.rm-chip.is-moving .rm-chip-move {
+  cursor: grabbing;
+}
+
+.rm-chip-close {
+  cursor: pointer;
+}
+
+.rm-chip-close:hover {
+  background: #7a2530;
+  color: #ffd7dc;
+}
+
+/* Sin movimiento: nada de ondulado de materia ni escalados de entrada; el
+   long-press y el arrastre siguen operativos, solo desaparece el adorno. */
+@media (prefers-reduced-motion: reduce) {
+  .rm-chip,
+  .rm-chip.materia-hidden,
+  .rm-chip.materia-hiding {
+    transition: none;
+    transform: none;
+  }
+
+  .rm-chip.materia-hidden {
+    opacity: 1;
+  }
+
+  .rm-chip-dot {
+    animation: none;
+    border-radius: 50%;
+  }
+}

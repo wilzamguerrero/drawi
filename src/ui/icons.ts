@@ -53,6 +53,7 @@ export const ICONS: Record<string, string> = {
   ),
   folder: svg(`<path d="M4 6h5l2 2h9v11H4Z"/>`),
   close: svg(`<path d="m6 6 12 12M18 6 6 18"/>`),
+  move: svg(`<path d="M12 3v18M3 12h18"/><path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>`),
   chevron: svg(`<path d="m8 10 4 4 4-4"/>`),
   info: svg(`<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 8h.01"/>`),
   wheel: svg(
