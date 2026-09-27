@@ -281,12 +281,30 @@
   color: #eaf3fb;
 }
 
+/* Armado del long-press sobre MOVER: mantener pulsado quieto ~3 s alterna el "modo
+   limpio" del grupo. El botón se tiñe de acento creciendo durante esos 3 s como
+   realimentación (mismo espíritu que .rm-chip.is-arming); al soltar o arrastrar se
+   quita la clase y el pulso se corta. */
+.rm-hub.is-arming .rm-hub-move {
+  animation: rm-hub-arming 3s linear forwards;
+}
+
+@keyframes rm-hub-arming {
+  0% { background: transparent; color: rgba(255, 255, 255, 0.9); }
+  100% { background: rgba(53, 97, 140, 0.95); color: #eaf3fb; }
+}
+
 /* Sin movimiento: círculo quieto y limpio, sin ondulado ni deriva. */
 @media (prefers-reduced-motion: reduce) {
   .rm-hub {
     animation: none;
     border-radius: 50%;
     transform: translate(-50%, -50%);
+  }
+
+  /* El armado del long-press sigue funcionando; solo se quita su animación. */
+  .rm-hub.is-arming .rm-hub-move {
+    animation: none;
   }
 }
 

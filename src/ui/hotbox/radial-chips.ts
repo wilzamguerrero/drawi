@@ -84,6 +84,10 @@ interface HubHost {
   groupMembers(groupId: string): RadialChip[];
   repositionHub(groupId: string, cx: number, cy: number): void;
   scheduleSave(): void;
+  /** Alterna el "modo limpio" del grupo: oculta los controles por-nivel (rotar/mover
+      de cada aro) y desactiva el cierre por pulsación de cada chip; volver a alternarlo
+      los reactiva. Lo dispara un long-press sobre el botón MOVER del hub. */
+  toggleGroupLock(groupId: string): void;
 }
 
 /**
@@ -100,6 +104,9 @@ export class RadialChips implements ChipHost, HubHost {
   private chips = new Map<string, RadialChip>();
   /** Núcleos de grupo (uno por grupo multinivel), indexados por groupId. */
   private hubs = new Map<string, RingHub>();
+  /** Grupos en "modo limpio": sin controles por-nivel ni cierre por chip (ver
+      `toggleGroupLock`). Es estado de sesión (no se persiste). */
+  private lockedGroups = new Set<string>();
   private saveTimer = 0;
   private seq = 0;
 
@@ -346,6 +353,9 @@ export class RadialChips implements ChipHost, HubHost {
       liveGroups.add(gid);
       const levels = new Set(arr.map((c) => c.level));
       const multiLevel = levels.size > 1;
+      // "Modo limpio": solo tiene sentido en grupos multinivel (donde hay hub para
+      // volver a alternarlo). Oculta los controles por-nivel y bloquea el cierre.
+      const locked = multiLevel && this.lockedGroups.has(gid);
 
       // Extremos por nivel.
       const startByLevel = new Map<number, RadialChip>();
@@ -357,8 +367,9 @@ export class RadialChips implements ChipHost, HubHost {
         if (!e || c.a1 > e.a1) endByLevel.set(c.level, c);
       }
       for (const c of arr) {
-        const showRotate = startByLevel.get(c.level) === c;
-        const showMove = endByLevel.get(c.level) === c;
+        c.setLocked(locked);
+        const showRotate = !locked && startByLevel.get(c.level) === c;
+        const showMove = !locked && endByLevel.get(c.level) === c;
         c.updateHandles(showRotate, showMove);
       }
 
@@ -371,24 +382,38 @@ export class RadialChips implements ChipHost, HubHost {
           this.el.appendChild(hub.el);
         }
         hub.position(arr[0].cx, arr[0].cy);
+        hub.setLocked(locked);
       } else {
         this.hubs.get(gid)?.destroy();
         this.hubs.delete(gid);
+        // Sin hub no habría forma de desbloquearlo: un grupo que deja de ser
+        // multinivel se desbloquea siempre.
+        this.lockedGroups.delete(gid);
       }
     }
 
-    // Quita hubs de grupos que ya no existen.
+    // Quita hubs (y candados) de grupos que ya no existen.
     for (const [gid, hub] of this.hubs) {
       if (!liveGroups.has(gid)) {
         hub.destroy();
         this.hubs.delete(gid);
       }
     }
+    for (const gid of [...this.lockedGroups]) {
+      if (!liveGroups.has(gid)) this.lockedGroups.delete(gid);
+    }
   }
 
   /** Reposiciona el hub de un grupo (lo llama el propio grupo al moverse por el hub). */
   repositionHub(groupId: string, cx: number, cy: number): void {
     this.hubs.get(groupId)?.position(cx, cy);
+  }
+
+  /** Alterna el "modo limpio" de un grupo y repinta sus controles. */
+  toggleGroupLock(groupId: string): void {
+    if (this.lockedGroups.has(groupId)) this.lockedGroups.delete(groupId);
+    else this.lockedGroups.add(groupId);
+    this.refreshHandles();
   }
 
   // -------------------------------------------------------- sync / persistencia
@@ -507,6 +532,8 @@ class RadialChip {
   private moveDot: HTMLElement;
   private dial: { fill: SVGPathElement; thumb: SVGPathElement } | null = null;
   private closing = false;
+  /** En "modo limpio" (grupo bloqueado desde el hub): sin cierre por pulsación. */
+  private locked = false;
   /** Timer del "mantener pulsado para cerrar" (mismo gesto que arrancó el trozo). */
   private closeTimer = 0;
 
@@ -622,6 +649,8 @@ class RadialChip {
       igual que el sector del menú al arrancarlo). Cualquier desplazamiento > tolerancia
       o soltar antes cancela el armado. */
   private armClose(e: PointerEvent): void {
+    // En modo limpio el cierre por pulsación está desactivado (el dial sigue vivo).
+    if (this.locked) return;
     window.clearTimeout(this.closeTimer);
     const sx = e.clientX;
     const sy = e.clientY;
@@ -708,6 +737,14 @@ class RadialChip {
   updateHandles(showRotate: boolean, showMove: boolean): void {
     this.rotateDot.classList.toggle("is-hidden", !showRotate);
     this.moveDot.classList.toggle("is-hidden", !showMove);
+  }
+
+  /** Modo limpio: desactiva el cierre por pulsación de este chip (lo fija el gestor
+      cuando su grupo se bloquea desde el hub). Los controles por-nivel se ocultan
+      aparte vía `updateHandles`. */
+  setLocked(locked: boolean): void {
+    this.locked = locked;
+    this.el.classList.toggle("is-locked", locked);
   }
 
   /** Coloca la etiqueta (valor/icono) en el medio del arco (coords locales). */
@@ -916,6 +953,8 @@ class RingHub {
   private rotateHalf: HTMLElement;
   private groupId: string;
   private host: HubHost;
+  /** Timer del long-press sobre MOVER que alterna el modo limpio del grupo. */
+  private lockTimer = 0;
 
   constructor(groupId: string, host: HubHost) {
     this.groupId = groupId;
@@ -936,11 +975,22 @@ class RingHub {
     this.el.style.top = `${cy}px`;
   }
 
+  /** Refleja si el grupo está en modo limpio (marca el hub para el usuario). */
+  setLocked(locked: boolean): void {
+    this.el.classList.toggle("is-locked", locked);
+  }
+
   destroy(): void {
+    window.clearTimeout(this.lockTimer);
     this.el.remove();
   }
 
-  /** Mitad de arriba: traslada el centro de TODOS los miembros del grupo el mismo offset. */
+  /** Mitad de arriba (MOVER). Dos gestos en el mismo botón:
+      - Mantenerlo pulsado QUIETO ~3 s alterna el "modo limpio" del grupo (oculta los
+        controles por-nivel y desactiva el cierre de cada chip), el mismo gesto y umbral
+        que crea/cierra un chip. `.is-arming` da la realimentación creciente.
+      - Arrastrarlo traslada el centro de TODOS los miembros del grupo el mismo offset;
+        cualquier desplazamiento cancela el armado del modo limpio. */
   private beginMove(e: PointerEvent): void {
     e.preventDefault();
     const members = this.host.groupMembers(this.groupId);
@@ -948,11 +998,29 @@ class RingHub {
     const sx = e.clientX;
     const sy = e.clientY;
     const start = members.map((m) => ({ m, cx: m.cx, cy: m.cy }));
-    for (const m of members) m.isDragging = true;
-    this.el.classList.add("is-moving");
+    let moved = false;
+
+    // Armado del long-press: mientras no haya arrastre, cuenta hacia el modo limpio.
+    this.el.classList.add("is-arming");
+    const disarm = (): void => {
+      window.clearTimeout(this.lockTimer);
+      this.el.classList.remove("is-arming");
+    };
+    const cleanup = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      for (const m of members) m.isDragging = false;
+      this.el.classList.remove("is-moving");
+    };
     const move = (ev: PointerEvent): void => {
       const dx = ev.clientX - sx;
       const dy = ev.clientY - sy;
+      if (!moved && Math.hypot(dx, dy) > CLOSE_MOVE_TOL) {
+        moved = true;
+        disarm();
+        this.el.classList.add("is-moving");
+      }
+      if (!moved) return;
       for (const s of start) {
         s.m.adoptCenter(s.cx + dx, s.cy + dy);
         s.m.render();
@@ -960,12 +1028,17 @@ class RingHub {
       this.position(start[0].cx + dx, start[0].cy + dy);
     };
     const up = (): void => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      for (const m of members) m.isDragging = false;
-      this.el.classList.remove("is-moving");
-      this.host.scheduleSave();
+      disarm();
+      cleanup();
+      if (moved) this.host.scheduleSave();
     };
+    this.lockTimer = window.setTimeout(() => {
+      disarm();
+      cleanup();
+      this.host.toggleGroupLock(this.groupId);
+    }, CLOSE_HOLD_MS);
+
+    for (const m of members) m.isDragging = true;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
