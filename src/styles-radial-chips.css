@@ -196,56 +196,61 @@
 
 /* ============================================================
    Núcleo (hub) de un grupo multinivel: vive en el centro compartido (la zona
-   interior vacía, r < 60) y agrupa mover + rotar de TODO el conjunto de aros.
-   Reutiliza el look de los punticos de trozo (.rm-chip-dot). Ver RingHub en
-   src/ui/hotbox/radial-chips.ts.
+   interior vacía) y reúne mover + rotar de TODO el conjunto de aros en UNA pieza:
+   un círculo partido por la mitad como el color-wheel — izquierda mueve, derecha
+   rota—. Ver RingHub en src/ui/hotbox/radial-chips.ts.
    ============================================================ */
 
-/* Contenedor centrado en cx,cy (lo coloca JS). No captura el puntero salvo en sus
-   dos botones. Apila mover arriba y rotar abajo, juntos en el hueco central. */
+/* Círculo centrado en cx,cy (lo coloca JS). El contenedor no captura el puntero
+   salvo en sus dos mitades. */
 .rm-hub {
   position: absolute;
   transform: translate(-50%, -50%);
-  pointer-events: none;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: #161619;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
+  overflow: hidden;
+  pointer-events: none;
   z-index: 1;
 }
 
-/* Los dos punticos: mismo negro, sombra y tamaño que los de un trozo. */
-.rm-hub-dot {
-  width: 30px;
-  height: 30px;
+/* Cada mitad: media luna que ocupa la altura completa. Icono centrado. */
+.rm-hub-half {
+  flex: 1 1 50%;
   padding: 0;
   border: none;
-  border-radius: 50%;
-  background: #161619;
-  color: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.45);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
   display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: auto;
-  transition: transform 0.16s ease, background 0.16s ease;
+  transition: background 0.16s ease, color 0.16s ease;
 }
 
-.rm-hub-dot svg {
-  width: 16px;
-  height: 16px;
+.rm-hub-half svg {
+  width: 18px;
+  height: 18px;
 }
 
-.rm-hub-dot:hover {
-  background: #202027;
+.rm-hub-half:hover {
+  background: #35618c;
+  color: #eaf3fb;
 }
 
+/* Corte a la mitad: una fina línea divide las dos medias lunas. */
 .rm-hub-move {
   cursor: grab;
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
 }
 
 .rm-hub.is-moving .rm-hub-move {
   cursor: grabbing;
+  background: #35618c;
+  color: #eaf3fb;
 }
 
 .rm-hub-rotate {
@@ -254,14 +259,8 @@
 
 .rm-hub.is-rotating .rm-hub-rotate {
   cursor: grabbing;
-}
-
-/* Sin movimiento: sin ondulado de materia; los gestos siguen operativos. */
-@media (prefers-reduced-motion: reduce) {
-  .rm-hub-dot {
-    animation: none;
-    border-radius: 50%;
-  }
+  background: #35618c;
+  color: #eaf3fb;
 }
 
 /* ============================================================ */

@@ -28,13 +28,13 @@ const NS = "http://www.w3.org/2000/svg";
 // y compactos, para que sean baldosas acoplables. La banda no viaja por trozo: se
 // DERIVA del nivel concéntrico dentro de su grupo (ver `RadialChip.r0/r1`).
 /** Radio interior del nivel 0 (el aro más interno de un grupo), px. */
-const CHIP_R0_BASE = 60;
+const CHIP_R0_BASE = 72;
 /** Grosor de cada aro (r1 − r0), px. Igual en todos los niveles. */
-const CHIP_BAND = 34;
+const CHIP_BAND = 46;
 /** Hueco radial entre niveles concéntricos, px. */
 const LEVEL_GAP = 8;
-/** Ancho angular uniforme de cada trozo (radianes ≈ 40°). */
-const CHIP_ANGLE = 0.7;
+/** Ancho angular uniforme de cada trozo (radianes ≈ 47°). */
+const CHIP_ANGLE = 0.82;
 /** Mismo hueco visual entre sectores que el menú (px). */
 const CHIP_GAP_PX = 7;
 /** Margen (px) sobre el radio externo del grupo para que un aro se anide en él (centro a centro). */
@@ -161,18 +161,34 @@ export class RadialChips implements ChipHost, HubHost {
     this.saveTimer = window.setTimeout(() => this.save(), 400);
   }
 
+  /** Un id de grupo nuevo (para desenganchar un aro y dejarlo como grupo propio). */
+  private newGroupId(): string {
+    return `grp-${++this.seq}-${Date.now().toString(36)}`;
+  }
+
   /**
-   * Al soltar un aro/chip movido: si su centro cae cerca de otro GRUPO, se anida en
-   * él como un nivel concéntrico (interior/mismo/exterior según el radio de caída);
-   * si no, queda como grupo propio. El nivel se decide por el radio, y tras cualquier
-   * cambio se renormalizan los niveles del grupo a 0..k.
+   * Al soltar un ARO movido (mismo grupo+nivel): primero lo DESENGANCHA de su grupo
+   * (nuevo groupId, el grupo viejo se recompacta) —así, si venía de un grupo multinivel,
+   * moverlo por su botón SACA ese nivel para dejarlo fuera—. Luego, si su centro cae
+   * cerca de otro grupo, se anida en él como un nivel concéntrico (interior/mismo/exterior
+   * según el radio de caída); si no, queda como grupo propio. Tras cualquier cambio se
+   * renormalizan los niveles del grupo destino a 0..k.
    */
   trySnap(chip: RadialChip): void {
-    const dragged = this.group(chip);
+    const dragged = this.ring(chip);
+
+    // Desenganche: si el aro era parte de un grupo mayor, se separa como grupo propio y
+    // el grupo viejo se renormaliza (sus niveles restantes se recompactan sin huecos).
+    const oldGroup = chip.groupId;
+    if (dragged.length < this.groupMembers(oldGroup).length) {
+      const gid = this.newGroupId();
+      for (const c of dragged) c.groupId = gid;
+      this.renormalizeLevels(oldGroup);
+    }
     const draggedIds = new Set(dragged.map((c) => c.id));
 
-    // Grupo destino: el chip más cercano (por su centro) que NO sea del grupo
-    // arrastrado y quede dentro del alcance de anidado.
+    // Grupo destino: el chip más cercano (por su centro) que NO sea del aro arrastrado
+    // y quede dentro del alcance de anidado.
     let target: RadialChip | null = null;
     let bestDist = Infinity;
     for (const other of this.chips.values()) {
@@ -188,7 +204,7 @@ export class RadialChips implements ChipHost, HubHost {
     if (target) {
       this.nest(dragged, target, chip.arcMidPoint());
     } else {
-      // Suelto: grupo propio; renormaliza por si venía de otro grupo.
+      // Suelto: grupo propio; renormaliza (queda en nivel 0).
       this.renormalizeLevels(chip.groupId);
     }
     this.refreshHandles();
@@ -309,10 +325,11 @@ export class RadialChips implements ChipHost, HubHost {
 
   /**
    * Refresca los controles. Regla:
-   * - Por cada ARO (grupo+nivel): rotar en el extremo inicial (menor a0). El mover del
-   *   aro solo aparece si el grupo es de UN nivel (extremo final, mayor a1).
+   * - Por cada ARO (grupo+nivel): rotar en el extremo inicial (menor a0) y mover en el
+   *   extremo final (mayor a1). El mover se mantiene SIEMPRE, también en grupos
+   *   multinivel: usarlo saca ese nivel del grupo para dejarlo fuera (ver `trySnap`).
    * - Si el grupo tiene VARIOS niveles: aparece un núcleo (hub) central que mueve/rota
-   *   todo el grupo, y el mover por-aro desaparece (el rotar por-aro se mantiene).
+   *   TODO el grupo a la vez.
    */
   private refreshHandles(): void {
     const byGroup = new Map<string, RadialChip[]>();
@@ -339,7 +356,7 @@ export class RadialChips implements ChipHost, HubHost {
       }
       for (const c of arr) {
         const showRotate = startByLevel.get(c.level) === c;
-        const showMove = !multiLevel && endByLevel.get(c.level) === c;
+        const showMove = endByLevel.get(c.level) === c;
         c.updateHandles(showRotate, showMove);
       }
 
@@ -744,8 +761,9 @@ class RadialChip {
   }
 
   /** Arrastre por el puntico de mover. Mueve todo el ARO (mismo grupo+nivel) como una
-      unidad: como el moveDot solo aparece en grupos de UN nivel, el aro es el grupo
-      entero. Al soltar, `trySnap` decide si se anida en otro grupo o queda suelto. */
+      unidad. Al soltar, `trySnap` lo desengancha de su grupo y decide si se anida en otro
+      (o vuelve a este) o queda suelto: así, mover un aro de un grupo multinivel SACA ese
+      nivel para dejarlo fuera. */
   private beginMove(e: PointerEvent): void {
     e.preventDefault();
     const members = this.host.ring(this);
@@ -883,27 +901,28 @@ class RadialChip {
 }
 
 /**
- * Núcleo (hub) de un grupo MULTINIVEL: un elemento en el centro compartido (`cx,cy`,
- * la zona interior que queda vacía por debajo del nivel 0) con dos punticos de materia
- * —mover y rotar— que operan sobre TODO el grupo a la vez. Aparece cuando un grupo tiene
- * ≥2 aros anidados; en ese modo el mover por-aro desaparece (lo hace el hub) y cada aro
- * conserva su rotar propio. Lo crea/posiciona/retira el gestor en `refreshHandles`.
+ * Núcleo (hub) de un grupo MULTINIVEL: un solo CÍRCULO en el centro compartido
+ * (`cx,cy`, la zona interior vacía por debajo del nivel 0), partido por la mitad como
+ * un mini color-wheel — la mitad IZQUIERDA mueve el grupo, la DERECHA lo rota—. Así
+ * ambos controles del grupo van en una pieza con el lenguaje visual del editor. Ambas
+ * mitades operan sobre TODOS los niveles a la vez. Lo crea/posiciona/retira el gestor
+ * en `refreshHandles`.
  */
 class RingHub {
   readonly el: HTMLElement;
-  private moveDot: HTMLElement;
-  private rotateDot: HTMLElement;
+  private moveHalf: HTMLElement;
+  private rotateHalf: HTMLElement;
   private groupId: string;
   private host: HubHost;
 
   constructor(groupId: string, host: HubHost) {
     this.groupId = groupId;
     this.host = host;
-    this.moveDot = el("button", { class: "rm-hub-dot rm-hub-move materia-blob", type: "button", title: "Mover grupo", html: icon("grip") });
-    this.rotateDot = el("button", { class: "rm-hub-dot rm-hub-rotate materia-blob", type: "button", title: "Rotar grupo", html: icon("rotate") });
-    this.el = el("div", { class: "rm-hub" }, [this.moveDot, this.rotateDot]);
-    this.moveDot.addEventListener("pointerdown", (e) => this.beginMove(e));
-    this.rotateDot.addEventListener("pointerdown", (e) => this.beginRotate(e));
+    this.moveHalf = el("button", { class: "rm-hub-half rm-hub-move", type: "button", title: "Mover grupo", html: icon("grip") });
+    this.rotateHalf = el("button", { class: "rm-hub-half rm-hub-rotate", type: "button", title: "Rotar grupo", html: icon("rotate") });
+    this.el = el("div", { class: "rm-hub" }, [this.moveHalf, this.rotateHalf]);
+    this.moveHalf.addEventListener("pointerdown", (e) => this.beginMove(e));
+    this.rotateHalf.addEventListener("pointerdown", (e) => this.beginRotate(e));
   }
 
   /** Coloca el hub en el centro compartido del grupo (coords de viewport). */
@@ -916,7 +935,7 @@ class RingHub {
     this.el.remove();
   }
 
-  /** Mover-hub: traslada el centro de TODOS los miembros del grupo el mismo offset. */
+  /** Mitad izquierda: traslada el centro de TODOS los miembros del grupo el mismo offset. */
   private beginMove(e: PointerEvent): void {
     e.preventDefault();
     const members = this.host.groupMembers(this.groupId);
@@ -946,7 +965,7 @@ class RingHub {
     window.addEventListener("pointerup", up);
   }
 
-  /** Rotar-hub: suma el mismo delta angular a TODOS los miembros (todos los niveles).
+  /** Mitad derecha: suma el mismo delta angular a TODOS los miembros (todos los niveles).
       Como comparten centro, un mismo delta gira el grupo entero rígidamente. */
   private beginRotate(e: PointerEvent): void {
     e.preventDefault();
