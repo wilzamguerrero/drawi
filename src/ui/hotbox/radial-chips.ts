@@ -31,8 +31,10 @@ const NS = "http://www.w3.org/2000/svg";
 const CHIP_R0_BASE = 72;
 /** Grosor de cada aro (r1 − r0), px. Igual en todos los niveles. */
 const CHIP_BAND = 46;
-/** Hueco radial entre niveles concéntricos, px. */
-const LEVEL_GAP = 8;
+/** Hueco radial entre niveles concéntricos, px. Igualado al hueco visual que queda
+    entre chips contiguos a los lados (≈ CHIP_GAP_PX de colocación + los medios huecos
+    que arcPathD mete en cada borde), para que la separación se sienta la misma. */
+const LEVEL_GAP = 14;
 /** Ancho angular uniforme de cada trozo (radianes ≈ 47°). */
 const CHIP_ANGLE = 0.82;
 /** Mismo hueco visual entre sectores que el menú (px). */
@@ -901,11 +903,11 @@ class RadialChip {
 }
 
 /**
- * Núcleo (hub) de un grupo MULTINIVEL: un solo CÍRCULO en el centro compartido
- * (`cx,cy`, la zona interior vacía por debajo del nivel 0), partido por la mitad como
- * un mini color-wheel — la mitad IZQUIERDA mueve el grupo, la DERECHA lo rota—. Así
- * ambos controles del grupo van en una pieza con el lenguaje visual del editor. Ambas
- * mitades operan sobre TODOS los niveles a la vez. Lo crea/posiciona/retira el gestor
+ * Núcleo (hub) de un grupo MULTINIVEL: en el centro compartido (`cx,cy`, la zona
+ * interior vacía por debajo del nivel 0) va UN solo círculo de materia viva (mismo
+ * ondulado `.materia-blob` que el hub de la rueda de color) que aloja dos botones
+ * apilados —arriba MOVER, abajo ROTAR— sin corte ni división visible entre ellos.
+ * Ambos operan sobre TODOS los niveles a la vez. Lo crea/posiciona/retira el gestor
  * en `refreshHandles`.
  */
 class RingHub {
@@ -918,9 +920,11 @@ class RingHub {
   constructor(groupId: string, host: HubHost) {
     this.groupId = groupId;
     this.host = host;
+    // Un solo círculo de materia (como el hub de la rueda); dentro, mover arriba y
+    // rotar abajo, sin corte ni división.
     this.moveHalf = el("button", { class: "rm-hub-half rm-hub-move", type: "button", title: "Mover grupo", html: icon("grip") });
     this.rotateHalf = el("button", { class: "rm-hub-half rm-hub-rotate", type: "button", title: "Rotar grupo", html: icon("rotate") });
-    this.el = el("div", { class: "rm-hub" }, [this.moveHalf, this.rotateHalf]);
+    this.el = el("div", { class: "rm-hub materia-blob" }, [this.moveHalf, this.rotateHalf]);
     this.moveHalf.addEventListener("pointerdown", (e) => this.beginMove(e));
     this.rotateHalf.addEventListener("pointerdown", (e) => this.beginRotate(e));
   }
@@ -935,7 +939,7 @@ class RingHub {
     this.el.remove();
   }
 
-  /** Mitad izquierda: traslada el centro de TODOS los miembros del grupo el mismo offset. */
+  /** Mitad de arriba: traslada el centro de TODOS los miembros del grupo el mismo offset. */
   private beginMove(e: PointerEvent): void {
     e.preventDefault();
     const members = this.host.groupMembers(this.groupId);
@@ -965,7 +969,7 @@ class RingHub {
     window.addEventListener("pointerup", up);
   }
 
-  /** Mitad derecha: suma el mismo delta angular a TODOS los miembros (todos los niveles).
+  /** Mitad de abajo: suma el mismo delta angular a TODOS los miembros (todos los niveles).
       Como comparten centro, un mismo delta gira el grupo entero rígidamente. */
   private beginRotate(e: PointerEvent): void {
     e.preventDefault();

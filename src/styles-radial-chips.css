@@ -196,30 +196,34 @@
 
 /* ============================================================
    Núcleo (hub) de un grupo multinivel: vive en el centro compartido (la zona
-   interior vacía) y reúne mover + rotar de TODO el conjunto de aros en UNA pieza:
-   un círculo partido por la mitad como el color-wheel — izquierda mueve, derecha
-   rota—. Ver RingHub en src/ui/hotbox/radial-chips.ts.
+   interior vacía) y reúne mover + rotar de TODO el conjunto de aros en UN solo
+   círculo de materia viva —el mismo ondulado que el hub de la rueda de color—. No
+   está partido: dentro apila dos botones sin corte ni división, MOVER arriba y
+   ROTAR abajo. Ver RingHub en src/ui/hotbox/radial-chips.ts.
    ============================================================ */
 
-/* Círculo centrado en cx,cy (lo coloca JS). El contenedor no captura el puntero
-   salvo en sus dos mitades. */
+/* El círculo, centrado en cx,cy (lo coloca JS). Negro pleno como los trozos, con su
+   sombra; el ondulado lo aporta la clase compartida .materia-blob (no fijar aquí otra
+   animation que la pise). No captura el puntero salvo en sus dos botones. */
 .rm-hub {
   position: absolute;
   transform: translate(-50%, -50%);
-  width: 62px;
-  height: 62px;
-  border-radius: 50%;
+  width: 76px;
+  height: 76px;
   background: #161619;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   display: flex;
+  flex-direction: column;
   overflow: hidden;
   pointer-events: none;
   z-index: 1;
 }
 
-/* Cada mitad: media luna que ocupa la altura completa. Icono centrado. */
+/* Cada botón ocupa media altura del círculo, transparente (el fondo lo pone el
+   círculo) y sin borde: no hay corte ni línea entre ambos. Icono centrado. */
 .rm-hub-half {
-  flex: 1 1 50%;
+  width: 100%;
+  flex: 1 1 0;
   padding: 0;
   border: none;
   background: transparent;
@@ -237,33 +241,34 @@
 }
 
 .rm-hub-half:hover {
-  background: #35618c;
+  background: rgba(53, 97, 140, 0.9);
   color: #eaf3fb;
 }
 
-/* Corte a la mitad: una fina línea divide las dos medias lunas. */
+/* Botón de arriba: MOVER. */
 .rm-hub-move {
   cursor: grab;
-  border-right: 1px solid rgba(255, 255, 255, 0.14);
 }
 
 .rm-hub.is-moving .rm-hub-move {
   cursor: grabbing;
-  background: #35618c;
+  background: rgba(53, 97, 140, 0.9);
   color: #eaf3fb;
 }
 
+/* Botón de abajo: ROTAR. */
 .rm-hub-rotate {
   cursor: grab;
 }
 
 .rm-hub.is-rotating .rm-hub-rotate {
   cursor: grabbing;
-  background: #35618c;
+  background: rgba(53, 97, 140, 0.9);
   color: #eaf3fb;
 }
 
 /* ============================================================ */
+
 
 @media (prefers-reduced-motion: reduce) {
   .rm-chip,
