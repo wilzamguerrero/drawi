@@ -159,6 +159,8 @@ export class RadialChips implements ChipHost, HubHost {
     this.chips.set(rec.id, chip);
     this.el.appendChild(chip.el);
     this.el.appendChild(chip.fx.el);
+    this.el.appendChild(chip.rotateFx.el);
+    this.el.appendChild(chip.moveFx.el);
     chip.render();
     return chip;
   }
@@ -530,6 +532,18 @@ class RadialChip {
   private label: HTMLElement;
   private rotateDot: HTMLElement;
   private moveDot: HTMLElement;
+  /** Partículas propias de cada puntico: al ocultarse/mostrarse (modo limpio, o al
+      reformar el aro) se juntan/dispersan como en el menú radial, no de golpe. */
+  readonly rotateFx: MateriaFx;
+  readonly moveFx: MateriaFx;
+  /** Estado visible actual de cada puntico y si ya hubo un primer `updateHandles`
+      (el primero fija el estado sin animar: el chip nace/restaura con su propia
+      materia, animar los punticos encima sería un doble parpadeo). */
+  private rotateShown = true;
+  private moveShown = true;
+  private handlesInit = false;
+  private rotateAnimTimer = 0;
+  private moveAnimTimer = 0;
   private dial: { fill: SVGPathElement; thumb: SVGPathElement } | null = null;
   private closing = false;
   /** En "modo limpio" (grupo bloqueado desde el hub): sin cierre por pulsación. */
@@ -551,6 +565,10 @@ class RadialChip {
     this.host = host;
 
     this.fx = new MateriaFx({ coreSize: 96, reach: 80, gatherMs: 380, scatterMs: 300 });
+    // Punticos: partículas pequeñas del tamaño del propio dot (30px), tiempos más
+    // cortos que el chip para que el aparecer/desaparecer sea ágil.
+    this.rotateFx = new MateriaFx({ coreSize: 30, reach: 26, dots: 6, gatherMs: 300, scatterMs: 260 });
+    this.moveFx = new MateriaFx({ coreSize: 30, reach: 26, dots: 6, gatherMs: 300, scatterMs: 260 });
 
     this.svg = document.createElementNS(NS, "svg") as SVGSVGElement;
     this.svg.setAttribute("class", "rm-chip-svg");
@@ -735,8 +753,80 @@ class RadialChip {
       dos extremos (enseña ambos); conectado, solo el del extremo inicial enseña rotar
       y solo el del final enseña mover. Lo llama el gestor tras cualquier cambio. */
   updateHandles(showRotate: boolean, showMove: boolean): void {
-    this.rotateDot.classList.toggle("is-hidden", !showRotate);
-    this.moveDot.classList.toggle("is-hidden", !showMove);
+    // El primer `updateHandles` (nacimiento/restauración) fija el estado sin animar:
+    // el chip ya llega con su propia materia y animar los punticos encima parpadearía.
+    // Después, cada cambio (bloqueo del grupo, reformar el aro) juega las partículas.
+    const animate =
+      this.handlesInit &&
+      !this.el.classList.contains("materia-hidden") &&
+      !prefersReducedMotion();
+    this.setHandle("rotate", showRotate, animate);
+    this.setHandle("move", showMove, animate);
+    this.handlesInit = true;
+  }
+
+  /** Muestra u oculta un puntico. Sin cambio real, no hace nada. Con `animate`, las
+      partículas se juntan (mostrar) o se dispersan (ocultar) como en el menú radial;
+      sin él, alterna `is-hidden` al instante. */
+  private setHandle(which: "rotate" | "move", show: boolean, animate: boolean): void {
+    const isRotate = which === "rotate";
+    const dot = isRotate ? this.rotateDot : this.moveDot;
+    const fx = isRotate ? this.rotateFx : this.moveFx;
+    const prev = isRotate ? this.rotateShown : this.moveShown;
+    if (this.handlesInit && show === prev) return;
+    if (isRotate) this.rotateShown = show;
+    else this.moveShown = show;
+    window.clearTimeout(isRotate ? this.rotateAnimTimer : this.moveAnimTimer);
+
+    if (!animate) {
+      dot.classList.remove("is-appearing", "is-vanishing");
+      dot.classList.toggle("is-hidden", !show);
+      fx.clear();
+      return;
+    }
+
+    const p = this.handlePoint(which);
+    fx.center(p.x, p.y);
+    let timer: number;
+    if (show) {
+      // Aparecer: las gotas convergen en el sitio del dot y este se funde desde ahí.
+      dot.classList.remove("is-hidden", "is-vanishing");
+      dot.classList.add("is-appearing");
+      fx.gather();
+      timer = window.setTimeout(() => {
+        dot.classList.remove("is-appearing");
+        fx.fadeOut();
+      }, fx.gatherMs);
+    } else {
+      // Desaparecer: el dot se deshace en gotas que salen despedidas.
+      dot.classList.remove("is-appearing");
+      dot.classList.add("is-vanishing");
+      fx.scatter();
+      timer = window.setTimeout(() => {
+        dot.classList.add("is-hidden");
+        dot.classList.remove("is-vanishing");
+        fx.clear();
+      }, fx.scatterMs);
+    }
+    if (isRotate) this.rotateAnimTimer = timer;
+    else this.moveAnimTimer = timer;
+  }
+
+  /** Centro de un puntico en coordenadas de viewport (para posicionar sus partículas,
+      que viven en la capa a pantalla completa). Deriva de `positionHandles` sumando el
+      origen del chip (`cx − r1`, `cy − r1`). */
+  private handlePoint(which: "rotate" | "move"): { x: number; y: number } {
+    const off = 20;
+    if (which === "rotate") {
+      return {
+        x: this.cx + Math.cos(this.a0) * this.mid + Math.sin(this.a0) * off,
+        y: this.cy + Math.sin(this.a0) * this.mid - Math.cos(this.a0) * off,
+      };
+    }
+    return {
+      x: this.cx + Math.cos(this.a1) * this.mid - Math.sin(this.a1) * off,
+      y: this.cy + Math.sin(this.a1) * this.mid + Math.cos(this.a1) * off,
+    };
   }
 
   /** Modo limpio: desactiva el cierre por pulsación de este chip (lo fija el gestor
@@ -909,9 +999,13 @@ class RadialChip {
     if (this.closing) return;
     this.closing = true;
     window.clearTimeout(this.closeTimer);
+    window.clearTimeout(this.rotateAnimTimer);
+    window.clearTimeout(this.moveAnimTimer);
     const finish = (): void => {
       this.el.remove();
       this.fx.el.remove();
+      this.rotateFx.el.remove();
+      this.moveFx.el.remove();
     };
     if (prefersReducedMotion()) {
       finish();
