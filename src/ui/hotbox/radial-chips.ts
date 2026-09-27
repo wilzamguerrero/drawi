@@ -54,6 +54,10 @@ interface ChipHost {
   trySnap(chip: RadialChip): void;
   remove(chip: RadialChip): void;
   reopenMenu(path: number[], x: number, y: number): void;
+  /** Trozos del mismo cluster que `chip` (incluido él); solo él si está suelto. */
+  cluster(chip: RadialChip): RadialChip[];
+  /** ¿`chip` está conectado a otros (cluster de ≥2)? Para el botón de mover el grupo. */
+  isClustered(chip: RadialChip): boolean;
 }
 
 /**
@@ -134,6 +138,7 @@ export class RadialChips implements ChipHost {
   /** Al empezar a mover un trozo se desengancha de su cluster (se recalcula al soltar). */
   detach(chip: RadialChip): void {
     chip.clusterId = null;
+    this.refreshHandles();
   }
 
   /** Al soltar un trozo movido: si su arco cae cerca de otro, reforma anillo. */
@@ -151,6 +156,7 @@ export class RadialChips implements ChipHost {
       }
     }
     if (best) this.attach(chip, best);
+    this.refreshHandles();
     this.scheduleSave();
   }
 
@@ -200,11 +206,31 @@ export class RadialChips implements ChipHost {
   remove(chip: RadialChip): void {
     chip.destroy();
     this.chips.delete(chip.id);
+    this.refreshHandles();
     this.scheduleSave();
   }
 
   reopenMenu(path: number[], x: number, y: number): void {
     this.onReopenMenu?.(path, x, y);
+  }
+
+  /** Trozos del mismo cluster que `chip` (incluido él). Si está suelto (sin
+      clusterId), solo él. Comparten `cx,cy` y banda, así que rotan/se mueven juntos. */
+  cluster(chip: RadialChip): RadialChip[] {
+    if (!chip.clusterId) return [chip];
+    return [...this.chips.values()].filter((c) => c.clusterId === chip.clusterId);
+  }
+
+  /** ¿Conectado a otros? Un cluster cuenta como tal desde 2 miembros: es lo que
+      decide que aparezca el botón de mover el grupo entero. */
+  isClustered(chip: RadialChip): boolean {
+    return chip.clusterId !== null && this.cluster(chip).length >= 2;
+  }
+
+  /** Refresca en todos los trozos qué controles se ven (el de mover el grupo solo
+      aparece en trozos conectados). Se llama tras cualquier cambio de cluster. */
+  private refreshHandles(): void {
+    for (const chip of this.chips.values()) chip.updateHandles(this.isClustered(chip));
   }
 
   // -------------------------------------------------------- sync / persistencia
@@ -249,6 +275,7 @@ export class RadialChips implements ChipHost {
       const chip = this.createChip(rec, node);
       chip.reveal(); // ya estaba: aparece sin la animación de nacimiento
     }
+    this.refreshHandles();
   }
 
   private save(): void {
@@ -303,8 +330,10 @@ class RadialChip {
   private svg: SVGSVGElement;
   private sectorPath: SVGPathElement;
   private label: HTMLElement;
+  private rotateDot: HTMLElement;
   private moveDot: HTMLElement;
   private closeDot: HTMLElement;
+  private groupMoveDot: HTMLElement;
   private dial: { fill: SVGPathElement; thumb: SVGPathElement } | null = null;
   private closing = false;
 
@@ -343,15 +372,23 @@ class RadialChip {
     }
 
     this.label = el("div", { class: "rm-chip-label" });
+    // Punticos de materia alrededor del borde exterior del arco. Rotar (izquierda)
+    // gira el trozo —o todo el cluster— en su círculo; mover reubica este trozo;
+    // cerrar lo destruye; mover-grupo (derecha, solo si está conectado) arrastra el
+    // cluster entero sin desengancharlo.
+    this.rotateDot = el("button", { class: "rm-chip-dot rm-chip-rotate materia-blob", type: "button", title: "Rotar", html: icon("rotate") });
     this.moveDot = el("button", { class: "rm-chip-dot rm-chip-move materia-blob", type: "button", title: "Mover", html: icon("move") });
     this.closeDot = el("button", { class: "rm-chip-dot rm-chip-close materia-blob", type: "button", title: "Cerrar", html: icon("close") });
+    this.groupMoveDot = el("button", { class: "rm-chip-dot rm-chip-group materia-blob is-hidden", type: "button", title: "Mover grupo", html: icon("grip") });
 
     // Nace oculto (materia-hidden): las partículas lo forman antes de que entre.
     this.el = el("div", { class: "rm-chip materia-hidden" }, [
       this.svg as unknown as HTMLElement,
       this.label,
+      this.rotateDot,
       this.moveDot,
       this.closeDot,
+      this.groupMoveDot,
     ]);
 
     this.fillLabel();
@@ -383,7 +420,9 @@ class RadialChip {
   }
 
   private wireEvents(): void {
+    this.rotateDot.addEventListener("pointerdown", (e) => this.beginRotate(e));
     this.moveDot.addEventListener("pointerdown", (e) => this.beginMove(e));
+    this.groupMoveDot.addEventListener("pointerdown", (e) => this.beginGroupMove(e));
     this.closeDot.addEventListener("click", (e) => {
       e.preventDefault();
       this.host.remove(this);
@@ -443,20 +482,33 @@ class RadialChip {
     this.positionLabel();
   }
 
-  /** Coloca los dos punticos pegados al borde exterior-medio del arco, separados en
-      tangente (uno a cada lado del punto medio). Coordenadas locales del elemento. */
+  /** Coloca los punticos en fila tangente al borde exterior-medio del arco. De un
+      lado al otro: rotar (izquierda), mover, cerrar, mover-grupo (derecha). El de
+      grupo solo se ve conectado, pero conserva su hueco reservado a la derecha.
+      Coordenadas locales del elemento. */
   private positionHandles(): void {
     const amid = (this.a0 + this.a1) / 2;
     const r = this.r1 + 18;
     const bx = this.r1 + Math.cos(amid) * r;
     const by = this.r1 + Math.sin(amid) * r;
+    // Dirección tangente al arco (izquierda→derecha respecto a su inclinación).
     const tx = -Math.sin(amid);
     const ty = Math.cos(amid);
-    const sep = 15;
-    this.moveDot.style.left = `${bx - tx * sep}px`;
-    this.moveDot.style.top = `${by - ty * sep}px`;
-    this.closeDot.style.left = `${bx + tx * sep}px`;
-    this.closeDot.style.top = `${by + ty * sep}px`;
+    const step = 32;
+    const place = (dot: HTMLElement, slot: number): void => {
+      dot.style.left = `${bx + tx * slot * step}px`;
+      dot.style.top = `${by + ty * slot * step}px`;
+    };
+    place(this.rotateDot, -1.5);
+    place(this.moveDot, -0.5);
+    place(this.closeDot, 0.5);
+    place(this.groupMoveDot, 1.5);
+  }
+
+  /** Muestra u oculta el puntico de mover el grupo según si el trozo está
+      conectado a otros (lo llama el gestor tras cualquier cambio de cluster). */
+  updateHandles(clustered: boolean): void {
+    this.groupMoveDot.classList.toggle("is-hidden", !clustered);
   }
 
   /** Coloca la etiqueta (valor/icono) en el medio del arco (coords locales). */
@@ -532,6 +584,66 @@ class RadialChip {
       this.isDragging = false;
       this.el.classList.remove("is-moving");
       this.host.trySnap(this);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  /** Rota el trozo en su círculo (gira `a0,a1` alrededor de `cx,cy`). Si está
+      conectado, gira TODO el cluster el mismo delta: como comparten centro, basta
+      sumar el mismo ángulo a cada miembro. Así el usuario coloca la pieza —o el
+      anillo entero— arriba, a un lado o donde le sea cómodo. */
+  private beginRotate(e: PointerEvent): void {
+    e.preventDefault();
+    const members = this.host.cluster(this);
+    const start = members.map((m) => ({ m, a0: m.a0, a1: m.a1 }));
+    for (const m of members) m.isDragging = true;
+    this.el.classList.add("is-rotating");
+    // Ángulo inicial del cursor respecto al centro (compartido por el cluster).
+    const a0 = Math.atan2(e.clientY - this.cy, e.clientX - this.cx);
+    const move = (ev: PointerEvent): void => {
+      const a = Math.atan2(ev.clientY - this.cy, ev.clientX - this.cx);
+      const d = a - a0;
+      for (const s of start) {
+        s.m.setAngles(s.a0 + d, s.a1 + d);
+        s.m.render();
+      }
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      for (const m of members) m.isDragging = false;
+      this.el.classList.remove("is-rotating");
+      this.host.scheduleSave();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  /** Arrastra el CLUSTER entero por el puntico derecho: traslada el centro virtual
+      de todos los miembros el mismo offset, sin desengancharlos (siguen pegados). */
+  private beginGroupMove(e: PointerEvent): void {
+    e.preventDefault();
+    const members = this.host.cluster(this);
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const start = members.map((m) => ({ m, cx: m.cx, cy: m.cy }));
+    for (const m of members) m.isDragging = true;
+    this.el.classList.add("is-moving");
+    const move = (ev: PointerEvent): void => {
+      const dx = ev.clientX - sx;
+      const dy = ev.clientY - sy;
+      for (const s of start) {
+        s.m.adoptCenter(s.cx + dx, s.cy + dy);
+        s.m.render();
+      }
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      for (const m of members) m.isDragging = false;
+      this.el.classList.remove("is-moving");
+      this.host.scheduleSave();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);

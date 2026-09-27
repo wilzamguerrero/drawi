@@ -155,8 +155,28 @@
   cursor: grab;
 }
 
-.rm-chip.is-moving .rm-chip-move {
+.rm-chip.is-moving .rm-chip-move,
+.rm-chip.is-moving .rm-chip-group {
   cursor: grabbing;
+}
+
+/* Rotar: gira el trozo (o el cluster) en su círculo. Cursor de "girar". */
+.rm-chip-rotate {
+  cursor: grab;
+}
+
+.rm-chip.is-rotating .rm-chip-rotate {
+  cursor: grabbing;
+}
+
+/* Mover grupo: arrastra todos los trozos conectados a la vez. Solo visible en un
+   cluster (≥2); oculto se quita del layout para no dejar un hueco fantasma. */
+.rm-chip-group {
+  cursor: grab;
+}
+
+.rm-chip-dot.is-hidden {
+  display: none;
 }
 
 .rm-chip-close {
