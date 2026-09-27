@@ -194,8 +194,78 @@
   }
 }
 
-/* Sin movimiento: nada de ondulado de materia ni escalados de entrada; el
-   long-press y el arrastre siguen operativos, solo desaparece el adorno. */
+/* ============================================================
+   Núcleo (hub) de un grupo multinivel: vive en el centro compartido (la zona
+   interior vacía, r < 60) y agrupa mover + rotar de TODO el conjunto de aros.
+   Reutiliza el look de los punticos de trozo (.rm-chip-dot). Ver RingHub en
+   src/ui/hotbox/radial-chips.ts.
+   ============================================================ */
+
+/* Contenedor centrado en cx,cy (lo coloca JS). No captura el puntero salvo en sus
+   dos botones. Apila mover arriba y rotar abajo, juntos en el hueco central. */
+.rm-hub {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 1;
+}
+
+/* Los dos punticos: mismo negro, sombra y tamaño que los de un trozo. */
+.rm-hub-dot {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #161619;
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  transition: transform 0.16s ease, background 0.16s ease;
+}
+
+.rm-hub-dot svg {
+  width: 16px;
+  height: 16px;
+}
+
+.rm-hub-dot:hover {
+  background: #202027;
+}
+
+.rm-hub-move {
+  cursor: grab;
+}
+
+.rm-hub.is-moving .rm-hub-move {
+  cursor: grabbing;
+}
+
+.rm-hub-rotate {
+  cursor: grab;
+}
+
+.rm-hub.is-rotating .rm-hub-rotate {
+  cursor: grabbing;
+}
+
+/* Sin movimiento: sin ondulado de materia; los gestos siguen operativos. */
+@media (prefers-reduced-motion: reduce) {
+  .rm-hub-dot {
+    animation: none;
+    border-radius: 50%;
+  }
+}
+
+/* ============================================================ */
+
 @media (prefers-reduced-motion: reduce) {
   .rm-chip,
   .rm-chip.materia-hidden,

@@ -24,30 +24,43 @@ const NS = "http://www.w3.org/2000/svg";
  * arc-geometry.ts, así ambos dibujan la misma tajada sin duplicar matemática.
  */
 
-// Cada trozo CONSERVA los radios y el ángulo del sector del que salió: nace
-// idéntico a como estaba en el menú (misma banda, mismo tamaño, misma
-// inclinación), no normalizado. Los radios viajan por trozo (r0/r1); aquí solo
-// quedan las constantes comunes al pegado.
+// Los trozos son MODULARES: todos nacen de la misma medida (banda y ancho angular)
+// y compactos, para que sean baldosas acoplables. La banda no viaja por trozo: se
+// DERIVA del nivel concéntrico dentro de su grupo (ver `RadialChip.r0/r1`).
+/** Radio interior del nivel 0 (el aro más interno de un grupo), px. */
+const CHIP_R0_BASE = 60;
+/** Grosor de cada aro (r1 − r0), px. Igual en todos los niveles. */
+const CHIP_BAND = 34;
+/** Hueco radial entre niveles concéntricos, px. */
+const LEVEL_GAP = 8;
+/** Ancho angular uniforme de cada trozo (radianes ≈ 40°). */
+const CHIP_ANGLE = 0.7;
 /** Mismo hueco visual entre sectores que el menú (px). */
 const CHIP_GAP_PX = 7;
-/** Distancia (px) entre puntos medios de arco para que dos trozos se peguen. */
-const SNAP_DIST = 78;
+/** Margen (px) sobre el radio externo del grupo para que un aro se anide en él (centro a centro). */
+const GROUP_SNAP = 40;
 /** Cerrar un trozo: mantenerlo pulsado quieto este tiempo (mismo gesto y umbrales
     que el long-press que lo arrancó del menú, ver radial-menu.ts). */
 const CLOSE_HOLD_MS = 3000;
 const CLOSE_MOVE_TOL = 8;
-const STORE_KEY = "zence.radialChips.v2";
+const STORE_KEY = "zence.radialChips.v3";
+
+/** Radio interior de un nivel concéntrico. */
+function levelR0(level: number): number {
+  return CHIP_R0_BASE + level * (CHIP_BAND + LEVEL_GAP);
+}
 
 /** Lo que se guarda de cada trozo en localStorage. */
 interface ChipRecord {
   id: string;
   nodeId: string;
   path: number[];
-  clusterId: string | null;
+  /** Grupo (ensamblaje) al que pertenece: comparten centro virtual `cx,cy`. */
+  groupId: string;
+  /** Anillo concéntrico dentro del grupo (0 = el más interior). La banda se deriva. */
+  level: number;
   cx: number;
   cy: number;
-  r0: number;
-  r1: number;
   a0: number;
   a1: number;
 }
@@ -55,12 +68,20 @@ interface ChipRecord {
 /** Puertos que el trozo usa para hablar con su gestor. */
 interface ChipHost {
   scheduleSave(): void;
-  detach(chip: RadialChip): void;
   trySnap(chip: RadialChip): void;
   remove(chip: RadialChip): void;
   reopenMenu(path: number[], x: number, y: number): void;
-  /** Trozos del mismo cluster que `chip` (incluido él); solo él si está suelto. */
-  cluster(chip: RadialChip): RadialChip[];
+  /** Trozos del mismo aro que `chip` (mismo grupo Y nivel; incluido él). */
+  ring(chip: RadialChip): RadialChip[];
+  /** Trozos del mismo grupo que `chip` (todos los niveles; incluido él). */
+  group(chip: RadialChip): RadialChip[];
+}
+
+/** Puertos que el núcleo (hub) usa para operar sobre todo su grupo. */
+interface HubHost {
+  groupMembers(groupId: string): RadialChip[];
+  repositionHub(groupId: string, cx: number, cy: number): void;
+  scheduleSave(): void;
 }
 
 /**
@@ -69,12 +90,14 @@ interface ChipHost {
  * arrancar del menú, los re-sincroniza con el editor, los pega al acercarlos y los
  * guarda/restaura de localStorage.
  */
-export class RadialChips implements ChipHost {
+export class RadialChips implements ChipHost, HubHost {
   readonly el: HTMLElement;
 
   private editor: Editor;
   private hooks: MenuHooks;
   private chips = new Map<string, RadialChip>();
+  /** Núcleos de grupo (uno por grupo multinivel), indexados por groupId. */
+  private hubs = new Map<string, RingHub>();
   private saveTimer = 0;
   private seq = 0;
 
@@ -99,26 +122,26 @@ export class RadialChips implements ChipHost {
   /** Crea un trozo a partir del descriptor que emite el menú al arrancar un sector. */
   spawn(desc: TearOffDescriptor): void {
     const id = `chip-${desc.node.id}-${++this.seq}-${Date.now().toString(36)}`;
-    const width = desc.angleWidth;
-    // Nace IDÉNTICO al sector: mismos radios, mismo ángulo (misma inclinación) y
-    // en el mismo sitio. `desc.viewport` es el punto medio del arco; el centro
-    // virtual se deduce restando el vector radio medio en ese ángulo original.
+    // Nace MODULAR: banda del nivel 0 y ancho uniforme (`CHIP_ANGLE`), no el del
+    // sector de origen. Se centra donde estaba (desc.angleMid) y el centro virtual
+    // se deduce restando el vector radio-medio del nivel 0 en ese ángulo.
     const amid = desc.angleMid;
-    const mid = (desc.innerR + desc.outerR) / 2;
+    const mid = levelR0(0) + CHIP_BAND / 2;
     const rec: ChipRecord = {
       id,
       nodeId: desc.node.id,
       path: desc.path,
-      clusterId: null,
+      groupId: id, // suelto: su propio grupo de uno
+      level: 0,
       cx: desc.viewport.x - Math.cos(amid) * mid,
       cy: desc.viewport.y - Math.sin(amid) * mid,
-      r0: desc.innerR,
-      r1: desc.outerR,
-      a0: amid - width / 2,
-      a1: amid + width / 2,
+      a0: amid - CHIP_ANGLE / 2,
+      a1: amid + CHIP_ANGLE / 2,
     };
-    const chip = this.createChip(rec, desc.node);
-    chip.enter();
+    this.createChip(rec, desc.node);
+    this.refreshHandles();
+    // enter() tras crear para que las partículas se junten en el arco ya normalizado.
+    this.chips.get(id)?.enter();
     this.scheduleSave();
   }
 
@@ -138,77 +161,126 @@ export class RadialChips implements ChipHost {
     this.saveTimer = window.setTimeout(() => this.save(), 400);
   }
 
-  /** Al empezar a mover un trozo se desengancha de su cluster (se recalcula al soltar). */
-  detach(chip: RadialChip): void {
-    chip.clusterId = null;
-    this.refreshHandles();
-  }
-
-  /** Al soltar un trozo movido: si su arco cae cerca de otro, reforma anillo. */
+  /**
+   * Al soltar un aro/chip movido: si su centro cae cerca de otro GRUPO, se anida en
+   * él como un nivel concéntrico (interior/mismo/exterior según el radio de caída);
+   * si no, queda como grupo propio. El nivel se decide por el radio, y tras cualquier
+   * cambio se renormalizan los niveles del grupo a 0..k.
+   */
   trySnap(chip: RadialChip): void {
-    const mid = chip.arcMidPoint();
-    let best: RadialChip | null = null;
-    let bestDist = SNAP_DIST;
+    const dragged = this.group(chip);
+    const draggedIds = new Set(dragged.map((c) => c.id));
+
+    // Grupo destino: el chip más cercano (por su centro) que NO sea del grupo
+    // arrastrado y quede dentro del alcance de anidado.
+    let target: RadialChip | null = null;
+    let bestDist = Infinity;
     for (const other of this.chips.values()) {
-      if (other === chip) continue;
-      const om = other.arcMidPoint();
-      const d = Math.hypot(mid.x - om.x, mid.y - om.y);
-      if (d < bestDist) {
+      if (draggedIds.has(other.id)) continue;
+      const d = Math.hypot(chip.cx - other.cx, chip.cy - other.cy);
+      const reach = other.r1 + GROUP_SNAP;
+      if (d < reach && d < bestDist) {
         bestDist = d;
-        best = other;
+        target = other;
       }
     }
-    if (best) this.attach(chip, best);
+
+    if (target) {
+      this.nest(dragged, target, chip.arcMidPoint());
+    } else {
+      // Suelto: grupo propio; renormaliza por si venía de otro grupo.
+      this.renormalizeLevels(chip.groupId);
+    }
     this.refreshHandles();
     this.scheduleSave();
   }
 
   /**
-   * Pega `chip` al cluster de `anchor`: adopta su centro virtual Y su banda
-   * (radios) y se coloca en un extremo libre del anillo, borde con borde
-   * (a0 = extremo + hueco), conservando su ancho. Al reformar el anillo todos
-   * comparten centro y banda y ocupan ángulos contiguos, así que se ven como
-   * sectores del menú radial; un cluster inclinado impone su inclinación.
+   * Anida `dragged` (un aro: chips de un mismo grupo+nivel) en el grupo de `target`.
+   * El nivel destino lo decide `dropPoint`: si su radio cae en la banda de un nivel
+   * existente, se une a ese aro (contiguo, borde con borde); si es más interior o más
+   * exterior que los niveles actuales, entra como un nivel nuevo. Todos adoptan el
+   * centro y el groupId del destino; luego se renormalizan los niveles.
    */
-  private attach(chip: RadialChip, anchor: RadialChip): void {
-    const clusterId = anchor.clusterId ?? anchor.id;
-    anchor.clusterId = clusterId;
+  private nest(dragged: RadialChip[], target: RadialChip, dropPoint: { x: number; y: number }): void {
+    const gcx = target.cx;
+    const gcy = target.cy;
+    const gid = target.groupId;
+    const groupChips = this.group(target);
+    let maxL = 0;
+    for (const c of groupChips) maxL = Math.max(maxL, c.level);
 
-    // Rango angular ya ocupado por el cluster (sin contar al recién llegado).
-    const members = [...this.chips.values()].filter(
-      (c) => c !== chip && (c === anchor || c.clusterId === clusterId),
-    );
-    let minA = Infinity;
-    let maxA = -Infinity;
-    for (const m of members) {
-      minA = Math.min(minA, m.a0);
-      maxA = Math.max(maxA, m.a1);
-    }
+    const levelPitch = CHIP_BAND + LEVEL_GAP;
+    const dR = Math.hypot(dropPoint.x - gcx, dropPoint.y - gcy);
+    const approx = Math.round((dR - CHIP_R0_BASE - CHIP_BAND / 2) / levelPitch);
 
-    const width = chip.a1 - chip.a0;
-    const gapAngle = CHIP_GAP_PX / anchor.mid;
-
-    // ¿Por qué extremo entra? El más cercano al ángulo donde se soltó (respecto al
-    // centro adoptado).
-    const mid = chip.arcMidPoint();
-    const dropAngle = Math.atan2(mid.y - anchor.cy, mid.x - anchor.cx);
-
-    chip.adoptCenter(anchor.cx, anchor.cy);
-    // Al unirse a un anillo adopta su banda para que los sectores queden
-    // alineados; suelto, cada trozo conserva la suya (la del menú).
-    chip.adoptBand(anchor.r0, anchor.r1);
-    chip.clusterId = clusterId;
-    if (angDist(dropAngle, maxA) <= angDist(dropAngle, minA)) {
-      chip.setAngles(maxA + gapAngle, maxA + gapAngle + width);
+    let newLevel: number;
+    let joinExisting: boolean;
+    if (approx < 0) {
+      newLevel = -1; // interior: se renormaliza a 0 empujando el resto hacia afuera
+      joinExisting = false;
+    } else if (approx > maxL) {
+      newLevel = maxL + 1; // exterior
+      joinExisting = false;
     } else {
-      chip.setAngles(minA - gapAngle - width, minA - gapAngle);
+      newLevel = approx; // nivel existente (los niveles son contiguos 0..maxL)
+      joinExisting = true;
     }
-    chip.render();
+
+    if (joinExisting) {
+      // Extremo angular libre del aro destino en ese nivel.
+      const ring = groupChips.filter((c) => c.level === newLevel);
+      let minA = Infinity;
+      let maxA = -Infinity;
+      for (const c of ring) {
+        minA = Math.min(minA, c.a0);
+        maxA = Math.max(maxA, c.a1);
+      }
+      const gapAngle = CHIP_GAP_PX / (levelR0(newLevel) + CHIP_BAND / 2);
+      // Coloca el bloque arrastrado contiguo al extremo más cercano a la caída,
+      // conservando su reparto angular interno.
+      const blockMin = Math.min(...dragged.map((c) => c.a0));
+      const dropAngle = Math.atan2(dropPoint.y - gcy, dropPoint.x - gcx);
+      const offset = angDist(dropAngle, maxA) <= angDist(dropAngle, minA)
+        ? maxA + gapAngle - blockMin
+        : minA - gapAngle - Math.max(...dragged.map((c) => c.a1));
+      for (const c of dragged) {
+        c.groupId = gid;
+        c.setLevel(newLevel);
+        c.adoptCenter(gcx, gcy);
+        c.setAngles(c.a0 + offset, c.a1 + offset);
+      }
+    } else {
+      // Nivel nuevo (interior/exterior): adopta centro y nivel, conserva ángulos.
+      for (const c of dragged) {
+        c.groupId = gid;
+        c.setLevel(newLevel);
+        c.adoptCenter(gcx, gcy);
+      }
+    }
+
+    this.renormalizeLevels(gid);
+  }
+
+  /** Compacta los niveles de un grupo a 0..k (sin huecos) y repinta. Mantiene las
+      bandas positivas y juntas tras insertar niveles interiores/exteriores. */
+  private renormalizeLevels(groupId: string): void {
+    const members = [...this.chips.values()].filter((c) => c.groupId === groupId);
+    if (members.length === 0) return;
+    const levels = [...new Set(members.map((c) => c.level))].sort((a, b) => a - b);
+    const remap = new Map<number, number>();
+    levels.forEach((lv, i) => remap.set(lv, i));
+    for (const c of members) {
+      c.setLevel(remap.get(c.level) ?? 0);
+      c.render();
+    }
   }
 
   remove(chip: RadialChip): void {
+    const gid = chip.groupId;
     chip.destroy();
     this.chips.delete(chip.id);
+    this.renormalizeLevels(gid);
     this.refreshHandles();
     this.scheduleSave();
   }
@@ -217,38 +289,87 @@ export class RadialChips implements ChipHost {
     this.onReopenMenu?.(path, x, y);
   }
 
-  /** Trozos del mismo cluster que `chip` (incluido él). Si está suelto (sin
-      clusterId), solo él. Comparten `cx,cy` y banda, así que rotan/se mueven juntos. */
-  cluster(chip: RadialChip): RadialChip[] {
-    if (!chip.clusterId) return [chip];
-    return [...this.chips.values()].filter((c) => c.clusterId === chip.clusterId);
+  /** Trozos del mismo ARO que `chip`: mismo grupo Y nivel (incluido él). Comparten
+      centro y banda y ocupan ángulos contiguos; rotan/se mueven como una unidad. */
+  ring(chip: RadialChip): RadialChip[] {
+    return [...this.chips.values()].filter(
+      (c) => c.groupId === chip.groupId && c.level === chip.level,
+    );
+  }
+
+  /** Trozos del mismo GRUPO que `chip` (todos los niveles). Comparten centro. */
+  group(chip: RadialChip): RadialChip[] {
+    return [...this.chips.values()].filter((c) => c.groupId === chip.groupId);
+  }
+
+  /** Miembros de un grupo por id (para el hub). */
+  groupMembers(groupId: string): RadialChip[] {
+    return [...this.chips.values()].filter((c) => c.groupId === groupId);
   }
 
   /**
-   * Refresca qué punticos enseña cada trozo. La regla imita al menú/anillo: los
-   * controles solo viven en los EXTREMOS del conjunto. Suelto, un trozo es su propio
-   * extremo (rotar a un lado, mover al otro). Conectados, solo el trozo del extremo
-   * inicial (menor a0) enseña rotar y solo el del extremo final (mayor a1) enseña
-   * mover; los de en medio no llevan ninguno. Rotar/mover operan sobre todo el
-   * cluster (comparten centro), así que basta un control por extremo.
+   * Refresca los controles. Regla:
+   * - Por cada ARO (grupo+nivel): rotar en el extremo inicial (menor a0). El mover del
+   *   aro solo aparece si el grupo es de UN nivel (extremo final, mayor a1).
+   * - Si el grupo tiene VARIOS niveles: aparece un núcleo (hub) central que mueve/rota
+   *   todo el grupo, y el mover por-aro desaparece (el rotar por-aro se mantiene).
    */
   private refreshHandles(): void {
-    const byCluster = new Map<string, RadialChip[]>();
+    const byGroup = new Map<string, RadialChip[]>();
     for (const chip of this.chips.values()) {
-      const key = chip.clusterId ?? chip.id; // suelto = su propio "cluster" de 1
-      const arr = byCluster.get(key) ?? [];
+      const arr = byGroup.get(chip.groupId) ?? [];
       arr.push(chip);
-      byCluster.set(key, arr);
+      byGroup.set(chip.groupId, arr);
     }
-    for (const arr of byCluster.values()) {
-      let start = arr[0];
-      let end = arr[0];
+
+    const liveGroups = new Set<string>();
+    for (const [gid, arr] of byGroup) {
+      liveGroups.add(gid);
+      const levels = new Set(arr.map((c) => c.level));
+      const multiLevel = levels.size > 1;
+
+      // Extremos por nivel.
+      const startByLevel = new Map<number, RadialChip>();
+      const endByLevel = new Map<number, RadialChip>();
       for (const c of arr) {
-        if (c.a0 < start.a0) start = c;
-        if (c.a1 > end.a1) end = c;
+        const s = startByLevel.get(c.level);
+        if (!s || c.a0 < s.a0) startByLevel.set(c.level, c);
+        const e = endByLevel.get(c.level);
+        if (!e || c.a1 > e.a1) endByLevel.set(c.level, c);
       }
-      for (const c of arr) c.updateHandles(c === start, c === end);
+      for (const c of arr) {
+        const showRotate = startByLevel.get(c.level) === c;
+        const showMove = !multiLevel && endByLevel.get(c.level) === c;
+        c.updateHandles(showRotate, showMove);
+      }
+
+      // Hub del grupo: solo con ≥2 niveles. Se posiciona en el centro compartido.
+      if (multiLevel) {
+        let hub = this.hubs.get(gid);
+        if (!hub) {
+          hub = new RingHub(gid, this);
+          this.hubs.set(gid, hub);
+          this.el.appendChild(hub.el);
+        }
+        hub.position(arr[0].cx, arr[0].cy);
+      } else {
+        this.hubs.get(gid)?.destroy();
+        this.hubs.delete(gid);
+      }
     }
+
+    // Quita hubs de grupos que ya no existen.
+    for (const [gid, hub] of this.hubs) {
+      if (!liveGroups.has(gid)) {
+        hub.destroy();
+        this.hubs.delete(gid);
+      }
+    }
+  }
+
+  /** Reposiciona el hub de un grupo (lo llama el propio grupo al moverse por el hub). */
+  repositionHub(groupId: string, cx: number, cy: number): void {
+    this.hubs.get(groupId)?.position(cx, cy);
   }
 
   // -------------------------------------------------------- sync / persistencia
@@ -270,8 +391,9 @@ export class RadialChips implements ChipHost {
   }
 
   /** Restaura los trozos guardados: re-resuelve cada nodo por path/id y crea los que
-      resuelvan, descartando el resto en silencio. Los clusters reaparecen porque el
-      centro y los ángulos contiguos van guardados. */
+      resuelvan, descartando el resto en silencio. Los grupos y niveles reaparecen
+      porque `groupId`, `level` y los ángulos contiguos van guardados; los hubs los
+      recrea `refreshHandles`. */
   restore(): void {
     let recs: ChipRecord[];
     try {
@@ -286,8 +408,8 @@ export class RadialChips implements ChipHost {
     const tree = this.tree();
     for (const rec of recs) {
       if (!rec || !Array.isArray(rec.path)) continue;
-      // Descarta registros sin banda válida (formato viejo o corrupto).
-      if (!Number.isFinite(rec.r0) || !Number.isFinite(rec.r1)) continue;
+      // Descarta registros sin grupo/nivel válidos (formato viejo o corrupto).
+      if (typeof rec.groupId !== "string" || !Number.isFinite(rec.level)) continue;
       const node = resolveNode(tree, rec.path, rec.nodeId);
       if (!node) continue;
       const chip = this.createChip(rec, node);
@@ -309,28 +431,42 @@ export class RadialChips implements ChipHost {
     window.clearTimeout(this.saveTimer);
     for (const chip of this.chips.values()) chip.destroy();
     this.chips.clear();
+    for (const hub of this.hubs.values()) hub.destroy();
+    this.hubs.clear();
     this.el.remove();
   }
 }
 
 /**
- * Un trozo suelto: la MISMA tajada anular del menú (conserva sus radios r0..r1 y
- * su ángulo) más sus dos punticos de materia (rotar / mover) y, si es un dial,
- * el relleno + la aguja que lo hacen un slider con forma de arco. Guarda su
- * centro virtual (`cx,cy`), su banda (`r0,r1`) y ángulos (`a0,a1`) en coordenadas
- * de viewport. Al pegarse a un anillo adopta la banda del cluster.
+ * Un trozo suelto: la MISMA tajada anular del menú, pero MODULAR — su banda ya no
+ * viaja por trozo, se DERIVA de su nivel concéntrico dentro del grupo (`r0`/`r1` son
+ * getters de `level`), así todos los trozos miden lo mismo. Guarda su grupo
+ * (`groupId`, comparte centro), su nivel (`level`), su centro virtual (`cx,cy`) y sus
+ * ángulos (`a0,a1`) en coordenadas de viewport. Lleva dos punticos de materia
+ * (rotar / mover) y, si es un dial, el relleno + la aguja que lo hacen un slider.
  */
 class RadialChip {
   readonly id: string;
   readonly nodeId: string;
   readonly path: number[];
-  clusterId: string | null;
+  /** Grupo (ensamblaje) al que pertenece: sus miembros comparten `cx,cy`. */
+  groupId: string;
+  /** Anillo concéntrico dentro del grupo (0 = más interior). La banda se deriva. */
+  level: number;
   cx: number;
   cy: number;
-  r0: number;
-  r1: number;
   a0: number;
   a1: number;
+
+  /** Radio interior, derivado del nivel (baldosas idénticas por nivel). */
+  get r0(): number {
+    return levelR0(this.level);
+  }
+
+  /** Radio exterior, derivado del nivel. */
+  get r1(): number {
+    return this.r0 + CHIP_BAND;
+  }
 
   /** Radio medio (donde va la etiqueta y el punto de pegado). */
   get mid(): number {
@@ -359,11 +495,10 @@ class RadialChip {
     this.id = rec.id;
     this.nodeId = rec.nodeId;
     this.path = [...rec.path];
-    this.clusterId = rec.clusterId;
+    this.groupId = rec.groupId;
+    this.level = rec.level;
     this.cx = rec.cx;
     this.cy = rec.cy;
-    this.r0 = rec.r0;
-    this.r1 = rec.r1;
     this.a0 = rec.a0;
     this.a1 = rec.a1;
     this.node = node;
@@ -392,8 +527,8 @@ class RadialChip {
     this.label = el("div", { class: "rm-chip-label" });
     // Dos punticos de materia en los bordes rectos del sector: rotar (borde a0,
     // "izquierda") y mover (borde a1, "derecha"). Rotar y mover operan sobre todo el
-    // cluster cuando está conectado; suelto, sobre el trozo. No hay botón de cerrar:
-    // se cierra manteniéndolo pulsado quieto ~3 s, el mismo gesto con que se arrancó.
+    // ARO (mismo grupo+nivel). No hay botón de cerrar: se cierra manteniéndolo pulsado
+    // quieto ~3 s, el mismo gesto con que se arrancó.
     this.rotateDot = el("button", { class: "rm-chip-dot rm-chip-rotate materia-blob", type: "button", title: "Rotar", html: icon("rotate") });
     this.moveDot = el("button", { class: "rm-chip-dot rm-chip-move materia-blob", type: "button", title: "Mover", html: icon("grip") });
 
@@ -608,14 +743,12 @@ class RadialChip {
     this.render();
   }
 
-  /** Arrastre por el puntico de mover. Si el trozo está CONECTADO, arrastra todo el
-      cluster junto (mismo offset a cada centro, sin desengancharlo). Si está suelto,
-      se desengancha, se mueve solo e intenta pegarse al soltar. */
+  /** Arrastre por el puntico de mover. Mueve todo el ARO (mismo grupo+nivel) como una
+      unidad: como el moveDot solo aparece en grupos de UN nivel, el aro es el grupo
+      entero. Al soltar, `trySnap` decide si se anida en otro grupo o queda suelto. */
   private beginMove(e: PointerEvent): void {
     e.preventDefault();
-    const members = this.host.cluster(this);
-    const solo = members.length <= 1;
-    if (solo) this.host.detach(this);
+    const members = this.host.ring(this);
     const sx = e.clientX;
     const sy = e.clientY;
     const start = members.map((m) => ({ m, cx: m.cx, cy: m.cy }));
@@ -634,24 +767,23 @@ class RadialChip {
       window.removeEventListener("pointerup", up);
       for (const m of members) m.isDragging = false;
       this.el.classList.remove("is-moving");
-      if (solo) this.host.trySnap(this);
-      else this.host.scheduleSave();
+      this.host.trySnap(this);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
 
-  /** Rota el trozo en su círculo (gira `a0,a1` alrededor de `cx,cy`). Si está
-      conectado, gira TODO el cluster el mismo delta: como comparten centro, basta
-      sumar el mismo ángulo a cada miembro. Así el usuario coloca la pieza —o el
-      anillo entero— arriba, a un lado o donde le sea cómodo. */
+  /** Rota el ARO (mismo grupo+nivel) en su círculo: gira `a0,a1` alrededor del centro
+      compartido sumando el mismo delta a cada miembro. En un grupo multinivel cada aro
+      conserva su rotar, así se gira ese aro por separado dentro del grupo; el hub, en
+      cambio, gira todos los niveles a la vez. */
   private beginRotate(e: PointerEvent): void {
     e.preventDefault();
-    const members = this.host.cluster(this);
+    const members = this.host.ring(this);
     const start = members.map((m) => ({ m, a0: m.a0, a1: m.a1 }));
     for (const m of members) m.isDragging = true;
     this.el.classList.add("is-rotating");
-    // Ángulo inicial del cursor respecto al centro (compartido por el cluster).
+    // Ángulo inicial del cursor respecto al centro (compartido por el aro).
     const a0 = Math.atan2(e.clientY - this.cy, e.clientX - this.cx);
     const move = (ev: PointerEvent): void => {
       const a = Math.atan2(ev.clientY - this.cy, ev.clientX - this.cx);
@@ -677,10 +809,9 @@ class RadialChip {
     this.cy = cy;
   }
 
-  /** Adopta la banda (radios) de un anillo al pegarse a él. */
-  adoptBand(r0: number, r1: number): void {
-    this.r0 = r0;
-    this.r1 = r1;
+  /** Fija el nivel concéntrico (la banda `r0/r1` se deriva de él). */
+  setLevel(level: number): void {
+    this.level = level;
   }
 
   setAngles(a0: number, a1: number): void {
@@ -741,14 +872,109 @@ class RadialChip {
       id: this.id,
       nodeId: this.nodeId,
       path: [...this.path],
-      clusterId: this.clusterId,
+      groupId: this.groupId,
+      level: this.level,
       cx: this.cx,
       cy: this.cy,
-      r0: this.r0,
-      r1: this.r1,
       a0: this.a0,
       a1: this.a1,
     };
+  }
+}
+
+/**
+ * Núcleo (hub) de un grupo MULTINIVEL: un elemento en el centro compartido (`cx,cy`,
+ * la zona interior que queda vacía por debajo del nivel 0) con dos punticos de materia
+ * —mover y rotar— que operan sobre TODO el grupo a la vez. Aparece cuando un grupo tiene
+ * ≥2 aros anidados; en ese modo el mover por-aro desaparece (lo hace el hub) y cada aro
+ * conserva su rotar propio. Lo crea/posiciona/retira el gestor en `refreshHandles`.
+ */
+class RingHub {
+  readonly el: HTMLElement;
+  private moveDot: HTMLElement;
+  private rotateDot: HTMLElement;
+  private groupId: string;
+  private host: HubHost;
+
+  constructor(groupId: string, host: HubHost) {
+    this.groupId = groupId;
+    this.host = host;
+    this.moveDot = el("button", { class: "rm-hub-dot rm-hub-move materia-blob", type: "button", title: "Mover grupo", html: icon("grip") });
+    this.rotateDot = el("button", { class: "rm-hub-dot rm-hub-rotate materia-blob", type: "button", title: "Rotar grupo", html: icon("rotate") });
+    this.el = el("div", { class: "rm-hub" }, [this.moveDot, this.rotateDot]);
+    this.moveDot.addEventListener("pointerdown", (e) => this.beginMove(e));
+    this.rotateDot.addEventListener("pointerdown", (e) => this.beginRotate(e));
+  }
+
+  /** Coloca el hub en el centro compartido del grupo (coords de viewport). */
+  position(cx: number, cy: number): void {
+    this.el.style.left = `${cx}px`;
+    this.el.style.top = `${cy}px`;
+  }
+
+  destroy(): void {
+    this.el.remove();
+  }
+
+  /** Mover-hub: traslada el centro de TODOS los miembros del grupo el mismo offset. */
+  private beginMove(e: PointerEvent): void {
+    e.preventDefault();
+    const members = this.host.groupMembers(this.groupId);
+    if (members.length === 0) return;
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const start = members.map((m) => ({ m, cx: m.cx, cy: m.cy }));
+    for (const m of members) m.isDragging = true;
+    this.el.classList.add("is-moving");
+    const move = (ev: PointerEvent): void => {
+      const dx = ev.clientX - sx;
+      const dy = ev.clientY - sy;
+      for (const s of start) {
+        s.m.adoptCenter(s.cx + dx, s.cy + dy);
+        s.m.render();
+      }
+      this.position(start[0].cx + dx, start[0].cy + dy);
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      for (const m of members) m.isDragging = false;
+      this.el.classList.remove("is-moving");
+      this.host.scheduleSave();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  /** Rotar-hub: suma el mismo delta angular a TODOS los miembros (todos los niveles).
+      Como comparten centro, un mismo delta gira el grupo entero rígidamente. */
+  private beginRotate(e: PointerEvent): void {
+    e.preventDefault();
+    const members = this.host.groupMembers(this.groupId);
+    if (members.length === 0) return;
+    const cx = members[0].cx;
+    const cy = members[0].cy;
+    const start = members.map((m) => ({ m, a0: m.a0, a1: m.a1 }));
+    for (const m of members) m.isDragging = true;
+    this.el.classList.add("is-rotating");
+    const a0 = Math.atan2(e.clientY - cy, e.clientX - cx);
+    const move = (ev: PointerEvent): void => {
+      const a = Math.atan2(ev.clientY - cy, ev.clientX - cx);
+      const d = a - a0;
+      for (const s of start) {
+        s.m.setAngles(s.a0 + d, s.a1 + d);
+        s.m.render();
+      }
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      for (const m of members) m.isDragging = false;
+      this.el.classList.remove("is-rotating");
+      this.host.scheduleSave();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   }
 }
 
