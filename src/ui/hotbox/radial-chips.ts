@@ -565,10 +565,17 @@ class RadialChip {
     this.host = host;
 
     this.fx = new MateriaFx({ coreSize: 96, reach: 80, gatherMs: 380, scatterMs: 300 });
-    // Punticos: partículas pequeñas del tamaño del propio dot (30px), tiempos más
-    // cortos que el chip para que el aparecer/desaparecer sea ágil.
-    this.rotateFx = new MateriaFx({ coreSize: 30, reach: 26, dots: 6, gatherMs: 300, scatterMs: 260 });
-    this.moveFx = new MateriaFx({ coreSize: 30, reach: 26, dots: 6, gatherMs: 300, scatterMs: 260 });
+    // Punticos: el filtro gooey compartido (#materia-goo, blur 7px + umbral) está
+    // calibrado para masas grandes (~112px); con un `coreSize` pequeño las gotas
+    // salían de 4-10px y el blur+umbral se las comía —no se veía nada—. Así que las
+    // gotas van a una escala visible (`coreSize` grande manda su tamaño) pero SIN
+    // núcleo sólido (`solidCore:false`): solo las gotas gooey convergen/estallan
+    // alrededor del dot de 30px y luego cruzan al dot real. `reach` corto para que
+    // el revoloteo quede ceñido al puntico.
+    const dotFx = (): MateriaFx =>
+      new MateriaFx({ coreSize: 84, reach: 44, dots: 7, solidCore: false, gatherMs: 300, scatterMs: 260 });
+    this.rotateFx = dotFx();
+    this.moveFx = dotFx();
 
     this.svg = document.createElementNS(NS, "svg") as SVGSVGElement;
     this.svg.setAttribute("class", "rm-chip-svg");
