@@ -155,8 +155,7 @@
   cursor: grab;
 }
 
-.rm-chip.is-moving .rm-chip-move,
-.rm-chip.is-moving .rm-chip-group {
+.rm-chip.is-moving .rm-chip-move {
   cursor: grabbing;
 }
 
@@ -169,23 +168,30 @@
   cursor: grabbing;
 }
 
-/* Mover grupo: arrastra todos los trozos conectados a la vez. Solo visible en un
-   cluster (≥2); oculto se quita del layout para no dejar un hueco fantasma. */
-.rm-chip-group {
-  cursor: grab;
-}
-
+/* En un cluster, rotar y mover solo viven en los extremos del conjunto: los
+   punticos de los trozos internos se ocultan (y se quitan del layout). */
 .rm-chip-dot.is-hidden {
   display: none;
 }
 
-.rm-chip-close {
-  cursor: pointer;
+/* Armado del cierre por pulsación larga: mantener pulsado quieto ~3 s sobre el
+   trozo lo cierra (mismo gesto que lo arrancó del menú). El sector se tiñe de
+   acento creciendo durante esos 3 s como realimentación; al soltar o mover, se
+   quita la clase y el pulso se corta. Mismo espíritu que .rm-sector.is-arming. */
+.rm-chip.is-arming .rm-chip-sector {
+  animation: rm-chip-arming 3s linear forwards;
 }
 
-.rm-chip-close:hover {
-  background: #7a2530;
-  color: #ffd7dc;
+@keyframes rm-chip-arming {
+  0% {
+    fill: #161619;
+    stroke: #161619;
+  }
+  100% {
+    fill: #7a2530;
+    stroke: #d98a94;
+    stroke-width: 5;
+  }
 }
 
 /* Sin movimiento: nada de ondulado de materia ni escalados de entrada; el
@@ -205,5 +211,10 @@
   .rm-chip-dot {
     animation: none;
     border-radius: 50%;
+  }
+
+  /* El cierre por pulsación larga sigue funcionando; solo se quita su animación. */
+  .rm-chip.is-arming .rm-chip-sector {
+    animation: none;
   }
 }

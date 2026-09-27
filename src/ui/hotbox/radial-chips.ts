@@ -14,9 +14,10 @@ const NS = "http://www.w3.org/2000/svg";
  *
  * Al mantener pulsado un sector del menú ~3 s, éste emite un `TearOffDescriptor`
  * (ver radial-menu.ts) y aquí nace un `RadialChip`: la misma tajada anular, ahora
- * flotando sola en el viewport con dos punticos de materia (mover y cerrar). Los
- * trozos siguen VIVOS (un dial-trozo controla el editor igual que en el menú), se
- * PEGAN reformando un anillo al acercarlos, y PERSISTEN en localStorage.
+ * flotando sola en el viewport con dos punticos de materia (rotar y mover). Se cierra
+ * con el mismo gesto que lo arrancó: manteniéndolo pulsado quieto ~3 s. Los trozos
+ * siguen VIVOS (un dial-trozo controla el editor igual que en el menú), se PEGAN
+ * reformando un anillo al acercarlos, y PERSISTEN en localStorage.
  *
  * `RadialChips` es el gestor (capa flotante + creación/pegado/persistencia);
  * `RadialChip` es un trozo suelto. La geometría se comparte con el menú vía
@@ -31,6 +32,10 @@ const NS = "http://www.w3.org/2000/svg";
 const CHIP_GAP_PX = 7;
 /** Distancia (px) entre puntos medios de arco para que dos trozos se peguen. */
 const SNAP_DIST = 78;
+/** Cerrar un trozo: mantenerlo pulsado quieto este tiempo (mismo gesto y umbrales
+    que el long-press que lo arrancó del menú, ver radial-menu.ts). */
+const CLOSE_HOLD_MS = 3000;
+const CLOSE_MOVE_TOL = 8;
 const STORE_KEY = "zence.radialChips.v2";
 
 /** Lo que se guarda de cada trozo en localStorage. */
@@ -56,8 +61,6 @@ interface ChipHost {
   reopenMenu(path: number[], x: number, y: number): void;
   /** Trozos del mismo cluster que `chip` (incluido él); solo él si está suelto. */
   cluster(chip: RadialChip): RadialChip[];
-  /** ¿`chip` está conectado a otros (cluster de ≥2)? Para el botón de mover el grupo. */
-  isClustered(chip: RadialChip): boolean;
 }
 
 /**
@@ -221,16 +224,31 @@ export class RadialChips implements ChipHost {
     return [...this.chips.values()].filter((c) => c.clusterId === chip.clusterId);
   }
 
-  /** ¿Conectado a otros? Un cluster cuenta como tal desde 2 miembros: es lo que
-      decide que aparezca el botón de mover el grupo entero. */
-  isClustered(chip: RadialChip): boolean {
-    return chip.clusterId !== null && this.cluster(chip).length >= 2;
-  }
-
-  /** Refresca en todos los trozos qué controles se ven (el de mover el grupo solo
-      aparece en trozos conectados). Se llama tras cualquier cambio de cluster. */
+  /**
+   * Refresca qué punticos enseña cada trozo. La regla imita al menú/anillo: los
+   * controles solo viven en los EXTREMOS del conjunto. Suelto, un trozo es su propio
+   * extremo (rotar a un lado, mover al otro). Conectados, solo el trozo del extremo
+   * inicial (menor a0) enseña rotar y solo el del extremo final (mayor a1) enseña
+   * mover; los de en medio no llevan ninguno. Rotar/mover operan sobre todo el
+   * cluster (comparten centro), así que basta un control por extremo.
+   */
   private refreshHandles(): void {
-    for (const chip of this.chips.values()) chip.updateHandles(this.isClustered(chip));
+    const byCluster = new Map<string, RadialChip[]>();
+    for (const chip of this.chips.values()) {
+      const key = chip.clusterId ?? chip.id; // suelto = su propio "cluster" de 1
+      const arr = byCluster.get(key) ?? [];
+      arr.push(chip);
+      byCluster.set(key, arr);
+    }
+    for (const arr of byCluster.values()) {
+      let start = arr[0];
+      let end = arr[0];
+      for (const c of arr) {
+        if (c.a0 < start.a0) start = c;
+        if (c.a1 > end.a1) end = c;
+      }
+      for (const c of arr) c.updateHandles(c === start, c === end);
+    }
   }
 
   // -------------------------------------------------------- sync / persistencia
@@ -297,7 +315,7 @@ export class RadialChips implements ChipHost {
 
 /**
  * Un trozo suelto: la MISMA tajada anular del menú (conserva sus radios r0..r1 y
- * su ángulo) más sus dos punticos de materia (mover / cerrar) y, si es un dial,
+ * su ángulo) más sus dos punticos de materia (rotar / mover) y, si es un dial,
  * el relleno + la aguja que lo hacen un slider con forma de arco. Guarda su
  * centro virtual (`cx,cy`), su banda (`r0,r1`) y ángulos (`a0,a1`) en coordenadas
  * de viewport. Al pegarse a un anillo adopta la banda del cluster.
@@ -332,10 +350,10 @@ class RadialChip {
   private label: HTMLElement;
   private rotateDot: HTMLElement;
   private moveDot: HTMLElement;
-  private closeDot: HTMLElement;
-  private groupMoveDot: HTMLElement;
   private dial: { fill: SVGPathElement; thumb: SVGPathElement } | null = null;
   private closing = false;
+  /** Timer del "mantener pulsado para cerrar" (mismo gesto que arrancó el trozo). */
+  private closeTimer = 0;
 
   constructor(rec: ChipRecord, node: HotNode, host: ChipHost) {
     this.id = rec.id;
@@ -372,14 +390,12 @@ class RadialChip {
     }
 
     this.label = el("div", { class: "rm-chip-label" });
-    // Punticos de materia alrededor del borde exterior del arco. Rotar (izquierda)
-    // gira el trozo —o todo el cluster— en su círculo; mover reubica este trozo;
-    // cerrar lo destruye; mover-grupo (derecha, solo si está conectado) arrastra el
-    // cluster entero sin desengancharlo.
+    // Dos punticos de materia en los bordes rectos del sector: rotar (borde a0,
+    // "izquierda") y mover (borde a1, "derecha"). Rotar y mover operan sobre todo el
+    // cluster cuando está conectado; suelto, sobre el trozo. No hay botón de cerrar:
+    // se cierra manteniéndolo pulsado quieto ~3 s, el mismo gesto con que se arrancó.
     this.rotateDot = el("button", { class: "rm-chip-dot rm-chip-rotate materia-blob", type: "button", title: "Rotar", html: icon("rotate") });
-    this.moveDot = el("button", { class: "rm-chip-dot rm-chip-move materia-blob", type: "button", title: "Mover", html: icon("move") });
-    this.closeDot = el("button", { class: "rm-chip-dot rm-chip-close materia-blob", type: "button", title: "Cerrar", html: icon("close") });
-    this.groupMoveDot = el("button", { class: "rm-chip-dot rm-chip-group materia-blob is-hidden", type: "button", title: "Mover grupo", html: icon("grip") });
+    this.moveDot = el("button", { class: "rm-chip-dot rm-chip-move materia-blob", type: "button", title: "Mover", html: icon("grip") });
 
     // Nace oculto (materia-hidden): las partículas lo forman antes de que entre.
     this.el = el("div", { class: "rm-chip materia-hidden" }, [
@@ -387,8 +403,6 @@ class RadialChip {
       this.label,
       this.rotateDot,
       this.moveDot,
-      this.closeDot,
-      this.groupMoveDot,
     ]);
 
     this.fillLabel();
@@ -422,25 +436,59 @@ class RadialChip {
   private wireEvents(): void {
     this.rotateDot.addEventListener("pointerdown", (e) => this.beginRotate(e));
     this.moveDot.addEventListener("pointerdown", (e) => this.beginMove(e));
-    this.groupMoveDot.addEventListener("pointerdown", (e) => this.beginGroupMove(e));
-    this.closeDot.addEventListener("click", (e) => {
-      e.preventDefault();
-      this.host.remove(this);
-    });
 
-    if (this.node.kind === "dial") {
-      this.sectorPath.addEventListener("pointerdown", (e) => this.beginDialDrag(e));
-    } else if (this.node.kind === "action") {
+    // El sector: además de su gesto propio (arrastrar dial / tocar acción / reabrir
+    // submenú), arma el "mantener pulsado quieto ~3 s para cerrar" —el mismo gesto con
+    // que se arrancó del menú—. Si el cierre dispara, se anula el tap/valor siguiente.
+    this.sectorPath.addEventListener("pointerdown", (e) => this.onSectorDown(e));
+
+    if (this.node.kind === "action") {
       this.sectorPath.addEventListener("click", () => {
+        if (this.closing) return;
         if (this.node.kind === "action" && !this.node.disabled) this.node.run();
       });
-    } else {
+    } else if (this.node.kind === "submenu") {
       // Submenú: el trozo es una etiqueta-arco que reabre el menú expandido aquí.
       this.sectorPath.addEventListener("click", () => {
+        if (this.closing) return;
         const m = this.arcMidPoint();
         this.host.reopenMenu(this.path, m.x, m.y);
       });
     }
+  }
+
+  /** Pulsación sobre el sector: arma el cierre por pulsación larga y, si es un dial,
+      empieza también el arrastre del slider. Tocar (acción/submenú) va por `click`. */
+  private onSectorDown(e: PointerEvent): void {
+    this.armClose(e);
+    if (this.node.kind === "dial") this.beginDialDrag(e);
+  }
+
+  /** Mantener pulsado quieto ~3 s cierra el trozo (con `.is-arming` de realimentación,
+      igual que el sector del menú al arrancarlo). Cualquier desplazamiento > tolerancia
+      o soltar antes cancela el armado. */
+  private armClose(e: PointerEvent): void {
+    window.clearTimeout(this.closeTimer);
+    const sx = e.clientX;
+    const sy = e.clientY;
+    this.el.classList.add("is-arming");
+    const cancel = (): void => {
+      window.clearTimeout(this.closeTimer);
+      this.el.classList.remove("is-arming");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", cancel);
+      window.removeEventListener("pointercancel", cancel);
+    };
+    const onMove = (ev: PointerEvent): void => {
+      if (Math.hypot(ev.clientX - sx, ev.clientY - sy) > CLOSE_MOVE_TOL) cancel();
+    };
+    this.closeTimer = window.setTimeout(() => {
+      cancel();
+      this.host.remove(this);
+    }, CLOSE_HOLD_MS);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", cancel);
+    window.addEventListener("pointercancel", cancel);
   }
 
   /** Ajusta el `<svg>` al tamaño de la banda actual (lado = 2·r1, centro en r1). */
@@ -482,33 +530,30 @@ class RadialChip {
     this.positionLabel();
   }
 
-  /** Coloca los punticos en fila tangente al borde exterior-medio del arco. De un
-      lado al otro: rotar (izquierda), mover, cerrar, mover-grupo (derecha). El de
-      grupo solo se ve conectado, pero conserva su hueco reservado a la derecha.
-      Coordenadas locales del elemento. */
+  /** Coloca los dos punticos en los bordes RECTOS del sector: rotar en el borde
+      inicial (a0) y mover en el final (a1), a media banda y empujados un poco hacia
+      afuera del sector (perpendicular al borde). Así, al reformar un anillo, quedan
+      en los extremos libres del conjunto. Coordenadas locales del elemento. */
   private positionHandles(): void {
-    const amid = (this.a0 + this.a1) / 2;
-    const r = this.r1 + 18;
-    const bx = this.r1 + Math.cos(amid) * r;
-    const by = this.r1 + Math.sin(amid) * r;
-    // Dirección tangente al arco (izquierda→derecha respecto a su inclinación).
-    const tx = -Math.sin(amid);
-    const ty = Math.cos(amid);
-    const step = 32;
-    const place = (dot: HTMLElement, slot: number): void => {
-      dot.style.left = `${bx + tx * slot * step}px`;
-      dot.style.top = `${by + ty * slot * step}px`;
-    };
-    place(this.rotateDot, -1.5);
-    place(this.moveDot, -0.5);
-    place(this.closeDot, 0.5);
-    place(this.groupMoveDot, 1.5);
+    const off = 20;
+    // Borde a0: la perpendicular que sale del sector apunta a (sin a0, −cos a0).
+    const rx = this.r1 + Math.cos(this.a0) * this.mid + Math.sin(this.a0) * off;
+    const ry = this.r1 + Math.sin(this.a0) * this.mid - Math.cos(this.a0) * off;
+    this.rotateDot.style.left = `${rx}px`;
+    this.rotateDot.style.top = `${ry}px`;
+    // Borde a1: la perpendicular que sale del sector apunta a (−sin a1, cos a1).
+    const mx = this.r1 + Math.cos(this.a1) * this.mid - Math.sin(this.a1) * off;
+    const my = this.r1 + Math.sin(this.a1) * this.mid + Math.cos(this.a1) * off;
+    this.moveDot.style.left = `${mx}px`;
+    this.moveDot.style.top = `${my}px`;
   }
 
-  /** Muestra u oculta el puntico de mover el grupo según si el trozo está
-      conectado a otros (lo llama el gestor tras cualquier cambio de cluster). */
-  updateHandles(clustered: boolean): void {
-    this.groupMoveDot.classList.toggle("is-hidden", !clustered);
+  /** Enseña rotar/mover solo en los extremos del conjunto: suelto, el trozo es sus
+      dos extremos (enseña ambos); conectado, solo el del extremo inicial enseña rotar
+      y solo el del final enseña mover. Lo llama el gestor tras cualquier cambio. */
+  updateHandles(showRotate: boolean, showMove: boolean): void {
+    this.rotateDot.classList.toggle("is-hidden", !showRotate);
+    this.moveDot.classList.toggle("is-hidden", !showMove);
   }
 
   /** Coloca la etiqueta (valor/icono) en el medio del arco (coords locales). */
@@ -563,27 +608,34 @@ class RadialChip {
     this.render();
   }
 
-  /** Arrastre del trozo entero por el puntico de mover: traslada su centro virtual. */
+  /** Arrastre por el puntico de mover. Si el trozo está CONECTADO, arrastra todo el
+      cluster junto (mismo offset a cada centro, sin desengancharlo). Si está suelto,
+      se desengancha, se mueve solo e intenta pegarse al soltar. */
   private beginMove(e: PointerEvent): void {
     e.preventDefault();
-    this.host.detach(this);
-    this.isDragging = true;
-    this.el.classList.add("is-moving");
+    const members = this.host.cluster(this);
+    const solo = members.length <= 1;
+    if (solo) this.host.detach(this);
     const sx = e.clientX;
     const sy = e.clientY;
-    const ox = this.cx;
-    const oy = this.cy;
+    const start = members.map((m) => ({ m, cx: m.cx, cy: m.cy }));
+    for (const m of members) m.isDragging = true;
+    this.el.classList.add("is-moving");
     const move = (ev: PointerEvent): void => {
-      this.cx = ox + ev.clientX - sx;
-      this.cy = oy + ev.clientY - sy;
-      this.render();
+      const dx = ev.clientX - sx;
+      const dy = ev.clientY - sy;
+      for (const s of start) {
+        s.m.adoptCenter(s.cx + dx, s.cy + dy);
+        s.m.render();
+      }
     };
     const up = (): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      this.isDragging = false;
+      for (const m of members) m.isDragging = false;
       this.el.classList.remove("is-moving");
-      this.host.trySnap(this);
+      if (solo) this.host.trySnap(this);
+      else this.host.scheduleSave();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -614,35 +666,6 @@ class RadialChip {
       window.removeEventListener("pointerup", up);
       for (const m of members) m.isDragging = false;
       this.el.classList.remove("is-rotating");
-      this.host.scheduleSave();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  /** Arrastra el CLUSTER entero por el puntico derecho: traslada el centro virtual
-      de todos los miembros el mismo offset, sin desengancharlos (siguen pegados). */
-  private beginGroupMove(e: PointerEvent): void {
-    e.preventDefault();
-    const members = this.host.cluster(this);
-    const sx = e.clientX;
-    const sy = e.clientY;
-    const start = members.map((m) => ({ m, cx: m.cx, cy: m.cy }));
-    for (const m of members) m.isDragging = true;
-    this.el.classList.add("is-moving");
-    const move = (ev: PointerEvent): void => {
-      const dx = ev.clientX - sx;
-      const dy = ev.clientY - sy;
-      for (const s of start) {
-        s.m.adoptCenter(s.cx + dx, s.cy + dy);
-        s.m.render();
-      }
-    };
-    const up = (): void => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      for (const m of members) m.isDragging = false;
-      this.el.classList.remove("is-moving");
       this.host.scheduleSave();
     };
     window.addEventListener("pointermove", move);
@@ -697,6 +720,7 @@ class RadialChip {
   destroy(): void {
     if (this.closing) return;
     this.closing = true;
+    window.clearTimeout(this.closeTimer);
     const finish = (): void => {
       this.el.remove();
       this.fx.el.remove();
