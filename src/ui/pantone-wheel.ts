@@ -48,9 +48,12 @@ const POS_KEY = "drawi.pantone.pos";
 const ROT_KEY = "drawi.pantone.rot";
 const PAL_KEY = "drawi.pantone.palette";
 const PIN_KEY = "drawi.pantone.pinned";
+const LOCK_KEY = "drawi.pantone.locked";
 
 // Pulsación larga sobre el hub: mismos números que el menú radial (arrancar
-// chips). Mantener el círculo del medio >3 s fija la rueda abierta o la cierra.
+// chips). Mantener el círculo del medio >3 s BLOQUEA/DESBLOQUEA la rueda: estando
+// bloqueada, el clic fuera ya no contrae los niveles (solo el clic manual en el
+// hub los contrae/expande) y sigue así hasta otra pulsación larga.
 const LONG_PRESS_MS = 3000;
 const LONG_PRESS_MOVE_TOL = 8;
 
@@ -183,6 +186,10 @@ export class PantoneWheel {
   private visible = false;
   private expanded = false;
   private pinned = localStorage.getItem(PIN_KEY) !== "false"; // activado por defecto
+  // Bloqueo por pulsación larga (>3 s): mientras esté activo, el clic fuera NO
+  // contrae los niveles; solo el clic manual en el hub los contrae/expande.
+  // Persiste hasta otra pulsación larga (no lo quita un clic normal).
+  private locked = localStorage.getItem(LOCK_KEY) === "true";
   private position: Pt = loadPos();
   private rotation = Number(localStorage.getItem(ROT_KEY)) || 0;
   private paletteId = localStorage.getItem(PAL_KEY) || "universal";
@@ -271,6 +278,9 @@ export class PantoneWheel {
       if (!this.visible) return;
       const t = e.target as Node;
       if (this.container.contains(t) || this.library.contains(t)) return;
+      // Bloqueada (pulsación larga >3 s): el clic fuera NO hace nada; los niveles
+      // solo se contraen con el clic manual en el hub. Se sale con otra larga.
+      if (this.locked) return;
       if (this.pinned) {
         // Fijada (punto rosa arriba): el clic fuera solo CONTRAE el anillo de
         // colores; la bolita del hub queda a la vista para reabrirla.
@@ -290,9 +300,14 @@ export class PantoneWheel {
     // Reflejar estado inicial del pin (activado por defecto)
     this.pinDot.classList.toggle("is-pinned", this.pinned);
     this.pinDot.title = this.pinned ? "Fijada (clic para soltar)" : "Fijar (que no se cierre al hacer clic fuera)";
+    // Reflejar estado inicial del bloqueo (pulsación larga). Persistido aparte.
+    this.setLocked(this.locked, true);
 
-    // Mostrar la rueda al iniciar (colapsada, en su posición por defecto)
+    // Mostrar la rueda al iniciar (colapsada, en su posición por defecto).
+    // Si venía bloqueada de otra sesión, arranca expandida (el bloqueo la
+    // mantiene abierta).
     this.showCollapsed();
+    if (this.locked) this.setExpanded(true);
   }
 
   /** Muestra el núcleo de la rueda sin expandir los anillos (estado inicial). */
@@ -770,14 +785,38 @@ export class PantoneWheel {
    * (y la suelta); si no, la fija abierta por completo. Un solo gesto para las
    * dos cosas, como pidió el usuario.
    */
+  /**
+   * Efecto de la pulsación larga (>3 s): ALTERNA el bloqueo. Bloqueada, la rueda
+   * queda abierta e ignora los clics de fuera —solo el clic manual en el hub
+   * contrae/expande los niveles— y sigue así hasta otra pulsación larga. Un solo
+   * gesto para las dos cosas.
+   */
   private onLongPress(): void {
     if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(20);
-    if (this.pinned) {
-      this.setPinned(false);
-      this.hide();
-    } else {
-      this.setPinned(true);
-      this.setExpanded(true);
+    this.setLocked(!this.locked);
+  }
+
+  /**
+   * Activa/desactiva el bloqueo por pulsación larga y lo persiste. Al bloquear,
+   * asegura que la rueda esté visible y expandida y la deja fijada (para que al
+   * desbloquear vuelva al modo "fijada": el clic fuera contrae, no cierra). El
+   * clic normal en el hub NO toca este estado, así que el bloqueo permanece.
+   * `silent` solo refleja el estado inicial sin forzar visibilidad.
+   */
+  private setLocked(on: boolean, silent = false): void {
+    this.locked = on;
+    localStorage.setItem(LOCK_KEY, String(on));
+    this.pinDot.classList.toggle("is-locked", on);
+    this.hubBtn.classList.toggle("is-locked", on);
+    if (on) {
+      this.pinDot.title = "Bloqueada (pulsación larga para soltar)";
+      if (!silent) {
+        this.setPinned(true);
+        if (!this.visible) this.show();
+        else this.setExpanded(true);
+      }
+    } else if (!silent) {
+      this.pinDot.title = this.pinned ? "Fijada (clic para soltar)" : "Fijar (que no se cierre al hacer clic fuera)";
     }
   }
 
@@ -802,7 +841,10 @@ export class PantoneWheel {
   private setPinned(on: boolean): void {
     this.pinned = on;
     this.pinDot.classList.toggle("is-pinned", this.pinned);
-    this.pinDot.title = this.pinned ? "Fijada (clic para soltar)" : "Fijar (que no se cierre al hacer clic fuera)";
+    // Si está bloqueada (pulsación larga), su título manda sobre el del pin.
+    if (!this.locked) {
+      this.pinDot.title = this.pinned ? "Fijada (clic para soltar)" : "Fijar (que no se cierre al hacer clic fuera)";
+    }
     localStorage.setItem(PIN_KEY, String(this.pinned));
   }
 

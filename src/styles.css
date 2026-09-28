@@ -1449,6 +1449,14 @@ body {
   box-shadow: 0 0 6px rgba(236, 72, 153, 0.6);
 }
 
+/* Bloqueada por pulsación larga (>3 s): el punto se vuelve ámbar con un aro,
+   para distinguirlo del rosa de "fijada". El clic fuera ya no la contrae. */
+.pw-pin.is-locked {
+  background: #f59e0b;
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.35), 0 0 8px rgba(245, 158, 11, 0.7);
+}
+
 .pw-library {
   position: fixed;
   left: 50%;
