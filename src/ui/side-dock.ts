@@ -32,6 +32,12 @@ const DOCK_TABS: TabDef[] = [
 ];
 
 /**
+ * Ids de dominio que el dock expone como pestañas. Otros consumidores del
+ * esquema (el paletón) lo usan para saber qué opción tiene panel al que llevar.
+ */
+export const DOCK_TAB_DOMAINS: string[] = DOCK_TABS.map((t) => t.domain);
+
+/**
  * Qué pestaña corresponde a cada herramienta. Al cambiar de herramienta el dock
  * resalta la pestaña relacionada (no la abre: solo la marca como "en uso"). Las
  * herramientas sin ajustes propios —cuentagotas y mano— no resaltan ninguna.
@@ -272,11 +278,22 @@ export class SideDock {
   }
 
   /**
+   * Elemento de un campo, etiquetado con `data-field-id` para que el paletón
+   * pueda desplazarse a él y destellarlo (ver `reveal`). El armado real lo hace
+   * `rawFieldEl`; aquí solo se marca.
+   */
+  private fieldEl(f: Field, s0: EditorState): HTMLElement | null {
+    const e = this.rawFieldEl(f, s0);
+    if (e) e.dataset.fieldId = f.id;
+    return e;
+  }
+
+  /**
    * Elemento de un campo: `custom` → su adaptador (o una nota `note-*` por
    * convención); cualquier otro → el control genérico que ya creó DockRenderer.
    * Registra sincronía y visibilidad viva cuando el campo las declara.
    */
-  private fieldEl(f: Field, s0: EditorState): HTMLElement | null {
+  private rawFieldEl(f: Field, s0: EditorState): HTMLElement | null {
     if (f.kind === "custom") {
       const c = this.customs.get(f.id);
       if (c) {
@@ -301,6 +318,27 @@ export class SideDock {
   }
   mount(parent: HTMLElement): void {
     parent.appendChild(this.el);
+  }
+
+  /**
+   * Abre la pestaña del dominio y, si se indica un campo, lo trae a la vista y lo
+   * destella un instante. Lo usa el paletón para "llevar" al usuario a la opción
+   * elegida. Si el dominio no es una pestaña del dock, no hace nada.
+   */
+  reveal(domainId: string, fieldId?: string): void {
+    if (!this.tabs.has(domainId)) return;
+    this.setOpen(domainId);
+    if (!fieldId) return;
+    // Tras renderizar la página: localizar el control, acercarlo y resaltarlo.
+    requestAnimationFrame(() => {
+      const node = this.content.querySelector<HTMLElement>(`[data-field-id="${CSS.escape(fieldId)}"]`);
+      if (!node) return;
+      node.scrollIntoView({ block: "nearest" });
+      node.classList.remove("is-flash");
+      void node.offsetWidth; // reinicia la animación si ya estaba puesta
+      node.classList.add("is-flash");
+      window.setTimeout(() => node.classList.remove("is-flash"), 1400);
+    });
   }
 
   /** Pulsar una pestaña: abre su dominio, o lo repliega si ya estaba abierto. */

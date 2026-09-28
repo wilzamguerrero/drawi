@@ -76,13 +76,20 @@ export class App {
       exportSvg: () => this.editor.status(exportVector(this.editor)),
     };
     this.hotbox = new RadialMenu(this.editor, hooks, this.panels);
-    this.commandPalette = new CommandPalette(this.editor, hooks);
 
     // Trozos arrancables: viven en una capa flotante propia. El menú arranca un
     // sector (long-press) → spawn; un trozo-submenú reabre el menú expandido ahí.
     this.radialChips = new RadialChips(this.editor, hooks);
     this.hotbox.onTearOff = (desc) => this.radialChips.spawn(desc);
     this.radialChips.onReopenMenu = (path, x, y) => this.hotbox.show(x, y, path);
+
+    // El paletón se alimenta del mismo esquema que dock y radial. Sus dos verbos
+    // se resuelven aquí: abrir la opción en su pestaña del dock, o hacerla nacer
+    // como chip centrado en la pantalla (igual que el desgarro del radial).
+    this.commandPalette = new CommandPalette(this.editor, hooks, {
+      openPanel: (tab, fieldId) => this.sideDock.reveal(tab, fieldId),
+      spawnChip: (path, id) => this.radialChips.spawnByPath(path, id, window.innerWidth / 2, window.innerHeight / 2),
+    });
 
     // HUD superior derecho: barra de acciones + información de estado. La
     // legibilidad sobre cualquier fondo la da mix-blend-mode: difference en el

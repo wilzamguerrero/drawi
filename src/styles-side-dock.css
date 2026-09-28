@@ -200,6 +200,23 @@
   display: none;
 }
 
+/* Destello breve cuando el paletón trae un campo a la vista: un halo de acento
+   que crece y se desvanece, para que el ojo encuentre la opción recién abierta. */
+.side-dock [data-field-id].is-flash {
+  border-radius: 8px;
+  animation: dock-field-flash 1.4s ease;
+}
+
+@keyframes dock-field-flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(90, 159, 212, 0);
+  }
+  18% {
+    box-shadow: 0 0 0 3px rgba(90, 159, 212, 0.5);
+  }
+}
+
 /* ------------------------------------------------------------ tira de pestañas */
 
 /*
@@ -311,6 +328,9 @@
     transition: none;
   }
   .dock-page.is-shown {
+    animation: none;
+  }
+  .side-dock [data-field-id].is-flash {
     animation: none;
   }
 }

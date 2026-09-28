@@ -1,21 +1,21 @@
 import type { Editor } from "../app/editor";
-import type { ToolId } from "../tools/types";
 import { el, setClass } from "./dom";
 import { MateriaEdge } from "./fx/materia-edge";
 import { MateriaFx, prefersReducedMotion } from "./fx/materia";
 import { icon } from "./icons";
 import type { MenuHooks } from "./hotbox/menu";
+import { buildCommands, type Command } from "./model/to-commands";
 
-/** Una orden invocable del paletón: una herramienta o una acción. */
-interface Command {
-  id: string;
-  label: string;
-  /** Categoría mostrada a la derecha (Herramienta, Archivo, Vista...). */
-  group: string;
-  icon?: string;
-  /** Términos extra para la búsqueda (sinónimos, nombres en inglés, etc.). */
-  keywords?: string;
-  run: () => void;
+/**
+ * Puertos del paletón hacia el resto de la app: abrir la opción en su panel del
+ * dock, o hacerla nacer como chip en el lienzo. Los cablea `app.ts` (dock y
+ * chips radiales); el paletón no conoce esas piezas, solo estos dos verbos.
+ */
+export interface PalettePorts {
+  /** Abre la pestaña del dock indicada y resalta el campo. */
+  openPanel(dockTab: string, fieldId: string): void;
+  /** Nace un chip en el lienzo para el nodo del camino radial dado. */
+  spawnChip(path: number[], id: string): void;
 }
 
 // -------------------------------------------------------------- búsqueda difusa
@@ -65,60 +65,16 @@ function fuzzy(query: string, text: string): { score: number; hits: number[] } |
 }
 
 /**
- * Lista de órdenes, reconstruida en cada apertura para que las etiquetas y los
- * estados reflejen el momento (p. ej. "Pausar" vs "Reanudar"). Las herramientas
- * van primero: el paletón nació para elegirlas escribiendo.
- */
-function buildCommands(editor: Editor, hooks: MenuHooks): Command[] {
-  const s = editor.state;
-  const tool = (id: ToolId, label: string, ic: string, keywords: string): Command => ({
-    id: `tool-${id}`,
-    label,
-    group: "Herramienta",
-    icon: ic,
-    keywords,
-    run: () => editor.setTool(id),
-  });
-
-  return [
-    tool("brush", "Pincel", "brush", "dibujar trazo pen brush"),
-    tool("shape", "Crear forma", "shape", "figura materia crear shape"),
-    tool("matter", "Mover materia", "matter", "fisica arrastrar matter mover"),
-    tool("symmetry", "Eje de simetria", "symmetry", "espejo mirror symmetry"),
-    tool("picker", "Cuentagotas", "picker", "color eyedropper picker muestrear"),
-    tool("hand", "Mano", "hand", "desplazar pan mover vista"),
-
-    { id: "color-wheel", label: "Rueda de color", group: "Color", icon: "wheel", keywords: "color paleta wheel picker", run: () => hooks.toggleWheel() },
-
-    { id: "run", label: s.running ? "Pausar simulacion" : "Reanudar simulacion", group: "Materia", icon: s.running ? "pause" : "play", keywords: "fisica play pausa simular", run: () => editor.setRunning(!editor.state.running) },
-    { id: "seed", label: "Sembrar materia", group: "Materia", icon: "seed", keywords: "crear cuerpos seed", run: () => editor.seedMatter(8) },
-    { id: "bake", label: "Hornear materia", group: "Materia", icon: "bake", keywords: "fijar bake congelar", run: () => editor.bakeMatter() },
-    { id: "walls", label: "Paredes", group: "Materia", icon: "grid", keywords: "limites bordes walls", run: () => editor.toggleWalls() },
-    { id: "clear-matter", label: "Vaciar materia", group: "Materia", icon: "trash", keywords: "borrar limpiar clear", run: () => editor.clearMatter() },
-
-    { id: "undo", label: "Deshacer", group: "Editar", icon: "undo", keywords: "undo atras", run: () => editor.undo() },
-    { id: "redo", label: "Rehacer", group: "Editar", icon: "redo", keywords: "redo adelante", run: () => editor.redo() },
-
-    { id: "zoom-in", label: "Acercar", group: "Vista", icon: "zoomIn", keywords: "zoom in acercar", run: () => editor.zoomBy(1.25) },
-    { id: "zoom-out", label: "Alejar", group: "Vista", icon: "zoomOut", keywords: "zoom out alejar", run: () => editor.zoomBy(1 / 1.25) },
-    { id: "fit", label: "Encajar en pantalla", group: "Vista", icon: "fit", keywords: "fit encajar ajustar", run: () => editor.fitView() },
-    { id: "reset-view", label: "Reiniciar vista", group: "Vista", icon: "grid", keywords: "reset centrar vista", run: () => editor.resetView() },
-
-    { id: "new", label: "Nuevo documento", group: "Archivo", icon: "trash", keywords: "new nuevo limpiar", run: () => hooks.newDoc() },
-    { id: "open", label: "Abrir", group: "Archivo", icon: "folder", keywords: "open abrir cargar", run: () => hooks.openFile() },
-    { id: "save", label: "Guardar", group: "Archivo", icon: "save", keywords: "save guardar", run: () => hooks.save() },
-    { id: "png", label: "Exportar PNG", group: "Archivo", icon: "download", keywords: "export png imagen", run: () => hooks.exportPng() },
-    { id: "svg", label: "Exportar SVG", group: "Archivo", icon: "download", keywords: "export svg vector", run: () => hooks.exportSvg() },
-    { id: "help", label: "Atajos y ayuda", group: "Archivo", icon: "info", keywords: "help ayuda atajos", run: () => hooks.help() },
-  ];
-}
-
-/**
  * Paletón de órdenes.
  *
- * Se abre con Ctrl/Cmd+K: un cuadro flotante donde escribes y la herramienta (o
- * acción) más cercana se filtra y se selecciona sin buscarla en el menú radial.
- * Enter la ejecuta, ↑/↓ mueven el resaltado, Esc cierra.
+ * Se abre con Ctrl/Cmd+K o Tab: un cuadro flotante donde escribes y la opción
+ * más cercana se filtra y se selecciona. Se alimenta del MISMO esquema único que
+ * el dock y el radial (`buildCommands`), así que actualizar el esquema lo
+ * actualiza sin tocar aquí. Cada fila muestra su RUTA (dominio › grupo) para
+ * distinguir etiquetas repetidas (las dos "Opacidad"), y a la derecha dos
+ * botones: abrir la opción en su panel del dock, y hacerla nacer como chip en el
+ * lienzo (igual que el desgarro del radial). Enter aplica la acción primaria,
+ * ↑/↓ mueven el resaltado, Esc cierra.
  *
  * Comparte el lenguaje visual del resto y, en concreto, la entrada/salida del
  * panel de ayuda: las mismas partículas (MateriaFx) forman y deshacen el cuadro,
@@ -132,6 +88,7 @@ export class CommandPalette {
 
   private editor: Editor;
   private hooks: MenuHooks;
+  private ports: PalettePorts;
 
   private dialog: HTMLElement;
   private input: HTMLInputElement;
@@ -154,9 +111,10 @@ export class CommandPalette {
   private activeIndex = -1;
   private query = "";
 
-  constructor(editor: Editor, hooks: MenuHooks) {
+  constructor(editor: Editor, hooks: MenuHooks, ports: PalettePorts) {
     this.editor = editor;
     this.hooks = hooks;
+    this.ports = ports;
 
     this.input = el("input", {
       class: "cmd-input",
@@ -247,8 +205,9 @@ export class CommandPalette {
     this.el.hidden = false;
     this.open = true;
 
-    // Órdenes al día (etiquetas y estados frescos) y filtro en limpio.
-    this.commands = buildCommands(this.editor, this.hooks);
+    // Órdenes al día (etiquetas y estados frescos) y filtro en limpio. Se derivan
+    // del esquema único, con el estado del momento para la ruta y los estados.
+    this.commands = buildCommands(this.editor, this.editor.state, this.hooks);
     this.query = "";
     this.input.value = "";
     this.renderResults();
@@ -396,20 +355,20 @@ export class CommandPalette {
     let picked: Array<{ cmd: Command; hits: number[] }>;
 
     if (!q) {
-      // Sin consulta: todas, en el orden declarado (herramientas primero).
+      // Sin consulta: todas, en el orden del esquema (mismo que el radial).
       picked = this.commands.map((cmd) => ({ cmd, hits: [] }));
     } else {
       const scored: Array<{ cmd: Command; hits: number[]; score: number }> = [];
       for (const cmd of this.commands) {
-        // Se puntúa contra la etiqueta (con resaltado) y, si falla, contra grupo +
-        // sinónimos (sin resaltar, y con menos peso) para que "espejo" o "mirror"
-        // encuentren Simetría sin ensuciar el resaltado de la etiqueta.
+        // Se puntúa contra la etiqueta (con resaltado) y, si falla, contra la ruta +
+        // sinónimos (sin resaltar, y con menos peso) para que "espejo" o "acabado"
+        // encuentren la opción sin ensuciar el resaltado de la etiqueta.
         const label = fuzzy(q, cmd.label);
         if (label) {
           scored.push({ cmd, hits: label.hits, score: label.score });
           continue;
         }
-        const alt = fuzzy(q, `${cmd.group} ${cmd.keywords ?? ""}`);
+        const alt = fuzzy(q, `${cmd.trail.join(" ")} ${cmd.keywords}`);
         if (alt) scored.push({ cmd, hits: [], score: alt.score - 8 });
       }
       scored.sort((a, b) => b.score - a.score);
@@ -433,9 +392,11 @@ export class CommandPalette {
     picked.forEach(({ cmd, hits }, k) => {
       const row = el("li", { class: "cmd-row", role: "option" }, [
         el("span", { class: "cmd-ico", html: cmd.icon ? icon(cmd.icon) : "" }),
-        this.renderLabel(cmd.label, hits),
-        el("span", { class: "cmd-group", text: cmd.group }),
+        this.renderMain(cmd, hits),
+        this.renderActions(cmd),
       ]);
+      setClass(row, "is-on", cmd.on);
+      setClass(row, "is-disabled", cmd.disabled);
       // Índice para escalonar la entrada fila a fila al abrir (--row).
       row.style.setProperty("--row", String(k));
       row.addEventListener("pointermove", () => this.setActive(k));
@@ -448,6 +409,48 @@ export class CommandPalette {
     });
 
     this.setActive(0);
+  }
+
+  /** Bloque central de una fila: etiqueta (con resaltado) + ruta (dominio › grupo). */
+  private renderMain(cmd: Command, hits: number[]): HTMLElement {
+    const kids = [this.renderLabel(cmd.label, hits)];
+    if (cmd.trail.length) {
+      kids.push(el("span", { class: "cmd-trail", text: cmd.trail.join(" › ") }));
+    }
+    return el("span", { class: "cmd-main" }, kids);
+  }
+
+  /**
+   * Botones a la derecha de la fila. "Abrir en panel" aparece si la opción vive
+   * en el dock; "Crear chip" si es alcanzable en el radial ahora mismo. Detienen
+   * la propagación para no disparar la acción primaria de la fila.
+   */
+  private renderActions(cmd: Command): HTMLElement {
+    const acts = el("span", { class: "cmd-actions" });
+    if (cmd.dockTab) {
+      acts.appendChild(this.actionBtn("panel", "Abrir en el panel", () => {
+        this.hide();
+        this.ports.openPanel(cmd.dockTab!, cmd.id);
+      }));
+    }
+    if (cmd.radialPath) {
+      acts.appendChild(this.actionBtn("pin", "Crear chip en el lienzo", () => {
+        this.hide();
+        this.ports.spawnChip(cmd.radialPath!, cmd.id);
+      }));
+    }
+    return acts;
+  }
+
+  /** Un botón de acción de fila (icono + tooltip) que no propaga el clic. */
+  private actionBtn(iconName: string, title: string, onClick: () => void): HTMLElement {
+    const btn = el("button", { class: "cmd-act", type: "button", title, html: icon(iconName) });
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onClick();
+    });
+    return btn;
   }
 
   /** Etiqueta con las letras acertadas envueltas en &lt;mark&gt; para resaltarlas. */
@@ -478,11 +481,23 @@ export class CommandPalette {
 
   private runActive(): void {
     const cmd = this.filtered[this.activeIndex];
-    if (!cmd) return;
-    // Cerrar primero (arranca la salida por partículas) y luego ejecutar: si la
+    if (!cmd || cmd.disabled) return;
+    // Cerrar primero (arranca la salida por partículas) y luego actuar: si la
     // orden abre otro panel o diálogo, el paletón ya está saliendo de escena.
     this.hide();
-    cmd.run();
+    this.activatePrimary(cmd);
+  }
+
+  /**
+   * Acción primaria de una orden (Enter o clic en la fila): si tiene acción
+   * propia (herramienta, toggle, modo, comando), se ejecuta; si no, se abre en su
+   * panel del dock; y si tampoco, nace como chip. Así Enter siempre "hace algo"
+   * sensato con la opción elegida.
+   */
+  private activatePrimary(cmd: Command): void {
+    if (cmd.run) cmd.run();
+    else if (cmd.dockTab) this.ports.openPanel(cmd.dockTab, cmd.id);
+    else if (cmd.radialPath) this.ports.spawnChip(cmd.radialPath, cmd.id);
   }
 
   /** Activa/desactiva la cascada del contenido (clase en el contenedor raíz). */

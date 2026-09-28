@@ -154,6 +154,28 @@ export class RadialChips implements ChipHost, HubHost {
     this.scheduleSave();
   }
 
+  /**
+   * Nace un chip desde el paletón: resuelve el nodo por su camino en el árbol y
+   * lo hace aparecer centrado en (x, y). Reusa `spawn` con un descriptor
+   * sintético —el arco mira al norte (−π/2) y con la banda del nivel 0—, así el
+   * chip sale igual que si se hubiera desgarrado del radial. Si el camino ya no
+   * resuelve (el árbol cambió), no hace nada.
+   */
+  spawnByPath(path: number[], id: string, x: number, y: number): void {
+    const node = resolveNode(this.tree(), path, id);
+    if (!node) return;
+    this.spawn({
+      node,
+      path,
+      ringLevel: 1,
+      angleWidth: CHIP_ANGLE,
+      angleMid: -Math.PI / 2,
+      innerR: levelR0(0),
+      outerR: levelR0(0) + CHIP_BAND,
+      viewport: { x, y },
+    });
+  }
+
   private createChip(rec: ChipRecord, node: HotNode): RadialChip {
     const chip = new RadialChip(rec, node, this);
     this.chips.set(rec.id, chip);
