@@ -1623,7 +1623,7 @@ body {
   content: "";
   position: absolute;
   inset: 0;
-  background: rgba(5, 7, 10, 0.62);
+  background: rgba(5, 7, 10, 0.5);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
   opacity: 0;
@@ -1631,8 +1631,14 @@ body {
   pointer-events: none;
 }
 
+/* Como en el buscador: el oscurecido entra CON RETARDO (~0.5s), no de inmediato.
+   Durante el gather las gotas negras viajan al centro; si el fondo ya estuviera
+   oscuro se perderían. Se oscurece solo cuando la masa florece en cuadro. Al
+   cerrar (quitar is-visible) vale la transición base, sin retardo: el fondo se va
+   enseguida. */
 .help-overlay.is-visible::before {
   opacity: 1;
+  transition: opacity 0.42s ease 0.5s;
 }
 
 /* El cuadro flota: la piel (MateriaEdge) dibuja su relleno ondulante y el
@@ -1648,34 +1654,34 @@ body {
   transform-origin: 50% 50%;
   opacity: 1;
   transform: scale(1);
-  /* Entrada/salida por TRANSICIÓN, no por keyframes: igual que el menú radial,
-     así no hay saltos de un valor a otro (antes el estado "formando" dejaba
-     scale 0.6 y el keyframe arrancaba en 0.85, y ese brinco se notaba). El
-     relevo con las partículas es un crossfade continuo: la masa se desvanece
-     mientras el cuadro aparece casi en su sitio, sin un rectángulo negro plantado
-     antes de la información. La curva del transform tiene un asentamiento suave
-     (ease-out expo) para que el cuadro "pose" sin rebote barato; la opacidad va
-     algo más rápida, así ya es sólido cuando termina de asentarse. */
+  /* Igual que el buscador: la masa de partículas ya ha crecido (bloom) hasta
+     cubrir el cuadro; la caja solo hace un CROSSFADE suave sobre esa masa,
+     entrando casi a tamaño real (un pelín más pequeña), para que el relevo
+     partículas→caja sea imperceptible y no un segundo crecimiento encima. */
   transition:
-    opacity 0.3s ease,
-    transform 0.52s cubic-bezier(0.16, 1, 0.3, 1);
+    opacity 0.26s ease,
+    transform 0.3s cubic-bezier(0.2, 1, 0.3, 1);
   will-change: transform, opacity;
 }
 
-/* Mientras las gotas se juntan, el cuadro espera invisible y solo un pelín
-   encogido (crossfade, no "crecer"). transition:none fija ese estado al instante,
-   sin animar hacia él; al quitar la clase, la transición base lleva el cuadro
-   suavemente a su tamaño real mientras las partículas se funden con él. */
+/* Mientras la masa se junta y florece hasta cubrir el cuadro, la caja espera
+   invisible y casi a tamaño real, lista para revelarse encima con un crossfade
+   —no con un segundo crecimiento—. transition:none fija el estado al instante; al
+   quitar la clase, la transición base la funde. */
 .help-dialog.is-forming {
   opacity: 0;
-  transform: scale(0.92) translateY(6px);
+  transform: scale(0.985);
   transition: none;
 }
 
-/* Al cerrar, se desvanece y encoge apenas mientras las gotas se dispersan. */
+/* Al cerrar, la caja colapsa hacia el centro y se funde mientras las gotas se
+   dispersan: sale como entró, encogiéndose a un punto. */
 .help-dialog.is-closing {
   opacity: 0;
-  transform: scale(0.965) translateY(4px);
+  transform: scale(0.24);
+  transition:
+    opacity 0.22s ease,
+    transform 0.26s cubic-bezier(0.4, 0, 0.7, 0.2);
 }
 
 /* Piel: SVG vectorial que cubre el cuadro y ondula en sus cuatro bordes. Va
@@ -1691,26 +1697,40 @@ body {
   filter: drop-shadow(0 12px 34px rgba(0, 0, 0, 0.5));
 }
 
-/* Contenido nítido, por encima de la piel. Aquí van el scroll y el padding que
-   antes vivían en .help-dialog; así la piel queda quieta detrás y solo el texto
-   se desplaza. El radio recorta el contenido dentro de la silueta ondulante. */
+/* Contenido nítido, por encima de la piel. La cabecera y el pie quedan fijos
+   (columna flex) y solo el cuerpo hace scroll, así el contenido puede crecer sin
+   empujar el resto. El radio recorta dentro de la silueta. El padding es GENEROSO
+   porque el borde ondula: la piel entra hasta ~28px (inset 16 + amplitud 12), así
+   que el contenido arranca más adentro para no rozar los picos en ningún lado. */
 .help-content {
   position: relative;
   z-index: 1;
+  display: flex;
+  flex-direction: column;
   max-height: min(86vh, 760px);
+  padding: 32px 42px 30px;
+}
+
+/* Cuerpo desplazable: TODO en una sola tirada (comandos, notas e historial). Se
+   baja con el scroll para ver el resto. Reserva SIEMPRE el hueco de la barra para
+   que el ancho no salte al aparecer/desaparecer. */
+.help-body {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 22px 26px 26px;
+  margin-top: 14px;
+  padding-right: 4px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: #3a3a42 transparent;
 }
 
-.help-content::-webkit-scrollbar {
+.help-body::-webkit-scrollbar {
   width: 10px;
 }
 
-.help-content::-webkit-scrollbar-thumb {
+.help-body::-webkit-scrollbar-thumb {
   background: #3a3a42;
   border-radius: 6px;
   border: 3px solid #161619;
@@ -1760,13 +1780,32 @@ body {
 }
 
 .help-head {
-  margin-bottom: 18px;
+  position: relative;
+}
+
+/* Marca + versión en una línea, alineadas por su base. */
+.help-head-main {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
 }
 
 .help-title {
   margin: 0;
   font-size: 20px;
   letter-spacing: 0.02em;
+}
+
+/* Píldora con la versión actual, junto a la marca. */
+.help-version {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(90, 159, 212, 0.08);
+  white-space: nowrap;
 }
 
 /* Lockup de marca: ZENCE grande y DRAW pequeño debajo, alineados a la izquierda.
@@ -1814,11 +1853,24 @@ body {
 }
 
 .help-group-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin: 0 0 8px;
   font: 600 11px/1 var(--font);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--accent);
+}
+
+/* Icono del grupo de comandos: mismo acento, tamaño discreto. */
+.help-group-ico {
+  display: inline-flex;
+}
+
+.help-group-ico svg {
+  width: 14px;
+  height: 14px;
 }
 
 .help-list {
@@ -1849,9 +1901,153 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 16px 26px;
-  margin-top: 22px;
-  padding-top: 18px;
+}
+
+/* --------------------------------------------------------------- secciones
+
+   Todo va en UNA sola tirada desplazable: primero los comandos y, más abajo, cada
+   bloque (notas, novedades) abre con un pequeño encabezado de sección separado por
+   una línea, para orientarse mientras se baja con el scroll. */
+.help-section {
+  margin-top: 26px;
+  padding-top: 20px;
   border-top: 1px solid var(--line-soft);
+}
+
+.help-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  font: 600 11px/1 var(--font);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.help-section-ico {
+  display: inline-flex;
+}
+
+.help-section-ico svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ------------------------------------------------------- historial (change log)
+
+   Una tarjeta por versión. Cabecera con la versión (píldora de acento), el título
+   y la fecha; debajo, las mejoras como viñetas. Añadir una versión = una entrada
+   más en el array CHANGELOG de help.ts, sin tocar este CSS. */
+.help-changelog {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.help-release {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.help-release-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.help-release-v {
+  font: 700 12px/1 var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(90, 159, 212, 0.1);
+}
+
+.help-release-title {
+  font: 600 13.5px/1.2 var(--font);
+  color: var(--text);
+}
+
+.help-release-date {
+  margin-left: auto;
+  font: 500 11px/1 var(--mono);
+  letter-spacing: 0.03em;
+  color: var(--muted-2);
+}
+
+.help-changes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* Cada mejora con una viñeta de acento delante, alineada con el texto. */
+.help-change {
+  position: relative;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.help-change::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0.55em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ------------------------------------------------------------- pie / crédito
+
+   Fijo al fondo del cuadro, fuera del scroll. Dice quién desarrolló la app y
+   repite la versión, con una línea suave que lo separa del contenido. */
+.help-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.help-credit {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.help-credit-ico {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.help-credit-ico svg {
+  width: 14px;
+  height: 14px;
+}
+
+.help-credit-v {
+  font: 500 10.5px/1 var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------- adaptativo */
