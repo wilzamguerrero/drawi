@@ -101,6 +101,9 @@ export class SideDock {
   private edge: MateriaEdge;
   private content!: HTMLElement;
   private heightTimer = 0;
+  private flashTimer = 0;
+  /** Campo resaltado por el paletón (persiste hasta la próxima interacción). */
+  private flashed: HTMLElement | null = null;
   private dockTitle!: HTMLElement;
 
   // Estado del cajón: qué dominio está abierto (null = plegado) y cuál está
@@ -321,24 +324,48 @@ export class SideDock {
   }
 
   /**
-   * Abre la pestaña del dominio y, si se indica un campo, lo trae a la vista y lo
-   * destella un instante. Lo usa el paletón para "llevar" al usuario a la opción
-   * elegida. Si el dominio no es una pestaña del dock, no hace nada.
+   * Abre la pestaña del dominio y, si se indica un campo, lo centra en el panel y
+   * lo resalta con un halo. El resalte NO se quita solo: se mantiene hasta que el
+   * usuario vuelve a hacer clic en cualquier sitio o pulsa una tecla (interactuar),
+   * para que pueda mirarlo con calma. Lo usa el paletón para "llevar" al usuario a
+   * la opción elegida. Si el dominio no es una pestaña del dock, no hace nada.
    */
   reveal(domainId: string, fieldId?: string): void {
     if (!this.tabs.has(domainId)) return;
+    // Si el cajón venía cerrado o en otra pestaña, se le da un respiro para que el
+    // deslizamiento/altura lo traiga a la vista antes de centrar y destellar; si ya
+    // estaba en esa pestaña, es inmediato.
+    const wasShowing = this.openCat === domainId;
     this.setOpen(domainId);
     if (!fieldId) return;
-    // Tras renderizar la página: localizar el control, acercarlo y resaltarlo.
-    requestAnimationFrame(() => {
+    this.clearFlash();
+    window.clearTimeout(this.flashTimer);
+    this.flashTimer = window.setTimeout(() => {
       const node = this.content.querySelector<HTMLElement>(`[data-field-id="${CSS.escape(fieldId)}"]`);
       if (!node) return;
-      node.scrollIntoView({ block: "nearest" });
-      node.classList.remove("is-flash");
-      void node.offsetWidth; // reinicia la animación si ya estaba puesta
+      node.scrollIntoView({ block: "center", behavior: wasShowing ? "smooth" : "auto" });
       node.classList.add("is-flash");
-      window.setTimeout(() => node.classList.remove("is-flash"), 1400);
-    });
+      this.flashed = node;
+      // Armar el descarte en el próximo frame: así el mismo gesto que abrió el panel
+      // (el clic en el paletón) no lo cierra de inmediato; solo la siguiente acción.
+      requestAnimationFrame(() => {
+        window.addEventListener("pointerdown", this.dismissFlash, true);
+        window.addEventListener("keydown", this.dismissFlash, true);
+      });
+    }, wasShowing ? 0 : 200);
+  }
+
+  /** Quita el resalte a la próxima interacción del usuario. */
+  private dismissFlash = (): void => this.clearFlash();
+
+  /** Retira el resalte activo (si lo hay) y desarma sus escuchas. */
+  private clearFlash(): void {
+    window.removeEventListener("pointerdown", this.dismissFlash, true);
+    window.removeEventListener("keydown", this.dismissFlash, true);
+    if (this.flashed) {
+      this.flashed.classList.remove("is-flash");
+      this.flashed = null;
+    }
   }
 
   /** Pulsar una pestaña: abre su dominio, o lo repliega si ya estaba abierto. */

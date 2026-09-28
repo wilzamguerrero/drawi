@@ -200,20 +200,25 @@
   display: none;
 }
 
-/* Destello breve cuando el paletón trae un campo a la vista: un halo de acento
-   que crece y se desvanece, para que el ojo encuentre la opción recién abierta. */
+/* Resalte cuando el paletón lleva a un campo. Aparece con un pequeño rebote y se
+   QUEDA (la JS lo retira a la próxima interacción del usuario). Para que no se
+   pegue al texto de los paneles, el halo lleva un hueco del color del dock entre
+   el control y el anillo de acento: así se lee separado y con aire. El tinte
+   interior (inset enorme) baña el control por encima de su fondo sin tapar nada. */
 .side-dock [data-field-id].is-flash {
-  border-radius: 8px;
-  animation: dock-field-flash 1.4s ease;
+  border-radius: 12px;
+  animation: dock-field-flash 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 @keyframes dock-field-flash {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(90, 159, 212, 0);
+  0% {
+    box-shadow: 0 0 0 6px #161619, 0 0 0 6px rgba(90, 159, 212, 0), inset 0 0 0 999px rgba(90, 159, 212, 0);
   }
-  18% {
-    box-shadow: 0 0 0 3px rgba(90, 159, 212, 0.5);
+  55% {
+    box-shadow: 0 0 0 6px #161619, 0 0 0 11px rgba(90, 159, 212, 0.95), inset 0 0 0 999px rgba(90, 159, 212, 0.18);
+  }
+  100% {
+    box-shadow: 0 0 0 6px #161619, 0 0 0 9px rgba(90, 159, 212, 0.9), inset 0 0 0 999px rgba(90, 159, 212, 0.13);
   }
 }
 
@@ -330,7 +335,13 @@
   .dock-page.is-shown {
     animation: none;
   }
+  /* Sin animación, pero el resalte se mantiene fijo (la JS lo retira a la próxima
+     interacción del usuario) para que el paletón siga señalando el campo al que ha
+     llevado. Mismo hueco del color del dock + anillo de acento que la versión
+     animada, para que se lea separado del texto de los paneles. */
   .side-dock [data-field-id].is-flash {
     animation: none;
+    box-shadow: 0 0 0 6px #161619, 0 0 0 9px rgba(90, 159, 212, 0.9), inset 0 0 0 999px rgba(90, 159, 212, 0.13);
+    border-radius: 12px;
   }
 }
