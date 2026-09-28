@@ -37,8 +37,12 @@ export interface ImportedColor {
 }
 
 // Geometria de los anillos (px, en el espacio local de la rueda).
-const START_RADIUS = 95;
-const RING_DEPTH = 52;
+// RING_DEPTH == RING_THICKNESS (pantone-wheel.ts): los niveles quedan pegados
+// unos con otros. START_RADIUS separa la corona de color del disco de inicio
+// (el anillo de degradado / escala de grises interior): subirlo abre ese hueco
+// y aleja los aros del centro para que se vean mas grandes.
+const START_RADIUS = 142;
+const RING_DEPTH = 30;
 const MAX_RINGS = 6;
 
 /** Cuantos anillos ocupa cada sector: da el borde irregular de la rueda. */

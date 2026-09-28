@@ -29,10 +29,19 @@ import { decodeImagePixels, extractColorsFromImage, parseACO, parseASE } from ".
  */
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const RING_THICKNESS = 48;
-const GAP = 2;
-const GRAD_RADIUS = 60;
-const GRAD_THICKNESS = 26;
+// Alto (grosor radial) de cada nivel de color. Con RING_DEPTH igual a este valor
+// en pantone-palettes.ts los aros quedan pegados (radios contiguos).
+const RING_THICKNESS = 30;
+// Sin hueco angular: las muestras de un mismo anillo se tocan y no se ve el fondo
+// entre ellas (rueda continua, "sin separaciones").
+const GAP = 0;
+// Radio INTERIOR del anillo de degradado (escala de grises + tintes). Es el
+// valor para alejar del centro el aro de gris: subirlo lo separa del hub, igual
+// que START_RADIUS (pantone-palettes.ts) hace con la corona de colores.
+const GRAD_RADIUS = 106;
+// Mismo alto que un nivel de color (RING_THICKNESS): la escala de grises interior
+// deja de sobresalir en grosor frente al resto de anillos.
+const GRAD_THICKNESS = 24;
 const GRAD_SEGMENTS = 16;
 const VIEW = 460; // medio lado del viewBox del SVG de anillos
 const POS_KEY = "drawi.pantone.pos";
@@ -65,19 +74,30 @@ const textRotation = (deg: number): number => {
   return n > 90 && n < 270 ? n + 180 : n;
 };
 
-/** Path SVG de un sector de corona (donut slice) con separacion `gap`. */
+/**
+ * Path SVG de un sector de corona (donut slice).
+ * - `gap`: separacion ANGULAR entre sectores vecinos del mismo anillo.
+ * - `radialGap`: separacion RADIAL entre anillos concentricos (por defecto = gap).
+ *   Con 0 los anillos se tocan (pegados), sin la linea fina entre niveles.
+ * - `refRadius`: radio de referencia para convertir `gap` (px) a grados. Pasando
+ *   el MISMO valor a todos los anillos, el hueco angular es identico en grados y
+ *   los bordes entre sectores caen en lineas radiales rectas —sin el escalonado
+ *   que salia al calcular el angulo con el radio interior de cada anillo—.
+ */
 const annularSector = (
   inner: number,
   outer: number,
   start: number,
   end: number,
   gap: number,
+  radialGap = gap,
+  refRadius = inner,
 ): string => {
-  const ag = (gap / inner) * (180 / Math.PI);
+  const ag = (gap / refRadius) * (180 / Math.PI);
   const s = start + ag / 2;
   const e = end - ag / 2;
-  const ir = inner + gap / 2;
-  const or = outer - gap / 2;
+  const ir = inner + radialGap / 2;
+  const or = outer - radialGap / 2;
   const so = polar(or, e);
   const eo = polar(or, s);
   const si = polar(ir, e);
@@ -202,7 +222,9 @@ export class PantoneWheel {
     });
     this.ringsSvg.appendChild(this.rotGroup);
 
-    this.gradientSvg = svgEl("svg", { class: "pw-gradient", viewBox: "-100 -100 200 200" });
+    // El viewBox (1px/unidad, ver .pw-gradient en CSS) deja margen hasta radio
+    // 130 para que el aro de gris pueda alejarse (GRAD_RADIUS) sin recortarse.
+    this.gradientSvg = svgEl("svg", { class: "pw-gradient", viewBox: "-130 -130 260 260" });
 
     this.hubName = el("span", { class: "pw-hub-name" });
     this.hubHex = el("span", { class: "pw-hub-hex" });
@@ -316,6 +338,11 @@ export class PantoneWheel {
   private buildRings(): void {
     while (this.rotGroup.firstChild) this.rotGroup.removeChild(this.rotGroup.firstChild);
 
+    // Radio de referencia comun para el hueco angular: asi todos los niveles
+    // comparten el mismo angulo de separacion y los bordes entre sectores caen
+    // en lineas radiales rectas (sin desfase entre un anillo y el siguiente).
+    const refR = this.palette.rings[0]?.radius ?? RING_THICKNESS;
+
     for (const ring of this.palette.rings) {
       const outer = ring.radius + RING_THICKNESS;
       for (const item of ring.items) {
@@ -324,10 +351,14 @@ export class PantoneWheel {
 
         const path = svgEl("path", {
           class: "pw-swatch",
-          d: annularSector(ring.radius, outer, item.startAngle, item.endAngle, GAP),
+          d: annularSector(ring.radius, outer, item.startAngle, item.endAngle, GAP, 0, refR),
           fill: item.hex,
           stroke: item.hex,
-          "stroke-width": 4,
+          // Trazo fino del mismo color: solo tapa la costura de antialias entre
+          // muestras contiguas (radial y angularmente) para que no asome el fondo.
+          // Antes valia 4 y cada anillo pintaba 2px sobre el de dentro, desplazando
+          // el color respecto a su etiqueta —la "superposicion" que se notaba—.
+          "stroke-width": 1.5,
           "stroke-linejoin": "round",
         });
         path.addEventListener("pointerdown", (e) => this.onSwatchDown(e, item));
