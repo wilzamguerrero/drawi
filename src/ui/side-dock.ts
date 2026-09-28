@@ -102,6 +102,7 @@ export class SideDock {
   private content!: HTMLElement;
   private heightTimer = 0;
   private flashTimer = 0;
+  private flashOutTimer = 0;
   /** Campo resaltado por el paletón (persiste hasta la próxima interacción). */
   private flashed: HTMLElement | null = null;
   private dockTitle!: HTMLElement;
@@ -344,7 +345,14 @@ export class SideDock {
       const node = this.content.querySelector<HTMLElement>(`[data-field-id="${CSS.escape(fieldId)}"]`);
       if (!node) return;
       node.scrollIntoView({ block: "center", behavior: wasShowing ? "smooth" : "auto" });
+      // Por si este mismo campo se estaba desvaneciendo de un resalte anterior:
+      // cancelar su salida y arrancar limpio.
+      window.clearTimeout(this.flashOutTimer);
+      node.classList.remove("is-flash-out");
       node.classList.add("is-flash");
+      // Marco punteado (SVG con esquinas redondeadas) que marcha alrededor. Va como
+      // elemento hijo para que el trazo siga la curva de las esquinas sin cortes.
+      if (!node.querySelector(".dock-flash-frame")) node.appendChild(this.makeFlashFrame());
       this.flashed = node;
       // Armar el descarte en el próximo frame: así el mismo gesto que abrió el panel
       // (el clic en el paletón) no lo cierra de inmediato; solo la siguiente acción.
@@ -358,14 +366,33 @@ export class SideDock {
   /** Quita el resalte a la próxima interacción del usuario. */
   private dismissFlash = (): void => this.clearFlash();
 
-  /** Retira el resalte activo (si lo hay) y desarma sus escuchas. */
+  /** Construye el marco punteado del resalte: un SVG con un `<rect>` redondeado. La
+      geometría (posición, tamaño, radio, trazo y marcha) la fija el CSS; aquí solo se
+      crea el esqueleto. */
+  private makeFlashFrame(): SVGSVGElement {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "dock-flash-frame");
+    svg.setAttribute("aria-hidden", "true");
+    svg.appendChild(document.createElementNS(NS, "rect"));
+    return svg;
+  }
+
+  /** Retira el resalte activo (si lo hay) y desarma sus escuchas. La salida es
+      suave: se marca `is-flash-out` para que el CSS funda el halo y el marco, y se
+      quitan las clases y el marco al terminar la transición. */
   private clearFlash(): void {
     window.removeEventListener("pointerdown", this.dismissFlash, true);
     window.removeEventListener("keydown", this.dismissFlash, true);
-    if (this.flashed) {
-      this.flashed.classList.remove("is-flash");
-      this.flashed = null;
-    }
+    const node = this.flashed;
+    this.flashed = null;
+    if (!node) return;
+    window.clearTimeout(this.flashOutTimer);
+    node.classList.add("is-flash-out");
+    this.flashOutTimer = window.setTimeout(() => {
+      node.classList.remove("is-flash", "is-flash-out");
+      node.querySelector(".dock-flash-frame")?.remove();
+    }, 460);
   }
 
   /** Pulsar una pestaña: abre su dominio, o lo repliega si ya estaba abierto. */

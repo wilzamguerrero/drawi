@@ -201,24 +201,119 @@
 }
 
 /* Resalte cuando el paletón lleva a un campo. Aparece con un pequeño rebote y se
-   QUEDA (la JS lo retira a la próxima interacción del usuario). Para que no se
-   pegue al texto de los paneles, el halo lleva un hueco del color del dock entre
-   el control y el anillo de acento: así se lee separado y con aire. El tinte
-   interior (inset enorme) baña el control por encima de su fondo sin tapar nada. */
+   QUEDA (la JS lo retira a la próxima interacción del usuario). El borde es UNO
+   SOLO: una franja punteada de acento que MARCHA alrededor (marching ants, en el
+   `::after`). El `box-shadow` ya no dibuja anillo —eso duplicaba el contorno—; solo
+   aporta el hueco del color del dock (para separar la punteada del texto) y el tinte
+   interior (inset enorme) que baña el control sin taparlo. Tras asentarse ONDULA el
+   border-radius y respira el tinte, como la piel viva de los paneles. El `box-shadow`
+   base (estado asentado) está declarado aparte del `animation` para que, al salir
+   (`is-flash-out` → `animation:none`), la transición lo funda en vez de cortarlo en
+   seco. `position:relative` ancla la franja punteada del `::after`. */
 .side-dock [data-field-id].is-flash {
+  position: relative;
+  /* Elevar el campo resaltado sobre sus vecinos: sin esto, los controles que vienen
+     después en el DOM pintan sobre la franja punteada (que asoma 6px fuera), y se veía
+     "detrás". Con z-index propio, el campo y su marco quedan por encima de todo. */
+  z-index: 5;
   border-radius: 12px;
-  animation: dock-field-flash 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  box-shadow: 0 0 0 6px #161619, inset 0 0 0 999px rgba(90, 159, 212, 0.13);
+  transition: box-shadow 0.42s ease;
+  animation:
+    dock-field-flash 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards,
+    dock-field-wave 3.4s ease-in-out 0.55s infinite;
+}
+
+/* Marco punteado que marcha alrededor del campo (marching ants): el ÚNICO borde. Se
+   dibuja como un `<rect>` de SVG (lo inyecta la JS al resaltar) con las esquinas
+   redondeadas (rx): así el trazo punteado SIGUE la curva de las esquinas de forma
+   continua, sin los cortes que dejaban los cuatro degradados rectos al toparse con el
+   redondeo. Marcha animando `stroke-dashoffset`. Va en el borde exterior del hueco del
+   halo (inset -6px), sobre el contenido, y no captura clics. */
+.side-dock [data-field-id] .dock-flash-frame {
+  position: absolute;
+  /* Un `<svg>` es elemento REEMPLAZADO: `inset` no lo estira (caería a su tamaño
+     intrínseco por defecto, 300×150, desbordando el panel y varias filas). Se
+     dimensiona explícito al campo + 6px por lado. */
+  top: -6px;
+  left: -6px;
+  width: calc(100% + 12px);
+  height: calc(100% + 12px);
+  overflow: visible;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.42s ease;
+}
+
+.side-dock [data-field-id] .dock-flash-frame rect {
+  x: 1px;
+  y: 1px;
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  rx: 13px;
+  ry: 13px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 6 6;
+  animation: dock-field-march 0.55s linear infinite;
+}
+
+/* Salida suave: la JS pone `is-flash-out` y quita todo (clases + marco) tras la
+   transición. Se apaga la animación (el `box-shadow` cae al estado asentado base, sin
+   salto) y se funden a transparente el halo y el marco punteado. */
+.side-dock [data-field-id].is-flash.is-flash-out {
+  animation: none;
+  box-shadow: 0 0 0 6px rgba(22, 22, 25, 0), inset 0 0 0 999px rgba(90, 159, 212, 0);
+}
+
+.side-dock [data-field-id].is-flash.is-flash-out .dock-flash-frame {
+  opacity: 0;
 }
 
 @keyframes dock-field-flash {
   0% {
-    box-shadow: 0 0 0 6px #161619, 0 0 0 6px rgba(90, 159, 212, 0), inset 0 0 0 999px rgba(90, 159, 212, 0);
+    box-shadow: 0 0 0 6px rgba(22, 22, 25, 0), inset 0 0 0 999px rgba(90, 159, 212, 0);
   }
   55% {
-    box-shadow: 0 0 0 6px #161619, 0 0 0 11px rgba(90, 159, 212, 0.95), inset 0 0 0 999px rgba(90, 159, 212, 0.18);
+    box-shadow: 0 0 0 6px #161619, inset 0 0 0 999px rgba(90, 159, 212, 0.18);
   }
   100% {
-    box-shadow: 0 0 0 6px #161619, 0 0 0 9px rgba(90, 159, 212, 0.9), inset 0 0 0 999px rgba(90, 159, 212, 0.13);
+    box-shadow: 0 0 0 6px #161619, inset 0 0 0 999px rgba(90, 159, 212, 0.13);
+  }
+}
+
+/* Marcha del punteado: el trazo se desplaza un periodo entero (dash+gap = 12) a lo
+   largo del contorno, así las rayitas giran sin fin, sin costura y siguiendo las
+   esquinas redondeadas. */
+@keyframes dock-field-march {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+/* Ondulado en reposo: el halo respira como los paneles pero SIN volverse óvalo.
+   El border-radius se mueve entre radios PEQUEÑOS en px (no porcentajes, que en un
+   campo ancho y bajo lo redondearían hasta la elipse): las esquinas laten leves y
+   asimétricas y mantienen la forma de caja, como la silueta viva de los paneles.
+   El tinte interior respira su intensidad, y el hueco del color del dock (6px) fijo. */
+@keyframes dock-field-wave {
+  0% {
+    border-radius: 12px 13px 12px 13px / 13px 12px 13px 12px;
+    box-shadow: 0 0 0 6px #161619, inset 0 0 0 999px rgba(90, 159, 212, 0.13);
+  }
+  33% {
+    border-radius: 14px 11px 13px 12px / 12px 14px 11px 13px;
+    box-shadow: 0 0 0 6px #161619, inset 0 0 0 999px rgba(90, 159, 212, 0.17);
+  }
+  66% {
+    border-radius: 11px 14px 12px 13px / 14px 11px 13px 12px;
+    box-shadow: 0 0 0 6px #161619, inset 0 0 0 999px rgba(90, 159, 212, 0.12);
+  }
+  100% {
+    border-radius: 12px 13px 12px 13px / 13px 12px 13px 12px;
+    box-shadow: 0 0 0 6px #161619, inset 0 0 0 999px rgba(90, 159, 212, 0.13);
   }
 }
 
@@ -337,11 +432,15 @@
   }
   /* Sin animación, pero el resalte se mantiene fijo (la JS lo retira a la próxima
      interacción del usuario) para que el paletón siga señalando el campo al que ha
-     llevado. Mismo hueco del color del dock + anillo de acento que la versión
-     animada, para que se lea separado del texto de los paneles. */
+     llevado. Mismo hueco del color del dock + tinte + franja punteada que la versión
+     animada, pero quietos: la punteada es el único borde y se lee separada del texto,
+     solo que sin marchar. */
   .side-dock [data-field-id].is-flash {
     animation: none;
-    box-shadow: 0 0 0 6px #161619, 0 0 0 9px rgba(90, 159, 212, 0.9), inset 0 0 0 999px rgba(90, 159, 212, 0.13);
+    box-shadow: 0 0 0 6px #161619, inset 0 0 0 999px rgba(90, 159, 212, 0.13);
     border-radius: 12px;
+  }
+  .side-dock [data-field-id] .dock-flash-frame rect {
+    animation: none;
   }
 }
