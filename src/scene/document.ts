@@ -152,6 +152,7 @@ export class SceneDocument {
     opacity: number,
     smooth: boolean,
     gradient: boolean,
+    erase = false,
     extraTransform?: Mat2d,
   ): InkItem | null {
     if (polys.length === 0) return null;
@@ -176,6 +177,7 @@ export class SceneDocument {
       opacity,
       smooth,
       gradient,
+      erase,
       gy0: bounds.y,
       gy1: bounds.y + bounds.h,
       bounds,

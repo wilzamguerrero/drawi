@@ -522,8 +522,12 @@ export class Editor {
         editor.setColor(hex);
       },
       setWet(wet: WetStroke | null): void {
+        const wasErase = editor.wet?.erase;
         editor.wet = wet;
         editor.wetLayer.invalidate();
+        // El borrado se compone sobre la propia capa de tinta (destination-out),
+        // no en la capa humeda: hay que repintar la tinta para verlo en vivo.
+        if (wet?.erase || wasErase) editor.inkLayer.invalidate();
       },
       commitWet(wet: WetStroke): void {
         const item = editor.doc.buildItem(
@@ -532,6 +536,7 @@ export class Editor {
           wet.opacity,
           wet.smooth,
           wet.gradient,
+          wet.erase,
         );
         if (!item) return;
         item.transforms = wet.transforms;
@@ -715,21 +720,43 @@ export class Editor {
 
     this.keyHandler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      const tag = target?.tagName;
+      // Solo se bloquea el atajo cuando de verdad se está escribiendo texto (un
+      // campo de texto o editable). Deslizadores, interruptores y botones NO son
+      // texto: con ellos enfocados, deshacer/rehacer y los atajos deben seguir
+      // funcionando (antes cualquier <input> tragaba Ctrl+Z tras tocar la goma).
+      const editingText =
+        tag === "TEXTAREA" ||
+        !!target?.isContentEditable ||
+        (tag === "INPUT" && isTextInput(target as HTMLInputElement));
       const mod = e.ctrlKey || e.metaKey;
 
       if (mod && e.key.toLowerCase() === "z") {
+        if (editingText) return;
         e.preventDefault();
         if (e.shiftKey) this.redo();
         else this.undo();
         return;
       }
       if (mod && e.key.toLowerCase() === "y") {
+        if (editingText) return;
         e.preventDefault();
         this.redo();
         return;
       }
       if (mod) return;
+
+      // El resto de atajos de una tecla no deben dispararse mientras se teclea.
+      if (editingText) return;
+
+      // Alt alterna "usar como goma": invierte los modos de pintura a borrado.
+      // Es el mismo estado que el toggle del panel, así que ambos se sincronizan.
+      if (e.key === "Alt") {
+        if (e.repeat) return;
+        e.preventDefault();
+        this.setBrush({ invertErase: !this.brush.invertErase });
+        return;
+      }
 
       if (e.code === "Space" && this.tempTool !== "hand") {
         e.preventDefault();
@@ -751,6 +778,9 @@ export class Editor {
           break;
         case "3":
           this.setBrush({ mode: "pull" });
+          break;
+        case "4":
+          this.setBrush({ mode: "erase" });
           break;
         case "[":
           this.setBrush({ size: Math.max(0.5, this.brush.size * 0.85) });
@@ -861,6 +891,23 @@ export class Editor {
     if (this.inkLayer.dirty) {
       this.inkLayer.clear();
       this.inkRenderer.render(this.inkLayer, this.doc.items, this.camera);
+      // Vista previa en vivo del borrado (modo Pincel/Forma): se recorta sobre
+      // la tinta ya pintada; al soltar se consolida como item con `erase`.
+      if (this.wet && this.wet.erase) {
+        this.inkRenderer.renderWet(
+          this.inkLayer,
+          this.wet.polys,
+          this.wet.transforms,
+          this.camera,
+          this.wet.color,
+          this.wet.opacity,
+          this.wet.smooth,
+          this.wet.gradient,
+          this.wet.gy0,
+          this.wet.gy1,
+          true,
+        );
+      }
       this.inkLayer.dirty = false;
     }
 
@@ -877,7 +924,8 @@ export class Editor {
 
     if (this.wetLayer.dirty) {
       this.wetLayer.clear();
-      if (this.wet) {
+      // El wet de borrado se pinta en la capa de tinta (arriba), no aquí.
+      if (this.wet && !this.wet.erase) {
         this.inkRenderer.renderWet(
           this.wetLayer,
           this.wet.polys,
@@ -954,3 +1002,21 @@ const EMPTY_SAMPLE: InputSample = {
 };
 
 export const clampOpacity = (v: number): number => clamp01(v);
+
+// Tipos de <input> que NO editan texto: con ellos enfocados los atajos de
+// teclado (incluido Ctrl+Z) siguen activos. El resto se trata como texto.
+const NON_TEXT_INPUT = new Set([
+  "range",
+  "checkbox",
+  "radio",
+  "button",
+  "submit",
+  "reset",
+  "color",
+  "file",
+  "image",
+]);
+
+function isTextInput(el: HTMLInputElement): boolean {
+  return !NON_TEXT_INPUT.has(el.type);
+}

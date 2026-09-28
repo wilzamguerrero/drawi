@@ -8,8 +8,24 @@ export type StrokeDynamics =
   | "pressure-velocity"
   | "tilt";
 
-/** Modo heredado de Alchemy/Webchemy. */
-export type BrushMode = "stroke" | "fill" | "pull";
+/** Modo heredado de Alchemy/Webchemy + el borrador vectorial propio. */
+export type BrushMode = "stroke" | "fill" | "pull" | "erase";
+
+/**
+ * Cómo actúa el borrador (modo `erase`).
+ * - `brush`: trazo de borrado de ancho constante (destination-out).
+ * - `object`: tocar un trazo lo elimina entero.
+ * - `color`: elimina solo los trazos del color del primero que se toca.
+ * - `shape`: usa la forma activa como huella y borra el área.
+ */
+export type EraseMode = "brush" | "object" | "color" | "shape";
+
+export const ERASE_MODE_LABELS: Record<EraseMode, string> = {
+  brush: "Pincel",
+  object: "Objeto",
+  color: "Color",
+  shape: "Forma",
+};
 
 export const DYNAMICS_INFO: Record<StrokeDynamics, { label: string; hint: string }> = {
   constant: {
@@ -61,6 +77,17 @@ export interface BrushSettings {
   splat: boolean;
   /** Modificador Alchemy: degradado vertical sobre el trazo. */
   gradient: boolean;
+  /** Sub-modo del borrador (solo aplica con `mode === "erase"`). */
+  eraseMode: EraseMode;
+  /** Borrador suave: usa la opacidad como fuerza en vez de borrar del todo. */
+  eraseFade: boolean;
+  /** El gesto de borrado elimina también cuerpos de materia que toque. */
+  eraseMatter: boolean;
+  /**
+   * Invierte los modos de pintura (Trazo/Relleno/Arrastre) a borrado: el mismo
+   * gesto recorta la tinta en vez de pintarla. La tecla Alt lo alterna.
+   */
+  invertErase: boolean;
 }
 
 export const DEFAULT_BRUSH: BrushSettings = {
@@ -79,6 +106,10 @@ export const DEFAULT_BRUSH: BrushSettings = {
   jitter: 0,
   splat: false,
   gradient: false,
+  eraseMode: "brush",
+  eraseFade: false,
+  eraseMatter: false,
+  invertErase: false,
 };
 
 /** Punto ya procesado: posicion en mundo + radio resuelto. */

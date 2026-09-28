@@ -30,6 +30,8 @@ export interface InkItem {
   /** Extremos del degradado en Y de mundo. */
   gy0: number;
   gy1: number;
+  /** Trazo de borrado: se pinta con destination-out para recortar la tinta. */
+  erase?: boolean;
   bounds: Rect;
 }
 

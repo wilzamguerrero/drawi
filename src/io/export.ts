@@ -73,10 +73,19 @@ function fieldLoops(bodies: readonly Body[], style: FieldStyle, cell: number): F
   });
 }
 
-function exportBounds(doc: SceneDocument, margin: number): Rect {
-  const b = doc.contentBounds();
+function exportBounds(doc: SceneDocument, margin: number): Rect {  const b = doc.contentBounds();
   if (b.w <= 0 || b.h <= 0) return { x: -400, y: -300, w: 800, h: 600 };
   return expandRect(b, margin);
+}
+
+/** Lienzo transparente auxiliar para aislar la tinta del fondo al borrar. */
+function makeInkContext(width: number, height: number): CanvasRenderingContext2D {
+  const c = document.createElement("canvas");
+  c.width = width;
+  c.height = height;
+  const cx = c.getContext("2d");
+  if (!cx) throw new Error("Canvas 2D no disponible");
+  return cx;
 }
 
 /** Rasteriza el documento completo a un canvas nuevo. */
@@ -100,18 +109,42 @@ export function renderToCanvas(
   ctx.setTransform(opt.scale, 0, 0, opt.scale, -box.x * opt.scale, -box.y * opt.scale);
   ctx.lineJoin = "round";
 
+  // La tinta se pinta en un lienzo aparte para que el borrado (destination-out)
+  // recorte solo la tinta y no perfore el fondo, igual que en pantalla (la
+  // tinta es su propia capa sobre el fondo). Luego se compone sobre el fondo.
+  const hasErase = doc.items.some((it) => it.erase);
+  const inkCtx = hasErase ? makeInkContext(canvas.width, canvas.height) : ctx;
+  if (inkCtx !== ctx) {
+    inkCtx.setTransform(opt.scale, 0, 0, opt.scale, -box.x * opt.scale, -box.y * opt.scale);
+    inkCtx.lineJoin = "round";
+  }
+
   for (const item of doc.items) {
     const paths = item.polys.filter((p) => p.length >= 3).map((p) => polygonToPath2D(p, item.smooth));
     if (paths.length === 0) continue;
-    ctx.fillStyle = item.gradient
-      ? buildGradient(ctx, item.color, item.opacity, item.gy0, item.gy1)
-      : cssRgba(hexToRgb(item.color), item.opacity);
-    for (const m of item.transforms) {
-      ctx.save();
-      ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
-      for (const p of paths) ctx.fill(p, "nonzero");
-      ctx.restore();
+    if (item.erase) {
+      inkCtx.globalCompositeOperation = "destination-out";
+      inkCtx.fillStyle = `rgba(0,0,0,${item.opacity})`;
+    } else {
+      inkCtx.globalCompositeOperation = "source-over";
+      inkCtx.fillStyle = item.gradient
+        ? buildGradient(inkCtx, item.color, item.opacity, item.gy0, item.gy1)
+        : cssRgba(hexToRgb(item.color), item.opacity);
     }
+    for (const m of item.transforms) {
+      inkCtx.save();
+      inkCtx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+      for (const p of paths) inkCtx.fill(p, "nonzero");
+      inkCtx.restore();
+    }
+  }
+
+  if (inkCtx !== ctx) {
+    inkCtx.globalCompositeOperation = "source-over";
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(inkCtx.canvas, 0, 0);
+    ctx.restore();
   }
 
   if (opt.matter) {
@@ -184,7 +217,12 @@ export function exportSvg(doc: SceneDocument, options: Partial<ExportOptions> = 
     );
   }
 
+  const eraseItems = doc.items.filter((it) => it.erase && it.polys.some((p) => p.length >= 3));
+  const maskId = "erase-mask";
+  const inkParts: string[] = [];
+
   doc.items.forEach((item, index) => {
+    if (item.erase) return; // los borradores se aplican como mascara, no se pintan
     const d = item.polys
       .filter((p) => p.length >= 3)
       .map((p) => polygonToSvgPath(p, item.smooth))
@@ -207,13 +245,40 @@ export function exportSvg(doc: SceneDocument, options: Partial<ExportOptions> = 
     }
 
     const opacity = item.gradient ? "" : ` fill-opacity="${fmt(item.opacity)}"`;
-    parts.push(`<g fill="${fill}"${opacity} fill-rule="nonzero">`);
+    inkParts.push(`<g fill="${fill}"${opacity} fill-rule="nonzero">`);
     for (const m of item.transforms) {
       const t = isIdentityMatrix(m) ? "" : ` transform="${toSvgMatrix(m)}"`;
-      parts.push(`<path${t} d="${d}"/>`);
+      inkParts.push(`<path${t} d="${d}"/>`);
     }
-    parts.push(`</g>`);
+    inkParts.push(`</g>`);
   });
+
+  if (eraseItems.length > 0) {
+    // Mascara de borrado: fondo blanco (conserva) y cada trazo de borrado en
+    // negro con su opacidad (recorta; con "difuminar" recorta parcialmente).
+    // Nota: la mascara es global, no respeta el orden Z entre tinta y borrados
+    // solapados; para un recorte exacto por orden, exporta a PNG.
+    const mask: string[] = [
+      `<mask id="${maskId}" maskUnits="userSpaceOnUse" x="${fmt(box.x)}" y="${fmt(box.y)}" width="${fmt(box.w)}" height="${fmt(box.h)}">`,
+      `<rect x="${fmt(box.x)}" y="${fmt(box.y)}" width="${fmt(box.w)}" height="${fmt(box.h)}" fill="#fff"/>`,
+    ];
+    for (const item of eraseItems) {
+      const d = item.polys
+        .filter((p) => p.length >= 3)
+        .map((p) => polygonToSvgPath(p, item.smooth))
+        .join(" ");
+      if (!d) continue;
+      for (const m of item.transforms) {
+        const t = isIdentityMatrix(m) ? "" : ` transform="${toSvgMatrix(m)}"`;
+        mask.push(`<path${t} d="${d}" fill="#000" fill-opacity="${fmt(item.opacity)}" fill-rule="nonzero"/>`);
+      }
+    }
+    mask.push(`</mask>`);
+    defs.push(mask.join(""));
+    parts.push(`<g mask="url(#${maskId})">`, ...inkParts, `</g>`);
+  } else {
+    parts.push(...inkParts);
+  }
 
   if (opt.matter) {
     const loops = fieldLoops(doc.bodies, doc.field, opt.fieldCell);

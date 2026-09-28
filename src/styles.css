@@ -614,6 +614,16 @@ body {
   display: none;
 }
 
+/* Envoltorio neutro para intercambiar bloques de controles por modo (pincel /
+   borrador) sin alterar el espaciado: transparente al layout de la sección, y
+   se colapsa entero al ocultarse. */
+.dock-stack {
+  display: contents;
+}
+.dock-stack.is-hidden {
+  display: none;
+}
+
 .ctrl-group {
   display: flex;
   flex-direction: column;

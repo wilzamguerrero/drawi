@@ -58,9 +58,17 @@ export class InkRenderer {
   /** Pinta un item concreto con el contexto ya en coordenadas de mundo. */
   drawItem(ctx: CanvasRenderingContext2D, item: InkItem, paths: Path2D[]): void {
     if (paths.length === 0) return;
-    ctx.fillStyle = item.gradient
-      ? buildGradient(ctx, item.color, item.opacity, item.gy0, item.gy1)
-      : cssRgba(hexToRgb(item.color), item.opacity);
+    // Un item de borrado no aporta color: recorta la tinta que hay debajo con
+    // `destination-out` (la opacidad es la fuerza del borrado). Se restaura
+    // `source-over` al terminar para no afectar a los items siguientes.
+    if (item.erase) {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = `rgba(0,0,0,${item.opacity})`;
+    } else {
+      ctx.fillStyle = item.gradient
+        ? buildGradient(ctx, item.color, item.opacity, item.gy0, item.gy1)
+        : cssRgba(hexToRgb(item.color), item.opacity);
+    }
 
     for (const m of item.transforms) {
       ctx.save();
@@ -71,6 +79,7 @@ export class InkRenderer {
       }
       ctx.restore();
     }
+    if (item.erase) ctx.globalCompositeOperation = "source-over";
   }
 
   /**
@@ -90,13 +99,19 @@ export class InkRenderer {
     gradient: boolean,
     gy0: number,
     gy1: number,
+    erase = false,
   ): void {
     if (polys.length === 0) return;
     const ctx = layer.ctx;
     camera.applyTo(ctx, layer.dpr);
-    ctx.fillStyle = gradient
-      ? buildGradient(ctx, color, opacity, gy0, gy1)
-      : cssRgba(hexToRgb(color), opacity);
+    if (erase) {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = `rgba(0,0,0,${opacity})`;
+    } else {
+      ctx.fillStyle = gradient
+        ? buildGradient(ctx, color, opacity, gy0, gy1)
+        : cssRgba(hexToRgb(color), opacity);
+    }
 
     const paths: Path2D[] = [];
     for (const poly of polys) {
@@ -108,6 +123,7 @@ export class InkRenderer {
       for (const p of paths) ctx.fill(p, "nonzero");
       ctx.restore();
     }
+    if (erase) ctx.globalCompositeOperation = "source-over";
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 }

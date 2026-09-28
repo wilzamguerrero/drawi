@@ -1,7 +1,7 @@
 import type { Editor, EditorState } from "../../app/editor";
 import { DEFAULT_PALETTES } from "../../core/color";
 import { SHAPE_LABELS, type ShapeKind } from "../../physics/shapes";
-import { DYNAMICS_INFO, type BrushMode, type StrokeDynamics } from "../../stroke/types";
+import { DYNAMICS_INFO, ERASE_MODE_LABELS, type BrushMode, type EraseMode, type StrokeDynamics } from "../../stroke/types";
 import { SYMMETRY_LABELS, type SymmetryMode } from "../../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../../tools/pull-shapes";
 import type { HotNode, MenuHooks } from "../hotbox/menu";
@@ -153,13 +153,18 @@ const MODE_LABELS: Record<BrushMode, string> = {
   stroke: "Trazo",
   fill: "Relleno",
   pull: "Arrastre",
+  erase: "Borrador",
 };
 
 const MODE_ICONS: Record<BrushMode, string> = {
   stroke: "brush",
   fill: "droplet",
   pull: "matter",
+  erase: "eraser",
 };
+
+/** Numero de atajo de teclado por modo (Trazo 1 / Relleno 2 / Arrastre 3 / Borrador 4). */
+const MODE_KEYS: Record<BrushMode, number> = { stroke: 1, fill: 2, pull: 3, erase: 4 };
 
 const usesPressure = (d: StrokeDynamics): boolean => d === "pressure" || d === "pressure-velocity";
 const usesVelocity = (d: StrokeDynamics): boolean => d === "velocity" || d === "pressure-velocity";
@@ -183,6 +188,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       label: "Dinamica",
       icon: "tune",
       chooser: "select",
+      visible: (s) => s.brush.mode !== "erase",
       hint: (s) => DYNAMICS_INFO[s.brush.dynamics].hint,
       options: (Object.keys(DYNAMICS_INFO) as StrokeDynamics[]).map((k) => ({ value: k, id: `dyn-${k}`, label: DYNAMICS_INFO[k].label })),
       get: (s) => s.brush.dynamics,
@@ -193,6 +199,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       label: "Respuesta",
       icon: "tune",
       hint: "Cómo el lápiz responde a presión y velocidad",
+      visible: (s) => s.brush.mode !== "erase",
       children: [
         { kind: "number", id: "smoothing", label: "Suavizado", icon: "spark", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Filtro One-Euro: quita el temblor sin anadir retraso a velocidad alta.", get: (s) => s.brush.smoothing, set: (v) => editor.setBrush({ smoothing: v }) },
         { kind: "number", id: "streamline", label: "Estabilizador", icon: "spark", min: 0, max: 0.95, step: 0.01, decimals: 2, hint: "La punta persigue al cursor. Alto da curvas limpias, pero se nota el arrastre.", get: (s) => s.brush.streamline, set: (v) => editor.setBrush({ streamline: v }) },
@@ -207,14 +214,31 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       label: "Perfil",
       icon: "brush",
       hint: "Afilado de los extremos y textura del trazo",
+      visible: (s) => s.brush.mode !== "erase",
       children: [
         { kind: "number", id: "taper-in", label: "Afilado inicial", min: 0, max: 0.5, step: 0.01, decimals: 2, get: (s) => s.brush.taperIn, set: (v) => editor.setBrush({ taperIn: v }) },
         { kind: "number", id: "taper-out", label: "Afilado final", min: 0, max: 0.5, step: 0.01, decimals: 2, get: (s) => s.brush.taperOut, set: (v) => editor.setBrush({ taperOut: v }) },
         { kind: "number", id: "jitter", label: "Temblor", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Ruido de ancho: da textura de carboncillo.", get: (s) => s.brush.jitter, set: (v) => editor.setBrush({ jitter: v }) },
       ],
     },
-    { kind: "toggle", id: "gradient", label: "Degradado", icon: "layers", hint: "Desvanece el trazo hacia abajo (modificador de Alchemy). Tecla G.", get: (s) => s.brush.gradient, set: (v) => editor.setBrush({ gradient: v }) },
-    { kind: "toggle", id: "splat", label: "Splat", icon: "droplet", hint: "Contorno anguloso en vez de suave (modificador de Alchemy). Tecla P.", get: (s) => s.brush.splat, set: (v) => editor.setBrush({ splat: v }) },
+    { kind: "toggle", id: "gradient", label: "Degradado", icon: "layers", hint: "Desvanece el trazo hacia abajo (modificador de Alchemy). Tecla G.", visible: (s) => s.brush.mode !== "erase", get: (s) => s.brush.gradient, set: (v) => editor.setBrush({ gradient: v }) },
+    { kind: "toggle", id: "splat", label: "Splat", icon: "droplet", hint: "Contorno anguloso en vez de suave (modificador de Alchemy). Tecla P.", visible: (s) => s.brush.mode !== "erase", get: (s) => s.brush.splat, set: (v) => editor.setBrush({ splat: v }) },
+    { kind: "toggle", id: "invert-erase", label: "Usar como goma", icon: "eraser", hint: "Invierte el trazo, relleno o arrastre a borrado: el mismo gesto recorta la tinta. Tecla Alt.", visible: (s) => s.brush.mode !== "erase", get: (s) => s.brush.invertErase, set: (v) => editor.setBrush({ invertErase: v }) },
+    // ---- Opciones exclusivas del Borrador (visibles solo en modo "erase"). ----
+    {
+      kind: "choice",
+      id: "erase-mode",
+      label: "Borrado",
+      icon: "eraser",
+      chooser: "segmented",
+      hint: "Pincel recorta a mano; Forma usa la forma activa; Objeto borra el trazo tocado; Color borra todos los de ese color.",
+      visible: (s) => s.brush.mode === "erase",
+      options: (Object.keys(ERASE_MODE_LABELS) as EraseMode[]).map((k) => ({ value: k, id: `erase-${k}`, label: ERASE_MODE_LABELS[k] })),
+      get: (s) => s.brush.eraseMode,
+      set: (v) => editor.setBrush({ eraseMode: v as EraseMode }),
+    },
+    { kind: "toggle", id: "erase-fade", label: "Difuminar", icon: "spark", hint: "En vez de borrar del todo, aclara segun la opacidad (borrado suave).", visible: (s) => s.brush.mode === "erase", get: (s) => s.brush.eraseFade, set: (v) => editor.setBrush({ eraseFade: v }) },
+    { kind: "toggle", id: "erase-matter", label: "Incluir materia", icon: "matter", hint: "El mismo gesto elimina tambien los cuerpos de materia que toque.", visible: (s) => s.brush.mode === "erase", get: (s) => s.brush.eraseMatter, set: (v) => editor.setBrush({ eraseMatter: v }) },
     {
       kind: "choice",
       id: "pull-family",
@@ -235,7 +259,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     icon: "brush",
     layout: "brush-by-mode",
     brushByMode: {
-      modes: (["stroke", "fill", "pull"] as BrushMode[]).map((m) => ({ value: m, label: MODE_LABELS[m], icon: MODE_ICONS[m], title: `${MODE_LABELS[m]} (${m === "stroke" ? 1 : m === "fill" ? 2 : 3})` })),
+      modes: (["stroke", "fill", "pull", "erase"] as BrushMode[]).map((m) => ({ value: m, label: MODE_LABELS[m], icon: MODE_ICONS[m], title: `${MODE_LABELS[m]} (${MODE_KEYS[m]})` })),
       current: (s) => s.brush.mode,
       isToolActive: (s) => s.tool === "brush",
       activate: (m) => { editor.setTool("brush"); editor.setBrush({ mode: m }); },

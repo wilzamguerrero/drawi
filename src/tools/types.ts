@@ -30,6 +30,8 @@ export interface WetStroke {
   gradient: boolean;
   gy0: number;
   gy1: number;
+  /** Trazo de borrado: se compone con destination-out sobre la tinta. */
+  erase?: boolean;
 }
 
 /**

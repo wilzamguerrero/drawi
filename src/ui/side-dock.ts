@@ -87,6 +87,10 @@ export class SideDock {
   private symmetryCount: HTMLElement;
   private brushPreview: HTMLCanvasElement;
   private pullGroup: HTMLElement;
+  // Controles que solo tienen sentido pintando (Trazo/Relleno/Arrastre) y los
+  // exclusivos del Borrador: se intercambian por modo, igual que en el radial.
+  private strokeGroup!: HTMLElement;
+  private eraseGroup!: HTMLElement;
 
   // Estado del cajón: qué categoría está abierta (null = plegado) y cuál está
   // "en uso" por la herramienta activa (solo resalta la pestaña).
@@ -145,12 +149,12 @@ export class SideDock {
     ]);
 
     const modeEl = dock.modeEl;
-    this.sections.brush = section("Pincel", [
-      ...(modeEl ? [modeEl] : []),
+    // Opciones de pintura (dinamica, perfil, degradado, splat…): se ocultan en
+    // el Borrador. Van envueltas para intercambiarlas de un golpe por modo, sin
+    // depender de la visibilidad campo a campo (que el radial sí resuelve por
+    // grupo, pero el dock compone a mano).
+    this.strokeGroup = el("div", { class: "dock-stack" }, [
       this.brushPreview,
-      c("size"),
-      c("opacity"),
-      this.pullGroup,
       c("dynamics"),
       this.dynamicsHint,
       c("min-ratio"),
@@ -159,7 +163,20 @@ export class SideDock {
       c("velocity-invert"),
       row([c("taper-in"), c("taper-out")]),
       c("jitter"),
-      el("div", { class: "ctrl-group" }, [c("splat"), c("gradient")]),
+      el("div", { class: "ctrl-group" }, [c("splat"), c("gradient"), c("invert-erase")]),
+    ]);
+    // Opciones exclusivas del Borrador: mismo contenido que muestra el radial.
+    this.eraseGroup = el("div", { class: "dock-stack" }, [
+      c("erase-mode"),
+      el("div", { class: "ctrl-group" }, [c("erase-fade"), c("erase-matter")]),
+    ]);
+    this.sections.brush = section("Pincel", [
+      ...(modeEl ? [modeEl] : []),
+      c("size"),
+      c("opacity"),
+      this.pullGroup,
+      this.strokeGroup,
+      this.eraseGroup,
     ]);
     this.sections.stabilize = section("Respuesta del lapiz", [
       c("smoothing"),
@@ -392,6 +409,13 @@ export class SideDock {
 
     // El grupo "Familia" (control + nota) se oculta entero fuera de Arrastre.
     setClass(this.pullGroup, "is-hidden", state.brush.mode !== "pull");
+
+    // Borrador (tecla 4): intercambia las opciones de pintura por las de borrado
+    // y oculta la sección de respuesta del lápiz, igual que hace el menú radial.
+    const erasing = state.brush.mode === "erase";
+    setClass(this.strokeGroup, "is-hidden", erasing);
+    setClass(this.eraseGroup, "is-hidden", !erasing);
+    setClass(this.sections.stabilize, "is-hidden", erasing);
 
     this.drawPreview(state);
   }
