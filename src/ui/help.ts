@@ -47,6 +47,7 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
       ["S", "Eje de simetria"],
       ["I", "Cuentagotas"],
       ["H / Espacio", "Mano"],
+      ["R", "Rueda de color"],
     ],
   },
   {
@@ -59,6 +60,8 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
       ["[ / ]", "Tamano -/+"],
       ["G", "Degradado"],
       ["P", "Splat"],
+      ["X", "Color y secundario"],
+      ["C", "Color y fondo"],
       ["Boton lateral", "Borrar materia"],
       ["Punta de goma", "Pintar con el fondo"],
     ],

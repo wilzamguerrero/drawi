@@ -64,6 +64,9 @@ export const ICONS: Record<string, string> = {
   eraser: svg(
     `<path d="m10 19 9-9-5-5-9 9 5 5Z"/><path d="M6 19h13"/>`,
   ),
+  swap: svg(
+    `<path d="M7 4 3 8l4 4"/><path d="M3 8h13"/><path d="m17 20 4-4-4-4"/><path d="M21 16H8"/>`,
+  ),
   droplet: svg(`<path d="M12 3.5c3.5 4 5.5 6.7 5.5 9.5a5.5 5.5 0 0 1-11 0c0-2.8 2-5.5 5.5-9.5Z"/>`),
   tune: svg(
     `<path d="M6 4v6M6 14v6"/><circle cx="6" cy="12" r="2"/><path d="M14 4v2M14 10v10"/><circle cx="14" cy="8" r="2"/><path d="M20 4v10M20 18v2"/><circle cx="20" cy="16" r="2"/>`,

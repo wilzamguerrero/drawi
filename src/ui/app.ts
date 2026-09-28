@@ -58,16 +58,26 @@ export class App {
     // El pin se recuerda entre sesiones. Por defecto viene activo (fijado).
     this.pinned = this.readPinnedPref();
     this.statusBar = new StatusBar(this.pinned, (pinned) => this.setPinned(pinned));
-    this.pantone = new PantoneWheel((hex) => {
-      this.editor.setColor(hex);
+    this.pantone = new PantoneWheel(
+      (hex) => {
+        this.editor.setColor(hex);
+        this.wake();
+      },
+      () => {
+        this.editor.swapColors();
+        this.editor.status("Intercambio color ⇄ secundario");
+        this.wake();
+      },
+    );
+    this.panels = new Panels();
+    this.sideDock = new SideDock(this.editor, () => {
+      this.pantone.open();
       this.wake();
     });
-    this.panels = new Panels();
-    this.sideDock = new SideDock(this.editor);
     // Puertos de alto nivel compartidos por el menú radial y el paletón: ambos
     // solo declaran intención y es la app quien la resuelve (panel, diálogo...).
     const hooks: MenuHooks = {
-      toggleWheel: () => this.pantone.toggle(),
+      toggleWheel: () => this.pantone.keyToggle(),
       help: () => this.help.toggle(),
       newDoc: () => this.editor.status(newDocument(this.editor)),
       openFile: () => this.openFile(),
@@ -154,7 +164,25 @@ export class App {
         this.hotbox.show(p.x || window.innerWidth / 2, p.y || window.innerHeight / 2);
         return;
       }
+      // R: abre/cierra la rueda de color flotante RESPETANDO el pin: si está
+      // fijada, solo contrae/expande el anillo (la bolita queda); si no, la
+      // muestra/oculta entera. Mismo verbo que la acción "Rueda" del radial.
+      if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        this.pantone.keyToggle();
+        this.wake();
+        return;
+      }
+      // X: intercambia el color activo ⇄ el secundario (como en Photoshop).
       if ((e.key === "x" || e.key === "X") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        this.editor.swapColors();
+        this.editor.status(`Intercambio color ⇄ secundario`);
+        this.wake();
+        return;
+      }
+      // C: intercambia el color activo ⇄ el fondo (lo que antes hacía la X).
+      if ((e.key === "c" || e.key === "C") && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         const ink = this.editor.color;
         const bg = this.editor.doc.meta.background;
@@ -260,6 +288,9 @@ export class App {
     this.topBar.update(state);
     this.statusBar.update(state);
     this.sideDock.update(state);
+    // La rueda de color refleja el color activo (hub) y el secundario (círculo
+    // sobrepuesto) para poder intercambiarlos desde ahí igual que con la tecla X.
+    this.pantone.reflect(state.color, state.secondaryColor);
     // Los trozos flotantes también reflejan el estado (un dial cambiado en otro
     // sitio repinta su arco); se salta el trozo que se esté arrastrando.
     this.radialChips.syncFromEditor();

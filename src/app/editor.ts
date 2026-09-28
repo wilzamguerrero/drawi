@@ -46,6 +46,7 @@ export interface EditorState {
   tool: ToolId;
   brush: BrushSettings;
   color: string;
+  secondaryColor: string;
   palette: Palette;
   paletteIndex: number;
   symmetry: SymmetryState;
@@ -94,6 +95,9 @@ export class Editor {
 
   brush: BrushSettings = { ...DEFAULT_BRUSH };
   color = "#16181d";
+  /** Color secundario (estilo Photoshop): se intercambia con el activo con la
+      tecla X y desde el círculo sobrepuesto de la rueda de color. */
+  secondaryColor = "#ffffff";
   paletteIndex = 0;
   /** Historial de colores usados: se siembra con la escala de grises y se va
       sustituyendo por los colores que el usuario elige (más reciente primero). */
@@ -212,6 +216,7 @@ export class Editor {
       tool: this.toolId,
       brush: this.brush,
       color: this.color,
+      secondaryColor: this.secondaryColor,
       palette: this.palette,
       paletteIndex: this.paletteIndex,
       symmetry: this.doc.symmetry,
@@ -262,6 +267,22 @@ export class Editor {
   setColor(hex: string): void {
     this.color = hex;
     this.pushRecentColor(hex);
+    this.emitState();
+  }
+
+  /** Fija el color secundario (el círculo sobrepuesto de la rueda de color). */
+  setSecondaryColor(hex: string): void {
+    this.secondaryColor = hex;
+    this.emitState();
+  }
+
+  /** Intercambia el color activo con el secundario (tecla X, estilo Photoshop).
+      El fondo no se toca: para eso está la tecla C (color ⇄ fondo). */
+  swapColors(): void {
+    const prev = this.color;
+    this.color = this.secondaryColor;
+    this.secondaryColor = prev;
+    this.pushRecentColor(this.color);
     this.emitState();
   }
 

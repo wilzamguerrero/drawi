@@ -112,7 +112,11 @@ export class SideDock {
   private openCat: string | null = null;
   private activeTool: string | null = null;
 
-  constructor(editor: Editor) {
+  /** Abre la rueda de color flotante (la resuelve la App). */
+  private onOpenWheel: () => void;
+
+  constructor(editor: Editor, onOpenWheel: () => void = () => {}) {
+    this.onOpenWheel = onOpenWheel;
     const schema = buildSchema(editor, editor.state, NO_HOOKS);
     const byId = new Map(schema.map((d) => [d.id, d] as const));
     this.dock = new DockRenderer(editor, schema);
@@ -166,7 +170,42 @@ export class SideDock {
   private buildCustoms(editor: Editor): void {
     // Color: selector HSV (la rueda del radial cumple ese papel).
     const picker = new ColorPicker(editor.color, (hex) => editor.setColor(hex));
-    this.customs.set("color-picker", { el: picker.el, sync: (s) => picker.set(s.color) });
+
+    // Muestras primario/secundario al estilo Photoshop: el cuadro del primario
+    // arriba y el del secundario detrás-abajo. Clic en el secundario (o en las
+    // flechas) intercambia ambos; un botón aparte abre la rueda de color.
+    const primarySw = el("span", { class: "ps-swatch ps-swatch-primary", title: "Color primario" });
+    const secondarySw = el("button", {
+      class: "ps-swatch ps-swatch-secondary",
+      type: "button",
+      title: "Color secundario · clic para intercambiar (X)",
+      on: { click: () => editor.swapColors() },
+    });
+    const swapBtn = button({
+      iconName: "swap",
+      title: "Intercambiar primario ⇄ secundario (X)",
+      onClick: () => editor.swapColors(),
+    });
+    swapBtn.el.classList.add("ps-swap");
+    const wheelBtn = button({
+      iconName: "wheel",
+      label: "Rueda de color",
+      title: "Abrir la rueda de color flotante (R)",
+      onClick: () => this.onOpenWheel(),
+    });
+    const psRow = el("div", { class: "ps-colors" }, [
+      el("div", { class: "ps-swatch-stack" }, [secondarySw, primarySw, swapBtn.el]),
+      wheelBtn.el,
+    ]);
+    const colorStack = el("div", { class: "dock-stack" }, [psRow, picker.el]);
+    this.customs.set("color-picker", {
+      el: colorStack,
+      sync: (s) => {
+        picker.set(s.color);
+        primarySw.style.background = s.color;
+        secondarySw.style.background = s.secondaryColor;
+      },
+    });
 
     // Paleta: pestañas + pozos. Elegir un color marca la paleta y lo aplica.
     const wells = swatches({

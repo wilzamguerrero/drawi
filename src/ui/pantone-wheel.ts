@@ -40,6 +40,11 @@ const ROT_KEY = "drawi.pantone.rot";
 const PAL_KEY = "drawi.pantone.palette";
 const PIN_KEY = "drawi.pantone.pinned";
 
+// Pulsación larga sobre el hub: mismos números que el menú radial (arrancar
+// chips). Mantener el círculo del medio >3 s fija la rueda abierta o la cierra.
+const LONG_PRESS_MS = 3000;
+const LONG_PRESS_MOVE_TOL = 8;
+
 // --------------------------------------------------------------- geometria
 
 interface Pt {
@@ -140,10 +145,20 @@ export class PantoneWheel {
   private hubBtn: HTMLButtonElement;
   private hubName: HTMLElement;
   private hubHex: HTMLElement;
+  /** Mitad inferior del hub (estilo Photoshop): muestra el color secundario y,
+      al pulsarla, lo intercambia con el activo. Es un <span> (no <button>) para
+      poder vivir DENTRO del botón del hub sin anidar botones. */
+  private secondaryBtn: HTMLElement;
   private pinDot: HTMLElement;
   private library: HTMLElement;
 
   private onColorSelect: (hex: string) => void;
+  /** Intercambia color activo ⇄ secundario (lo resuelve la App, igual que la X). */
+  private onSwap: () => void;
+
+  /** Color activo reflejado del editor: el hub lo pinta en reposo. Lo mantiene al
+      día `reflect()` en cada cambio de estado. */
+  private primaryHex = "#262626";
 
   private visible = false;
   private expanded = false;
@@ -156,6 +171,10 @@ export class PantoneWheel {
   private collapseTimer = 0;
   private hideTimer = 0;
   private worker: Worker | null = null;
+
+  /** Temporizador y bandera de la pulsación larga (fijar/cerrar la rueda). */
+  private longPressTimer = 0;
+  private longPressFired = false;
 
   /** Partículas (metaball) que forman/deshacen el hub. Sistema compartido. */
   private fx = new MateriaFx({ coreSize: 92, reach: 74, gatherMs: 380, scatterMs: 300 });
@@ -171,8 +190,9 @@ export class PantoneWheel {
 
   private onDocDown: (e: PointerEvent) => void;
 
-  constructor(onColorSelect: (hex: string) => void) {
+  constructor(onColorSelect: (hex: string) => void, onSwap: () => void) {
     this.onColorSelect = onColorSelect;
+    this.onSwap = onSwap;
     this.palette = this.resolvePalette(this.paletteId);
 
     this.rotGroup = svgEl("g");
@@ -187,8 +207,17 @@ export class PantoneWheel {
     this.hubName = el("span", { class: "pw-hub-name" });
     this.hubHex = el("span", { class: "pw-hub-hex" });
     this.pinDot = el("span", { class: "pw-pin", title: "Fijar (que no se cierre al hacer clic fuera)" });
+    // Mitad inferior del hub: el corte con esquinas superiores redondeadas separa
+    // el primario (arriba) del secundario (abajo). Un <span role="button"> para no
+    // anidar botones dentro del botón del hub.
+    this.secondaryBtn = el("span", {
+      class: "pw-hub-secondary",
+      role: "button",
+      title: "Color secundario · clic para intercambiar (X)",
+    });
     // materia-blob: el hub ondula como materia viva, no un círculo perfecto.
-    this.hubBtn = el("button", { class: "pw-hub materia-blob", type: "button", title: "Arrastra para mover · clic para abrir/cerrar · Ctrl+clic: paletas" }, [
+    this.hubBtn = el("button", { class: "pw-hub materia-blob", type: "button", title: "Arrastra para mover · clic para abrir/cerrar · mantén pulsado para fijar/cerrar · Ctrl+clic: paletas" }, [
+      this.secondaryBtn,
       el("span", { class: "pw-hub-label" }, [this.hubName, this.hubHex]),
       this.pinDot,
     ]);
@@ -204,22 +233,30 @@ export class PantoneWheel {
     this.buildRings();
     this.buildLibrary();
     this.bindHub();
+    this.bindSecondary();
     this.bindPin();
 
     // Al abrir sin muestra activa, arranca en la primera del primer anillo.
     for (const ring of this.palette.rings) {
       if (ring.items.length) {
         this.active = ring.items[0];
+        this.primaryHex = ring.items[0].hex;
         break;
       }
     }
 
     this.onDocDown = (e: PointerEvent) => {
-      if (!this.visible || this.pinned) return;
+      if (!this.visible) return;
       const t = e.target as Node;
       if (this.container.contains(t) || this.library.contains(t)) return;
-      // Solo se cierra si esta plegada; expandida se queda (como el original).
-      if (!this.expanded) this.hide();
+      if (this.pinned) {
+        // Fijada (punto rosa arriba): el clic fuera solo CONTRAE el anillo de
+        // colores; la bolita del hub queda a la vista para reabrirla.
+        if (this.expanded) this.setExpanded(false);
+      } else {
+        // Sin fijar: el clic fuera la CIERRA del todo (también la bolita).
+        this.hide();
+      }
     };
 
     this.applyPosition();
@@ -537,12 +574,33 @@ export class PantoneWheel {
   }
 
   private updateHub(hover?: Swatch): void {
-    const s = hover ?? this.active;
-    const hex = s?.hex ?? "#262626";
+    // Al pasar por una muestra, el hub la previsualiza; en reposo muestra el color
+    // activo del editor (primaryHex), que reflect() mantiene al día.
+    if (hover) {
+      this.hubBtn.style.background = hover.hex;
+      this.hubBtn.style.color = contrastText(hover.hex);
+      this.hubName.textContent = hover.name;
+      this.hubHex.textContent = hover.hex.toUpperCase();
+      return;
+    }
+    const hex = this.primaryHex;
     this.hubBtn.style.background = hex;
     this.hubBtn.style.color = contrastText(hex);
-    this.hubName.textContent = s?.name ?? "";
+    const match = this.active && this.active.hex.toLowerCase() === hex.toLowerCase();
+    this.hubName.textContent = match ? (this.active?.name ?? "") : "";
     this.hubHex.textContent = hex.toUpperCase();
+  }
+
+  /**
+   * Refleja los colores del editor: el hub pinta el primario y el círculo
+   * sobrepuesto el secundario. Lo llama la App en cada cambio de estado, así el
+   * intercambio con la tecla X o el clic en el círculo se ve al instante.
+   */
+  reflect(primary: string, secondary: string): void {
+    this.primaryHex = primary;
+    this.secondaryBtn.style.background = secondary;
+    this.secondaryBtn.title = `Secundario ${secondary.toUpperCase()} · clic para intercambiar (X)`;
+    this.updateHub();
   }
 
   // ----------------------------------------------------------------- rotacion
@@ -627,21 +685,77 @@ export class PantoneWheel {
       moved = false;
       const start = { ...this.position };
 
+      // Pulsación larga (>3 s) sobre el hub: fija la rueda abierta o la cierra,
+      // igual que mantener pulsado un sector del radial arranca sus chips.
+      this.armLongPress();
+
       const move = (ev: PointerEvent): void => {
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
-        if (Math.abs(dx) > 5 || Math.abs(dy) > 5) moved = true;
-        this.position = { x: start.x + dx, y: start.y + dy };
-        this.applyPosition();
+        if (Math.abs(dx) > LONG_PRESS_MOVE_TOL || Math.abs(dy) > LONG_PRESS_MOVE_TOL) {
+          moved = true;
+          this.cancelLongPress(); // arrastrar cancela la pulsación larga
+        }
+        if (moved) {
+          this.position = { x: start.x + dx, y: start.y + dy };
+          this.applyPosition();
+        }
       };
       const up = (): void => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
+        this.cancelLongPress();
+        if (this.longPressFired) return; // la pulsación larga ya actuó
         if (moved) this.savePosition();
-        else this.setExpanded(!this.expanded); // clic simple: abrir/cerrar
+        else this.setExpanded(!this.expanded); // clic simple: abrir/cerrar (minimizar)
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
+    });
+  }
+
+  /** Arma la pulsación larga del hub. Al cumplirse, fija o cierra la rueda. */
+  private armLongPress(): void {
+    this.cancelLongPress();
+    this.longPressFired = false;
+    this.hubBtn.classList.add("is-charging");
+    this.longPressTimer = window.setTimeout(() => {
+      this.longPressFired = true;
+      this.hubBtn.classList.remove("is-charging");
+      this.onLongPress();
+    }, LONG_PRESS_MS);
+  }
+
+  private cancelLongPress(): void {
+    if (this.longPressTimer) {
+      window.clearTimeout(this.longPressTimer);
+      this.longPressTimer = 0;
+    }
+    this.hubBtn.classList.remove("is-charging");
+  }
+
+  /**
+   * Efecto de la pulsación larga: si la rueda ya está fijada, la cierra del todo
+   * (y la suelta); si no, la fija abierta por completo. Un solo gesto para las
+   * dos cosas, como pidió el usuario.
+   */
+  private onLongPress(): void {
+    if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(20);
+    if (this.pinned) {
+      this.setPinned(false);
+      this.hide();
+    } else {
+      this.setPinned(true);
+      this.setExpanded(true);
+    }
+  }
+
+  /** El círculo secundario: no arrastra ni abre la rueda; solo intercambia. */
+  private bindSecondary(): void {
+    this.secondaryBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    this.secondaryBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.onSwap();
     });
   }
 
@@ -649,11 +763,16 @@ export class PantoneWheel {
     this.pinDot.addEventListener("pointerdown", (e) => e.stopPropagation());
     this.pinDot.addEventListener("click", (e) => {
       e.stopPropagation();
-      this.pinned = !this.pinned;
-      this.pinDot.classList.toggle("is-pinned", this.pinned);
-      this.pinDot.title = this.pinned ? "Fijada (clic para soltar)" : "Fijar (que no se cierre al hacer clic fuera)";
-      localStorage.setItem(PIN_KEY, String(this.pinned));
+      this.setPinned(!this.pinned);
     });
+  }
+
+  /** Fija o suelta la rueda (persistente) y refleja el estado en el punto del pin. */
+  private setPinned(on: boolean): void {
+    this.pinned = on;
+    this.pinDot.classList.toggle("is-pinned", this.pinned);
+    this.pinDot.title = this.pinned ? "Fijada (clic para soltar)" : "Fijar (que no se cierre al hacer clic fuera)";
+    localStorage.setItem(PIN_KEY, String(this.pinned));
   }
 
   private applyPosition(): void {
@@ -770,8 +889,30 @@ export class PantoneWheel {
     else this.show();
   }
 
+  /**
+   * Alterna desde la tecla R (y la acción "Rueda" del radial) RESPETANDO el pin,
+   * igual que el clic fuera: fijada, solo contrae/expande el anillo de colores y
+   * la bolita queda; sin fijar, muestra/oculta la rueda entera.
+   */
+  keyToggle(): void {
+    if (!this.pinned) {
+      this.toggle();
+      return;
+    }
+    if (!this.visible) this.show();
+    else this.setExpanded(!this.expanded);
+  }
+
+  /** Abre la rueda expandida. Si ya está a la vista (aunque plegada), la despliega.
+      Lo usan el botón del dock y, como alternativa, la acción "Rueda" del radial. */
+  open(): void {
+    if (!this.visible) this.show();
+    else this.setExpanded(true);
+  }
+
   dispose(): void {
     this.stopMomentum();
+    this.cancelLongPress();
     window.clearTimeout(this.collapseTimer);
     window.clearTimeout(this.hideTimer);
     document.removeEventListener("pointerdown", this.onDocDown, true);

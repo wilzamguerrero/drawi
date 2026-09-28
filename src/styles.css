@@ -999,6 +999,69 @@ body {
 
 /* ------------------------------------------------------------ color picker */
 
+/* Muestras primario/secundario (estilo Photoshop): dos cuadros solapados —el
+   primario delante-arriba, el secundario detrás-abajo— con las flechas de
+   intercambio en una esquina, y al lado el botón para abrir la rueda de color. */
+.ps-colors {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+
+.ps-swatch-stack {
+  position: relative;
+  width: 58px;
+  height: 50px;
+  flex: none;
+}
+
+.ps-swatch {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 2px solid var(--line);
+  border-radius: 6px;
+  box-shadow: var(--shadow-1);
+}
+
+.ps-swatch-primary {
+  left: 0;
+  top: 0;
+  z-index: 2;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.ps-swatch-secondary {
+  left: 18px;
+  top: 18px;
+  z-index: 1;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.ps-swatch-secondary:hover {
+  transform: scale(1.06);
+  box-shadow: 0 0 0 2px var(--accent), var(--shadow-1);
+}
+
+.ps-swap.btn {
+  position: absolute;
+  right: -2px;
+  top: -2px;
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  padding: 0;
+  z-index: 3;
+}
+
+.ps-swap.btn .btn-glyph svg {
+  width: 15px;
+  height: 15px;
+}
+
 .picker {
   display: flex;
   flex-direction: column;
@@ -1250,17 +1313,56 @@ body {
   padding: 0;
   border: 3px solid #1a1a1a;
   border-radius: 50%;
+  /* El primario pinta el fondo del hub; la mitad inferior (secundario) va encima. */
   background: #262626;
   box-shadow: var(--shadow-2);
   cursor: grab;
   pointer-events: auto;
+  /* La mitad secundaria se recorta a la circunferencia. */
+  overflow: hidden;
   /* La opacidad entra/sale en relevo con las partículas (sistema "materia"). */
   transition: transform 0.12s ease, opacity 0.26s ease;
+}
+
+/* Aviso de carga de la pulsación larga: un latido sutil mientras se mantiene. */
+.pw-hub.is-charging {
+  animation: pw-hub-charge 3s ease-in forwards;
+}
+
+@keyframes pw-hub-charge {
+  from {
+    box-shadow: var(--shadow-2);
+  }
+  to {
+    box-shadow: 0 0 0 3px var(--accent), var(--shadow-2);
+  }
 }
 
 /* Oculto mientras las partículas forman (o deshacen) la masa del hub. */
 .pw-wheel.is-forming .pw-hub {
   opacity: 0;
+}
+
+/* Mitad inferior del hub = color secundario (estilo Photoshop). El corte es una
+   línea horizontal con las esquinas superiores un pelín redondeadas; abajo la
+   circunferencia del hub la recorta (overflow: hidden). Clic aquí = intercambiar. */
+.pw-hub-secondary {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 32%;
+  background: #fff;
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -1.5px 0 rgba(0, 0, 0, 0.32);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: height 0.12s ease, filter 0.12s ease;
+}
+
+.pw-hub-secondary:hover {
+  filter: brightness(1.08);
+  height: 36%;
 }
 
 .pw-hub.is-entering {
@@ -1299,11 +1401,16 @@ body {
 }
 
 .pw-hub-label {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   line-height: 1.1;
   pointer-events: none;
+  z-index: 1;
 }
 
 .pw-hub-name {

@@ -70,10 +70,16 @@ export class ToolRail {
     this.picker = new ColorPicker(editor.color, (hex) => editor.setColor(hex));
     // Rueda Pantone flotante: sistema de color aparte, mismo comportamiento que
     // el del estudio de referencia. Se muestra/oculta desde el popover de color.
-    this.pantone = new PantoneWheel((hex) => {
-      editor.setColor(hex);
-      this.picker.set(hex);
-    });
+    this.pantone = new PantoneWheel(
+      (hex) => {
+        editor.setColor(hex);
+        this.picker.set(hex);
+      },
+      () => {
+        editor.swapColors();
+        this.picker.set(editor.color);
+      },
+    );
     this.paletteTabs = segmented({
       options: DEFAULT_PALETTES.map((p, i) => ({ value: String(i), label: p.name })),
       value: "0",
