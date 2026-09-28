@@ -263,7 +263,7 @@ export class App {
     // Los trozos flotantes también reflejan el estado (un dial cambiado en otro
     // sitio repinta su arco); se salta el trozo que se esté arrastrando.
     this.radialChips.syncFromEditor();
-    document.title = `${state.name} — Zence Draw`;
+    document.title = `${state.name} · Zence Draw`;
   }
 
   private scheduleAutosave(): void {

@@ -6,12 +6,16 @@ import "./styles-panels.css";
 import "./styles-side-dock.css";
 import "./styles-command.css";
 import { App } from "./ui/app";
+import { startFavicon } from "./ui/favicon";
 
 const root = document.getElementById("app");
 if (!root) throw new Error("Falta el contenedor #app");
 
 const app = new App(root);
 app.startStatusPolling();
+
+// Favicon animado: la misma materia viva del buscador, latiendo en la pestaña.
+startFavicon();
 
 // Retira el splash de arranque (vive en index.html) ahora que el editor esta montado.
 // Un respiro minimo para que la materia no parpadee si el bundle llego demasiado rapido.
