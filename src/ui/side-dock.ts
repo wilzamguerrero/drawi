@@ -4,28 +4,31 @@ import { DYNAMICS_INFO } from "../stroke/types";
 import { symmetryCopies } from "../symmetry/symmetry";
 import type { ToolId } from "../tools/types";
 import { ColorPicker } from "./color-picker";
-import { button, fieldLabel, row, section, segmented, swatches, type Control } from "./controls";
+import { button, fieldLabel, section, segmented, swatches } from "./controls";
 import { blurSoon, el, setClass } from "./dom";
 import { MateriaEdge } from "./fx/materia-edge";
 import type { MenuHooks } from "./hotbox/menu";
 import { icon } from "./icons";
 import { DockRenderer } from "./model/render-dock";
-import { buildSchema } from "./model/schema";
+import { buildSchema, isGroup, val, type Domain, type Field, type SchemaNode } from "./model/schema";
 
-/** Categorías del dock. Cada una agrupa las secciones de una herramienta. */
-type CatId = "color" | "brush" | "symmetry" | "matter";
-
-interface CatDef {
-  id: CatId;
-  label: string;
-  icon: string;
+/**
+ * Qué dominios del esquema son pestañas del dock, en qué orden y con qué icono.
+ * El dock elige su subconjunto y disposición; el contenido de cada página sale
+ * del esquema (igual que el radial). `icon` sobreescribe el del dominio (Materia
+ * usa el icono de Forma) y `label` su etiqueta.
+ */
+interface TabDef {
+  domain: string;
+  icon?: string;
+  label?: string;
 }
 
-const CATEGORIES: CatDef[] = [
-  { id: "brush", label: "Pincel", icon: "brush" },
-  { id: "matter", label: "Materia", icon: "shape" },
-  { id: "color", label: "Color", icon: "droplet" },
-  { id: "symmetry", label: "Simetría", icon: "symmetry" },
+const DOCK_TABS: TabDef[] = [
+  { domain: "brush" },
+  { domain: "matter-cfg", icon: "shape" },
+  { domain: "color" },
+  { domain: "symmetry" },
 ];
 
 /**
@@ -33,16 +36,16 @@ const CATEGORIES: CatDef[] = [
  * resalta la pestaña relacionada (no la abre: solo la marca como "en uso"). Las
  * herramientas sin ajustes propios —cuentagotas y mano— no resaltan ninguna.
  */
-const TOOL_TO_CAT: Partial<Record<ToolId, CatId>> = {
+const TOOL_TO_CAT: Partial<Record<ToolId, string>> = {
   brush: "brush",
-  shape: "matter",
-  matter: "matter",
+  shape: "matter-cfg",
+  matter: "matter-cfg",
   symmetry: "symmetry",
 };
 
 /**
- * El dock no consume los puertos de archivo/rueda (esos campos del esquema son
- * `surfaces: ["radial"]` y `DockRenderer` los omite), pero `buildSchema` los
+ * El dock no consume los puertos de archivo/rueda (esos dominios/campos son
+ * `surfaces: ["radial"]` y no entran en sus páginas), pero `buildSchema` los
  * exige. Se le pasa esta implementación vacía: nunca se invoca desde el dock.
  */
 const NO_HOOKS: MenuHooks = {
@@ -58,276 +61,269 @@ const NO_HOOKS: MenuHooks = {
  * Dock lateral izquierdo.
  *
  * Un único panel anclado al borde izquierdo que, plegado, deja ver solo su tira
- * de pestañas —una por categoría—. Al pulsar una pestaña el cajón se desliza
- * desde el borde con los ajustes de esa categoría; al volver a pulsarla, se
- * repliega. Cambiar de herramienta resalta su pestaña para invitar a abrirla,
+ * de pestañas —una por dominio de `DOCK_TABS`—. Al pulsar una pestaña el cajón
+ * se desliza desde el borde con los ajustes de ese dominio; al volver a pulsarla,
+ * se repliega. Cambiar de herramienta resalta su pestaña para invitar a abrirla,
  * pero no interrumpe el dibujo abriéndola sola.
  *
- * Los controles NO se declaran aquí: salen del esquema único (`model/schema.ts`)
- * a través de `DockRenderer`, que los crea una vez y los sincroniza por `id`. El
- * dock solo los compone en sus páginas y añade el cromo propio de la superficie
- * (selector HSV, paletas, vista previa, notas de ayuda). Reconstruir el panel en
- * cada cambio perdería el foco del campo en edición y haría parpadear los
- * deslizadores, así que solo se sincroniza (`dock.sync`) en cada `update`.
+ * Las páginas y secciones NO se declaran aquí: se derivan del esquema único
+ * (`model/schema.ts`) recorriendo cada dominio —igual que hace el radial—. Los
+ * campos genéricos salen de `DockRenderer` (creados una vez y sincronizados por
+ * `id`); el cromo propio de la superficie (selector HSV, paletas, vista previa,
+ * notas, conteo) se declara como campos `custom` y se rinde con los adaptadores
+ * de `buildCustoms`. Así, añadir un dominio al esquema lo hace aparecer en el
+ * dock y en el radial sin tocar este archivo. Reconstruir el panel en cada
+ * cambio perdería el foco del campo en edición y haría parpadear los
+ * deslizadores, así que solo se sincroniza (`update`) en cada fotograma.
  */
 export class SideDock {
   readonly el: HTMLElement;
 
-  private sections: Record<string, HTMLElement> = {};
   private dock: DockRenderer;
-  private pages: Record<CatId, HTMLElement> = {} as Record<CatId, HTMLElement>;
-  private tabs = new Map<CatId, HTMLButtonElement>();
+  private pages: Record<string, HTMLElement> = {};
+  private tabs = new Map<string, HTMLButtonElement>();
+  private tabDefs: { id: string; label: string; icon: string }[] = [];
+
+  // Adaptadores del cromo propio del dock (campos `custom`), indexados por id.
+  private customs = new Map<string, { el: HTMLElement; sync?: (s: EditorState) => void }>();
+  // Sincronías vivas (valor que sigue al estado) y visibilidades por predicado
+  // de secciones/campos custom (los campos genéricos los resuelve DockRenderer).
+  private customSyncs: ((s: EditorState) => void)[] = [];
+  private dynVis: { el: HTMLElement; visible: (s: EditorState) => boolean }[] = [];
 
   private drawer: HTMLElement;
   private edge: MateriaEdge;
   private content!: HTMLElement;
   private heightTimer = 0;
-  private dynamicsHint: HTMLElement;
-  private symmetryCount: HTMLElement;
-  private brushPreview: HTMLCanvasElement;
-  private pullGroup: HTMLElement;
-  // Controles que solo tienen sentido pintando (Trazo/Relleno/Arrastre) y los
-  // exclusivos del Borrador: se intercambian por modo, igual que en el radial.
-  private strokeGroup!: HTMLElement;
-  private eraseGroup!: HTMLElement;
+  private dockTitle!: HTMLElement;
 
-  // Estado del cajón: qué categoría está abierta (null = plegado) y cuál está
+  // Estado del cajón: qué dominio está abierto (null = plegado) y cuál está
   // "en uso" por la herramienta activa (solo resalta la pestaña).
-  private openCat: CatId | null = null;
-  private activeTool: CatId | null = null;
-
-  // Color: cromo propio del dock, se refresca con el estado como el resto.
-  private colorPicker: ColorPicker;
-  private recentSwatches: Control<{ colors: readonly string[]; value: string }>;
-  private paletteTabs: Control<string>;
-  private paletteWells: Control<{ colors: readonly string[]; value: string }>;
+  private openCat: string | null = null;
+  private activeTool: string | null = null;
 
   constructor(editor: Editor) {
-    const dock = new DockRenderer(editor, buildSchema(editor, editor.state, NO_HOOKS));
-    this.dock = dock;
-    const c = (id: string): HTMLElement => dock.el(id);
-    // ============================================================ color
-    // Selector HSV, recientes y paletas: cromo propio del dock (la rueda del
-    // radial cumple ese papel). Se cablean a mano y se refrescan en update().
-    this.colorPicker = new ColorPicker(editor.color, (hex) => editor.setColor(hex));
-    this.recentSwatches = swatches({
-      colors: editor.recentColors,
-      value: editor.color,
-      onPick: (hex) => { editor.setColor(hex); this.colorPicker.set(hex); },
-    });
-    this.paletteTabs = segmented({
-      options: DEFAULT_PALETTES.map((p, i) => ({ value: String(i), label: p.name })),
-      value: String(editor.paletteIndex),
-      onChange: (v) => {
-        editor.setPalette(Number(v));
-        this.paletteWells.set({ colors: editor.palette.colors, value: editor.color });
-      },
-    });
-    this.paletteWells = swatches({
-      colors: editor.palette.colors,
-      value: editor.color,
-      onPick: (hex) => { editor.setColor(hex); this.colorPicker.set(hex); },
-    });
-    this.sections.color = section("Color", [
-      this.colorPicker.el,
-      fieldLabel("Recientes"),
-      this.recentSwatches.el,
-      this.paletteTabs.el,
-      this.paletteWells.el,
-    ]);
+    const schema = buildSchema(editor, editor.state, NO_HOOKS);
+    const byId = new Map(schema.map((d) => [d.id, d] as const));
+    this.dock = new DockRenderer(editor, schema);
+    this.buildCustoms(editor);
 
-    // ------------------------------------------------------------- pincel
-    this.dynamicsHint = fieldLabel(DYNAMICS_INFO[editor.brush.dynamics].hint);
-    this.brushPreview = el("canvas", { class: "brush-preview" });
-    this.brushPreview.width = 520;
-    this.brushPreview.height = 128;
-    // "Familia" (solo Arrastre): control + nota; se oculta el grupo entero.
-    this.pullGroup = el("div", { class: "ctrl-group" }, [
-      c("pull-family"),
-      fieldLabel("Arrastra para estirar una forma entre los dos puntos."),
-    ]);
+    // Tira de pestañas + su página, ambas derivadas del esquema.
+    const strip = el("div", { class: "dock-tabs" });
+    for (const tab of DOCK_TABS) {
+      const domain = byId.get(tab.domain);
+      if (!domain) continue;
+      const label = tab.label ?? val(domain.label ?? domain.id, editor.state);
+      const iconName = tab.icon ?? val(domain.icon, editor.state);
+      this.tabDefs.push({ id: domain.id, label, icon: iconName });
+      this.pages[domain.id] = this.buildPage(domain, editor.state);
+      const btn = el("button", { class: "dock-tab", type: "button", title: label, html: icon(iconName) });
+      btn.addEventListener("click", () => {
+        this.toggle(domain.id);
+        blurSoon(btn);
+      });
+      this.tabs.set(domain.id, btn);
+      strip.appendChild(btn);
+    }
 
-    const modeEl = dock.modeEl;
-    // Opciones de pintura (dinamica, perfil, degradado, splat…): se ocultan en
-    // el Borrador. Van envueltas para intercambiarlas de un golpe por modo, sin
-    // depender de la visibilidad campo a campo (que el radial sí resuelve por
-    // grupo, pero el dock compone a mano).
-    this.strokeGroup = el("div", { class: "dock-stack" }, [
-      this.brushPreview,
-      c("dynamics"),
-      this.dynamicsHint,
-      c("min-ratio"),
-      c("pressure-curve"),
-      c("velocity-scale"),
-      c("velocity-invert"),
-      row([c("taper-in"), c("taper-out")]),
-      c("jitter"),
-      el("div", { class: "ctrl-group" }, [c("splat"), c("gradient"), c("invert-erase")]),
-    ]);
-    // Opciones exclusivas del Borrador: mismo contenido que muestra el radial.
-    this.eraseGroup = el("div", { class: "dock-stack" }, [
-      c("erase-mode"),
-      el("div", { class: "ctrl-group" }, [c("erase-fade"), c("erase-matter")]),
-    ]);
-    this.sections.brush = section("Pincel", [
-      ...(modeEl ? [modeEl] : []),
-      c("size"),
-      c("opacity"),
-      this.pullGroup,
-      this.strokeGroup,
-      this.eraseGroup,
-    ]);
-    this.sections.stabilize = section("Respuesta del lapiz", [
-      c("smoothing"),
-      c("streamline"),
-      fieldLabel("El suavizado corrige el temblor y el estabilizador la direccion. Si notas la punta lenta, baja el estabilizador antes que el suavizado."),
-    ]);
-    // -------------------------------------------------------------- forma
-    this.sections.shape = section("Forma", [
-      c("shape-kind"),
-      c("shape-size"),
-      c("shape-aspect"),
-      c("shape-sides"),
-      c("shape-inner"),
-      c("shape-round"),
-      fieldLabel("Arrastra en el lienzo para colocarla y girarla antes de soltarla."),
-    ]);
-
-    // ----------------------------------------------------------- simetria
-    this.symmetryCount = fieldLabel("1 copia");
-    this.sections.symmetry = section("Simetria", [
-      c("sym-mode"),
-      c("sym-count"),
-      c("sym-angle"),
-      el("div", { class: "ctrl-group" }, [c("sym-visible"), c("sym-locked")]),
-      row([c("sym-center"), c("sym-straighten")]),
-      this.symmetryCount,
-      fieldLabel("Con la herramienta de simetria (S) puedes arrastrar el eje a cualquier punto del lienzo."),
-    ]);
-
-    // ------------------------------------------------------------ fisica
-    this.sections.physics = section("Fisica", [
-      c("gravity"),
-      c("gravity-x"),
-      c("cohesion"),
-      c("damping"),
-      row([c("restitution"), c("friction")]),
-      c("iterations"),
-      c("time-scale"),
-      el("div", { class: "ctrl-group" }, [c("sleeping"), c("walls"), c("colliders")]),
-      row([c("zero-g"), c("clear-matter")]),
-    ]);
-
-    // ------------------------------------------------------------- campo
-    this.sections.field = section("Materia", [
-      c("blend"),
-      c("outline"),
-      c("shade"),
-      c("gloss"),
-      c("depth"),
-      c("field-alpha"),
-      button({
-        label: "Hornear a tinta",
-        iconName: "bake",
-        title: "Convierte el contorno fundido en trazos editables",
-        onClick: () => editor.bakeMatter(),
-      }).el,
-    ]);
-    // =================================================== páginas por categoría
-    this.pages.color = el("div", { class: "dock-page" }, [this.sections.color]);
-    this.pages.brush = el("div", { class: "dock-page" }, [this.sections.brush, this.sections.stabilize]);
-    this.pages.symmetry = el("div", { class: "dock-page" }, [this.sections.symmetry]);
-    // Materia arranca con los ajustes de Forma (antes pestaña propia): la forma
-    // se coloca al dibujar y alimenta la materia, así que viven juntas.
-    this.pages.matter = el("div", { class: "dock-page" }, [this.sections.shape, this.sections.field, this.sections.physics]);
-
-    // Cabecera del cajón: título de la categoría abierta + botón de cerrar.
+    // Cabecera del cajón: título del dominio abierto + botón de cerrar.
     const titleEl = el("span", { class: "dock-title" });
-    const closeBtn = el("button", {
-      class: "dock-close",
-      type: "button",
-      title: "Cerrar panel",
-      html: icon("close"),
-    });
+    const closeBtn = el("button", { class: "dock-close", type: "button", title: "Cerrar panel", html: icon("close") });
     closeBtn.addEventListener("click", () => this.setOpen(null));
     const head = el("div", { class: "dock-head" }, [titleEl, closeBtn]);
     this.dockTitle = titleEl;
 
     const scroll = el("div", { class: "dock-scroll" }, Object.values(this.pages));
 
-    // "Piel" del panel: el relleno del panel dibujado como un trazo vectorial que
-    // se remodela por frames (MateriaEdge). El borde derecho —el que da al
-    // lienzo— ondula como una masa; los otros tres quedan rectos. Al ser vector,
-    // el contorno se antialiasea perfecto: continuo y fluido, sin el pixelado ni
-    // las "vetas" que dejaba deformar píxeles con un filtro SVG. Va detrás del
-    // contenido, que vive en su propia capa nítida.
+    // "Piel" del panel: el relleno dibujado como un trazo vectorial que se
+    // remodela por frames (MateriaEdge). Solo el borde derecho ondula; los otros
+    // tres quedan rectos. Va detrás del contenido, que vive en su capa nítida.
     this.edge = new MateriaEdge({ fill: "#161619", radius: 22, amplitude: 11 });
     this.edge.el.classList.add("dock-skin");
     this.content = el("div", { class: "dock-content" }, [head, scroll]);
     this.drawer = el("div", { class: "dock-drawer" }, [this.edge.el, this.content]);
 
-    // Tira de pestañas, siempre visible en el borde.
-    const strip = el("div", { class: "dock-tabs" });
-    for (const cat of CATEGORIES) {
-      const tab = el("button", {
-        class: "dock-tab",
-        type: "button",
-        title: cat.label,
-        html: icon(cat.icon),
-      });
-      tab.addEventListener("click", () => {
-        this.toggle(cat.id);
-        blurSoon(tab);
-      });
-      this.tabs.set(cat.id, tab);
-      strip.appendChild(tab);
-    }
-
     this.el = el("aside", { class: "side-dock", role: "toolbar" }, [this.drawer, strip]);
     this.renderState();
   }
-  private dockTitle!: HTMLElement;
+  /**
+   * Cromo propio del dock. Cada campo `custom` del esquema con presencia en el
+   * dock se resuelve aquí por `id`: color (HSV), paletas, recientes, vista previa
+   * del pincel, notas vivas y el botón de hornear. Se crea una vez; `sync` (si lo
+   * hay) refresca su valor con el estado. Las notas estáticas (`note-*`) no pasan
+   * por aquí: las rinde `fieldEl` por convención.
+   */
+  private buildCustoms(editor: Editor): void {
+    // Color: selector HSV (la rueda del radial cumple ese papel).
+    const picker = new ColorPicker(editor.color, (hex) => editor.setColor(hex));
+    this.customs.set("color-picker", { el: picker.el, sync: (s) => picker.set(s.color) });
 
+    // Paleta: pestañas + pozos. Elegir un color marca la paleta y lo aplica.
+    const wells = swatches({
+      colors: editor.palette.colors,
+      value: editor.color,
+      onPick: (hex) => { editor.setColor(hex); picker.set(hex); },
+    });
+    const tabs = segmented({
+      options: DEFAULT_PALETTES.map((p, i) => ({ value: String(i), label: p.name })),
+      value: String(editor.paletteIndex),
+      onChange: (v) => { editor.setPalette(Number(v)); wells.set({ colors: editor.palette.colors, value: editor.color }); },
+    });
+    const paletteEl = el("div", { class: "dock-stack" }, [tabs.el, wells.el]);
+    this.customs.set("palette", {
+      el: paletteEl,
+      sync: (s) => { tabs.set(String(s.paletteIndex)); wells.set({ colors: s.palette.colors, value: s.color }); },
+    });
+    // APPEND_CUSTOMS_2
+
+    // Recientes: rótulo + muestras de los últimos colores usados.
+    const recent = swatches({
+      colors: editor.recentColors,
+      value: editor.color,
+      onPick: (hex) => { editor.setColor(hex); picker.set(hex); },
+    });
+    const recentEl = el("div", { class: "dock-stack" }, [fieldLabel("Recientes"), recent.el]);
+    this.customs.set("recents", { el: recentEl, sync: (s) => recent.set({ colors: s.recentColors, value: s.color }) });
+
+    // Vista previa del pincel: una S con perfil de presión sintético.
+    const preview = el("canvas", { class: "brush-preview" });
+    preview.width = 520;
+    preview.height = 128;
+    this.customs.set("brush-preview", { el: preview, sync: (s) => drawBrushPreview(preview, s) });
+
+    // Nota viva de la dinámica activa.
+    const dynHint = fieldLabel(DYNAMICS_INFO[editor.brush.dynamics].hint);
+    this.customs.set("brush-dyn-hint", { el: dynHint, sync: (s) => { dynHint.textContent = DYNAMICS_INFO[s.brush.dynamics].hint; } });
+
+    // Conteo vivo de copias de simetría.
+    const copies = fieldLabel("1 copia");
+    this.customs.set("sym-copies", {
+      el: copies,
+      sync: (s) => { const n = symmetryCopies(s.symmetry); copies.textContent = n === 1 ? "1 copia" : `${n} copias por trazo`; },
+    });
+
+    // Hornear a tinta (el radial trae su propia acción `bake`).
+    const bake = button({ label: "Hornear a tinta", iconName: "bake", title: "Convierte el contorno fundido en trazos editables", onClick: () => editor.bakeMatter() });
+    this.customs.set("bake-dock", { el: bake.el });
+  }
+  /** ¿El nodo (dominio, grupo o campo) aparece en el dock? */
+  private inDock(n: SchemaNode): boolean {
+    return !n.surfaces || n.surfaces.includes("dock");
+  }
+
+  /**
+   * Página de un dominio. Los campos sueltos (fuera de grupos) se juntan en una
+   * sección con la etiqueta del dominio; cada grupo es su propia sección. El
+   * orden entre la sección suelta y las de grupos sigue a qué aparece primero en
+   * el esquema (opciones del pincel arriba; acciones de materia abajo).
+   */
+  private buildPage(domain: Domain, s0: EditorState): HTMLElement {
+    const looseEls: HTMLElement[] = [];
+    const groupSecs: HTMLElement[] = [];
+    let looseFirst: boolean | null = null;
+
+    // El pincel abre con su segmentado de modo (Trazo/Relleno/Arrastre/Borrador).
+    if (domain.layout === "brush-by-mode" && this.dock.modeEl) {
+      looseEls.push(this.dock.modeEl);
+      looseFirst = true;
+    }
+
+    for (const child of domain.children) {
+      if (!this.inDock(child)) continue;
+      if (isGroup(child)) {
+        if (looseFirst === null) looseFirst = false;
+        const kids = this.nodeEls(child.children, s0);
+        if (kids.length === 0) continue;
+        const sec = section(val(child.label ?? "", s0), kids);
+        if (child.visible) this.dynVis.push({ el: sec, visible: child.visible });
+        groupSecs.push(sec);
+      } else {
+        const e = this.fieldEl(child, s0);
+        if (!e) continue;
+        if (looseFirst === null) looseFirst = true;
+        looseEls.push(e);
+      }
+    }
+
+    const parts: HTMLElement[] = [];
+    const looseSec = looseEls.length ? section(val(domain.label ?? domain.id, s0), looseEls) : null;
+    if (looseSec && looseFirst !== false) parts.push(looseSec);
+    parts.push(...groupSecs);
+    if (looseSec && looseFirst === false) parts.push(looseSec);
+    return el("div", { class: "dock-page" }, parts);
+  }
+  /** Elementos de una lista de nodos (para el contenido de un grupo/sección). */
+  private nodeEls(nodes: SchemaNode[], s0: EditorState): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    for (const n of nodes) {
+      if (!this.inDock(n)) continue;
+      if (isGroup(n)) {
+        const kids = this.nodeEls(n.children, s0);
+        if (kids.length === 0) continue;
+        const sec = section(val(n.label ?? "", s0), kids);
+        if (n.visible) this.dynVis.push({ el: sec, visible: n.visible });
+        out.push(sec);
+      } else {
+        const e = this.fieldEl(n, s0);
+        if (e) out.push(e);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Elemento de un campo: `custom` → su adaptador (o una nota `note-*` por
+   * convención); cualquier otro → el control genérico que ya creó DockRenderer.
+   * Registra sincronía y visibilidad viva cuando el campo las declara.
+   */
+  private fieldEl(f: Field, s0: EditorState): HTMLElement | null {
+    if (f.kind === "custom") {
+      const c = this.customs.get(f.id);
+      if (c) {
+        if (c.sync) this.customSyncs.push(c.sync);
+        if (f.visible) this.dynVis.push({ el: c.el, visible: f.visible });
+        return c.el;
+      }
+      // Notas estáticas de ayuda: se rinden con su `hint` como texto.
+      if (f.id.startsWith("note-")) {
+        const note = fieldLabel(val(f.hint ?? f.label, s0));
+        if (f.visible) this.dynVis.push({ el: note, visible: f.visible });
+        return note;
+      }
+      return null; // custom sin adaptador en el dock (p. ej. solo-radial)
+    }
+    // Campo genérico: DockRenderer ya lo construyó (si no, no aplica al dock).
+    try {
+      return this.dock.el(f.id);
+    } catch {
+      return null;
+    }
+  }
   mount(parent: HTMLElement): void {
     parent.appendChild(this.el);
   }
 
-  /** Pulsar una pestaña: abre su categoría, o la repliega si ya estaba abierta. */
-  private toggle(cat: CatId): void {
+  /** Pulsar una pestaña: abre su dominio, o lo repliega si ya estaba abierto. */
+  private toggle(cat: string): void {
     this.setOpen(this.openCat === cat ? null : cat);
   }
 
-  private setOpen(cat: CatId | null): void {
-    // Cambiar de una categoría a otra estando ya abierto: animar la altura del
-    // panel de la anterior a la nueva (si no, saltaría de golpe y se siente
-    // seco). Al abrir desde cerrado o al cerrar no aplica: ahí manda el
-    // deslizamiento lateral.
+  private setOpen(cat: string | null): void {
+    // Cambiar de un dominio a otro estando ya abierto: animar la altura del panel
+    // de la anterior a la nueva (si no, saltaría de golpe). Al abrir desde cerrado
+    // o al cerrar no aplica: ahí manda el deslizamiento lateral.
     const switching = this.openCat !== null && cat !== null && cat !== this.openCat;
 
     this.openCat = cat;
-    // Al abrir, el borde cobra vida; al cerrar, se aplana suavemente a recto
-    // mientras el panel se desliza fuera (collapse), así al final no asoma el
-    // ondulado congelado por el marco.
     if (cat) this.edge.start();
     else this.edge.collapse();
 
-    // Al CERRAR (cat === null), NO ocultar las páginas todavía: el cajón se
-    // desliza fuera de la ventana con su contenido intacto (misma altura). Si
-    // quitáramos display:none ahora, el contenido desaparecería primero, el
-    // drawer se encogiría a 0 y la animación se vería como un "achicamiento"
-    // en vez de un deslizamiento limpio. Las páginas se ocultan cuando se abra
-    // otra categoría (renderState las intercambia) o se quedan hidden fuera de
-    // la ventana, sin coste visual.
+    // Al CERRAR (cat === null) no se ocultan las páginas todavía: el cajón se
+    // desliza fuera con su contenido intacto. Solo se quita is-open.
     if (cat !== null) {
-      if (switching) {
-        this.animateHeightSwap();
-      } else {
-        // Abrir desde cerrado: intercambiar páginas normalmente.
-        this.renderState();
-      }
+      if (switching) this.animateHeightSwap();
+      else this.renderState();
     } else {
-      // Cerrar: solo quitar la clase is-open del contenedor y las pestañas,
-      // sin tocar las páginas para que el drawer mantenga su tamaño.
       setClass(this.el, "is-open", false);
       for (const [id, tab] of this.tabs) {
         setClass(tab, "is-open", false);
@@ -337,20 +333,16 @@ export class SideDock {
   }
   /**
    * Cambia de página animando la altura (técnica FLIP): mide el alto actual,
-   * intercambia la página, mide el nuevo y transiciona entre ambos con una
-   * altura explícita. El ResizeObserver del borde vivo redibuja la silueta en
-   * cada paso intermedio, así el contorno ondulado acompaña el cambio de tamaño.
+   * intercambia la página, mide el nuevo y transiciona entre ambos. El
+   * ResizeObserver del borde vivo redibuja la silueta en cada paso intermedio.
    */
   private animateHeightSwap(): void {
     const from = this.content.offsetHeight;
-    // Intercambiar la página visible y actualizar pestañas/título.
     this.renderState();
-    // Alto natural de la nueva página (con la altura aún sin fijar).
     this.content.style.height = "auto";
     const to = this.content.offsetHeight;
     if (from === to) return;
 
-    // Fijar el alto de partida, forzar reflow y transicionar al de destino.
     this.content.style.height = `${from}px`;
     void this.content.offsetHeight; // reflow: fija el punto de partida
     this.content.classList.add("is-resizing");
@@ -358,8 +350,6 @@ export class SideDock {
 
     window.clearTimeout(this.heightTimer);
     this.heightTimer = window.setTimeout(() => {
-      // Al terminar, soltar la altura fija para que vuelva a adaptarse sola
-      // (p.ej. si un control cambia de alto o se abre/cierra una sección).
       this.content.classList.remove("is-resizing");
       this.content.style.height = "";
     }, 340);
@@ -373,7 +363,6 @@ export class SideDock {
     this.activeTool = TOOL_TO_CAT[tool] ?? null;
     this.renderState();
   }
-
   /** Pinta el estado de pestañas/cajón: abierta, en-uso y qué página se ve. */
   private renderState(): void {
     setClass(this.el, "is-open", this.openCat !== null);
@@ -381,111 +370,94 @@ export class SideDock {
       setClass(tab, "is-open", id === this.openCat);
       setClass(tab, "is-active", id === this.activeTool);
     }
-    for (const cat of CATEGORIES) {
-      setClass(this.pages[cat.id], "is-shown", cat.id === this.openCat);
+    for (const def of this.tabDefs) {
+      setClass(this.pages[def.id], "is-shown", def.id === this.openCat);
     }
     if (this.openCat) {
-      const def = CATEGORIES.find((c) => c.id === this.openCat);
+      const def = this.tabDefs.find((d) => d.id === this.openCat);
       if (def) this.dockTitle.textContent = def.label;
     }
   }
+
   update(state: EditorState): void {
     // La pestaña "en uso" sigue a la herramienta activa.
     this.focusTool(state.tool);
 
-    // Color: cromo propio del dock, sincronizado a mano.
-    this.colorPicker.set(state.color);
-    this.recentSwatches.set({ colors: state.recentColors, value: state.color });
-    this.paletteTabs.set(String(state.paletteIndex));
-    this.paletteWells.set({ colors: state.palette.colors, value: state.color });
-
-    // Todos los controles del esquema: valor + visibilidad (atenuar/ocultar).
+    // Todos los controles del esquema: valor + visibilidad por campo.
     this.dock.sync(state);
-
-    // Notas de ayuda que dependen del estado (viven fuera del esquema).
-    this.dynamicsHint.textContent = DYNAMICS_INFO[state.brush.dynamics].hint;
-    const copies = symmetryCopies(state.symmetry);
-    this.symmetryCount.textContent = copies === 1 ? "1 copia" : `${copies} copias por trazo`;
-
-    // El grupo "Familia" (control + nota) se oculta entero fuera de Arrastre.
-    setClass(this.pullGroup, "is-hidden", state.brush.mode !== "pull");
-
-    // Borrador (tecla 4): intercambia las opciones de pintura por las de borrado
-    // y oculta la sección de respuesta del lápiz, igual que hace el menú radial.
-    const erasing = state.brush.mode === "erase";
-    setClass(this.strokeGroup, "is-hidden", erasing);
-    setClass(this.eraseGroup, "is-hidden", !erasing);
-    setClass(this.sections.stabilize, "is-hidden", erasing);
-
-    this.drawPreview(state);
+    // Cromo propio: refresco de valores (color, paletas, vista previa, notas…).
+    for (const sync of this.customSyncs) sync(state);
+    // Visibilidad de secciones (grupos) y campos custom por predicado.
+    for (const { el: node, visible } of this.dynVis) setClass(node, "is-hidden", !visible(state));
   }
-  /**
-   * Vista previa del pincel.
-   *
-   * Dibuja una S con un perfil de presion sintetico usando los mismos ajustes
-   * de ancho: es la unica forma de ver que hace realmente "curva de presion" o
-   * "afilado final" sin gastar un trazo en el lienzo.
-   */
-  private drawPreview(state: EditorState): void {
-    const c = this.brushPreview;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    const w = c.width;
-    const h = c.height;
-    ctx.clearRect(0, 0, w, h);
 
-    const b = state.brush;
-    const steps = 96;
-    const maxR = Math.min(h * 0.42, Math.max(2, b.size * 0.5) * 2.2);
-    const top: { x: number; y: number }[] = [];
-    const bottom: { x: number; y: number }[] = [];
+}
 
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const x = 18 + t * (w - 36);
-      const y = h / 2 + Math.sin(t * Math.PI * 1.7) * h * 0.24;
+/**
+ * Vista previa del pincel.
+ *
+ * Dibuja una S con un perfil de presion sintetico usando los mismos ajustes de
+ * ancho: es la unica forma de ver que hace realmente "curva de presion" o
+ * "afilado final" sin gastar un trazo en el lienzo.
+ */
+function drawBrushPreview(c: HTMLCanvasElement, state: EditorState): void {
+  const ctx = c.getContext("2d");
+  if (!ctx) return;
+  const w = c.width;
+  const h = c.height;
+  ctx.clearRect(0, 0, w, h);
 
-      // Perfil sintetico: sube, se mantiene y cae, como un trazo real.
-      let p = Math.sin(Math.PI * Math.min(1, t * 1.15)) * 0.85 + 0.15;
-      if (b.pressureCurve !== 0) {
-        p = Math.pow(p, Math.exp(b.pressureCurve * 1.2));
-      }
-      const speed = 0.35 + 0.65 * Math.abs(Math.cos(t * Math.PI * 1.7));
-      const vel = b.velocityInvert ? speed : 1 - speed;
-      const dyn = b.dynamics;
-      let k =
-        dyn === "constant"
-          ? 1
-          : dyn === "pressure"
-            ? p
-            : dyn === "velocity"
-              ? vel
-              : dyn === "tilt"
-                ? 0.55 + 0.45 * Math.sin(t * Math.PI)
-                : p * 0.6 + vel * 0.4;
-      const taper = Math.min(
-        b.taperIn > 0 ? Math.min(1, t / b.taperIn) : 1,
-        b.taperOut > 0 ? Math.min(1, (1 - t) / b.taperOut) : 1,
-      );
-      k = (b.minRatio + (1 - b.minRatio) * k) * taper;
-      if (b.jitter > 0) k *= 1 - b.jitter * 0.5 * Math.abs(Math.sin(t * 57.3));
+  const b = state.brush;
+  const steps = 96;
+  const maxR = Math.min(h * 0.42, Math.max(2, b.size * 0.5) * 2.2);
+  const top: { x: number; y: number }[] = [];
+  const bottom: { x: number; y: number }[] = [];
 
-      const r = Math.max(0.4, k * maxR);
-      const dy = Math.cos(t * Math.PI * 1.7) * h * 0.24 * ((Math.PI * 1.7) / (w - 36));
-      const len = Math.hypot(1, dy) || 1;
-      const px = -dy / len;
-      const py = 1 / len;
-      top.push({ x: x + px * r, y: y + py * r });
-      bottom.push({ x: x - px * r, y: y - py * r });
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const x = 18 + t * (w - 36);
+    const y = h / 2 + Math.sin(t * Math.PI * 1.7) * h * 0.24;
+
+    // Perfil sintetico: sube, se mantiene y cae, como un trazo real.
+    let p = Math.sin(Math.PI * Math.min(1, t * 1.15)) * 0.85 + 0.15;
+    if (b.pressureCurve !== 0) {
+      p = Math.pow(p, Math.exp(b.pressureCurve * 1.2));
     }
-    ctx.beginPath();
-    ctx.moveTo(top[0].x, top[0].y);
-    for (const p of top) ctx.lineTo(p.x, p.y);
-    for (let i = bottom.length - 1; i >= 0; i--) ctx.lineTo(bottom[i].x, bottom[i].y);
-    ctx.closePath();
-    ctx.globalAlpha = b.opacity;
-    ctx.fillStyle = state.color;
-    ctx.fill();
-    ctx.globalAlpha = 1;
+    const speed = 0.35 + 0.65 * Math.abs(Math.cos(t * Math.PI * 1.7));
+    const vel = b.velocityInvert ? speed : 1 - speed;
+    const dyn = b.dynamics;
+    let k =
+      dyn === "constant"
+        ? 1
+        : dyn === "pressure"
+          ? p
+          : dyn === "velocity"
+            ? vel
+            : dyn === "tilt"
+              ? 0.55 + 0.45 * Math.sin(t * Math.PI)
+              : p * 0.6 + vel * 0.4;
+    const taper = Math.min(
+      b.taperIn > 0 ? Math.min(1, t / b.taperIn) : 1,
+      b.taperOut > 0 ? Math.min(1, (1 - t) / b.taperOut) : 1,
+    );
+    k = (b.minRatio + (1 - b.minRatio) * k) * taper;
+    if (b.jitter > 0) k *= 1 - b.jitter * 0.5 * Math.abs(Math.sin(t * 57.3));
+
+    const r = Math.max(0.4, k * maxR);
+    const dy = Math.cos(t * Math.PI * 1.7) * h * 0.24 * ((Math.PI * 1.7) / (w - 36));
+    const len = Math.hypot(1, dy) || 1;
+    const px = -dy / len;
+    const py = 1 / len;
+    top.push({ x: x + px * r, y: y + py * r });
+    bottom.push({ x: x - px * r, y: y - py * r });
   }
+  ctx.beginPath();
+  ctx.moveTo(top[0].x, top[0].y);
+  for (const p of top) ctx.lineTo(p.x, p.y);
+  for (let i = bottom.length - 1; i >= 0; i--) ctx.lineTo(bottom[i].x, bottom[i].y);
+  ctx.closePath();
+  ctx.globalAlpha = b.opacity;
+  ctx.fillStyle = state.color;
+  ctx.fill();
+  ctx.globalAlpha = 1;
 }

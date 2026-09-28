@@ -182,6 +182,9 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
   const brushOptions: SchemaNode[] = [
     { kind: "number", id: "size", label: "Tamano", icon: "plus", min: 0.5, max: 400, step: 0.5, gamma: 2.2, unit: "px", decimals: 1, hint: "Diametro base ([ y ] lo cambian sin soltar el lapiz).", get: (s) => s.brush.size, set: (v) => editor.setBrush({ size: v }) },
     { kind: "number", id: "opacity", label: "Opacidad", icon: "droplet", min: 0.02, max: 1, step: 0.01, decimals: 2, get: (s) => s.brush.opacity, set: (v) => editor.setBrush({ opacity: v }) },
+    // Vista previa del trazo: cromo propio del dock (el radial no la muestra).
+    // El adaptador del dock la renderiza por id; aquí solo se declara su lugar.
+    { kind: "custom", id: "brush-preview", label: "Vista previa", surfaces: ["dock"], visible: (s) => s.brush.mode !== "erase" },
     {
       kind: "choice",
       id: "dynamics",
@@ -194,6 +197,8 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       get: (s) => s.brush.dynamics,
       set: (v) => editor.setBrush({ dynamics: v as StrokeDynamics }),
     },
+    // Nota viva bajo el selector de dinámica (solo dock): su texto sigue al estado.
+    { kind: "custom", id: "brush-dyn-hint", label: "Dinamica", surfaces: ["dock"], visible: (s) => s.brush.mode !== "erase" },
     {
       id: "response",
       label: "Respuesta",
@@ -207,6 +212,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
         { kind: "number", id: "pressure-curve", label: "Curva de presion", min: -1, max: 1, step: 0.05, decimals: 2, hint: "Negativo: responde antes con poca fuerza. Positivo: exige apretar mas.", visible: (s) => usesPressure(s.brush.dynamics), whenHidden: "dim", get: (s) => s.brush.pressureCurve, set: (v) => editor.setBrush({ pressureCurve: v }) },
         { kind: "number", id: "velocity-scale", label: "Escala de velocidad", min: 0.2, max: 6, step: 0.05, decimals: 2, unit: "px/ms", hint: "Velocidad de referencia: por encima de ella el trazo llega a su extremo.", visible: (s) => usesVelocity(s.brush.dynamics), whenHidden: "dim", get: (s) => s.brush.velocityScale, set: (v) => editor.setBrush({ velocityScale: v }) },
         { kind: "toggle", id: "velocity-invert", label: "Rapido = grueso", icon: "spark", hint: "Apagado imita la tinta (rapido afina). Encendido imita el pincel seco.", visible: (s) => usesVelocity(s.brush.dynamics), whenHidden: "dim", get: (s) => s.brush.velocityInvert, set: (v) => editor.setBrush({ velocityInvert: v }) },
+        { kind: "custom", id: "note-stabilize", label: "Nota", surfaces: ["dock"], hint: "El suavizado corrige el temblor y el estabilizador la direccion. Si notas la punta lenta, baja el estabilizador antes que el suavizado." },
       ],
     },
     {
@@ -354,6 +360,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       { kind: "number", id: "shape-sides", label: "Lados", min: 3, max: 12, step: 1, visible: (s) => s.shape.kind === "ngon" || s.shape.kind === "star", get: (s) => s.shape.sides, set: (v) => editor.setShape({ sides: Math.round(v) }) },
       { kind: "number", id: "shape-inner", label: "Radio interior", min: 0.15, max: 0.9, step: 0.01, decimals: 2, visible: (s) => s.shape.kind === "star", get: (s) => s.shape.inner, set: (v) => editor.setShape({ inner: v }) },
       { kind: "number", id: "shape-round", label: "Redondeo", min: 0, max: 60, step: 0.5, decimals: 1, unit: "px", visible: (s) => s.shape.kind === "box" || s.shape.kind === "ngon", get: (s) => s.shape.round, set: (v) => editor.setShape({ round: v }) },
+      { kind: "custom", id: "note-shape", label: "Nota", surfaces: ["dock"], hint: "Arrastra en el lienzo para colocarla y girarla antes de soltarla." },
     ],
   };
 
@@ -403,6 +410,8 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       shapeCfg,
       physicsCfg,
       fieldCfg,
+      // "Hornear a tinta" en el dock (el radial ya trae la acción `bake` arriba).
+      { kind: "custom", id: "bake-dock", label: "Hornear a tinta", surfaces: ["dock"], hint: "Convierte el contorno fundido en trazos editables" },
       { kind: "toggle", id: "walls", label: "Paredes", icon: "grid", get: (s) => s.showWalls, set: () => editor.toggleWalls() },
       { kind: "action", id: "clear-matter", label: "Vaciar", icon: "trash", accent: "#ff5f6d", danger: true, run: () => editor.clearMatter() },
     ],
@@ -447,6 +456,8 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       { kind: "action", id: "sym-straighten", label: "Enderezar", run: () => editor.setSymmetry({ angle: 0 }) },
       { kind: "toggle", id: "sym-visible", label: "Guia", get: (s) => s.symmetry.visible, set: (v) => editor.setSymmetry({ visible: v }) },
       { kind: "toggle", id: "sym-locked", label: "Bloquear", hint: "Evita mover el eje sin querer mientras dibujas.", get: (s) => s.symmetry.locked, set: (v) => editor.setSymmetry({ locked: v }) },
+      { kind: "custom", id: "sym-copies", label: "Copias", surfaces: ["dock"] },
+      { kind: "custom", id: "note-symmetry", label: "Nota", surfaces: ["dock"], hint: "Con la herramienta de simetria (S) puedes arrastrar el eje a cualquier punto del lienzo." },
     ],
   };
 

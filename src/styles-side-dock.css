@@ -193,6 +193,13 @@
   border-bottom: 1px solid #23232a;
 }
 
+/* Cromo propio marcado is-hidden por predicado (vista previa del pincel, notas)
+   se colapsa. Los .ctrl/.ctrl-group/.panel-section ya tienen su propia regla;
+   esto cubre el resto (canvas, párrafos de ayuda) sin una clase extra. */
+.side-dock .is-hidden {
+  display: none;
+}
+
 /* ------------------------------------------------------------ tira de pestañas */
 
 /*
