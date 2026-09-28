@@ -1114,6 +1114,16 @@ body {
   pointer-events: none;
 }
 
+/* La rueda es HUD: normalmente por encima de todo. Pero cuando se abre el buscador
+   (.cmd-overlay) o el panel de ayuda (.help-overlay), debe quedar DETRÁS de su velo
+   para difuminarse y oscurecerse igual que el resto de la interfaz —no flotar
+   nítida por encima—. Bajamos su z-index por debajo del velo mientras esos paneles
+   están montados (:not([hidden]) cubre también su animación de cierre). */
+:root:has(.cmd-overlay:not([hidden])) .pw-overlay,
+:root:has(.help-overlay:not([hidden])) .pw-overlay {
+  z-index: 40;
+}
+
 .pw-wheel {
   position: absolute;
   width: 0;

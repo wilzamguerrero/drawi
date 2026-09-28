@@ -54,6 +54,8 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
     icon: "brush",
     rows: [
       ["1 / 2 / 3", "Trazo, relleno, arrastre"],
+      ["4", "Borrador"],
+      ["Alt", "Invertir a borrador"],
       ["[ / ]", "Tamano -/+"],
       ["G", "Degradado"],
       ["P", "Splat"],
@@ -85,7 +87,7 @@ const CHANGELOG: { version: string; date: string; title: string; changes: string
   {
     version: "1.0.0",
     date: "28 sep 2026",
-    title: "Primer lanzamiento",
+    title: "Primeros trazos",
     changes: [
       "Buscador de ordenes (Tab / Ctrl+K): busca cualquier ajuste, lo edita en linea y recuerda donde lo dejaste.",
       "Un unico esquema alimenta el dock, el menu radial y el buscador: cada funcion nueva aparece en las tres superficies a la vez.",
