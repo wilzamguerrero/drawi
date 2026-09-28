@@ -1,7 +1,7 @@
 import type { Editor, EditorState } from "../../app/editor";
 import { buildRoot, type HotNode, type MenuHooks } from "../hotbox/menu";
 import { DOCK_TAB_DOMAINS } from "../side-dock";
-import { buildSchema, isGroup, val, type Field, type SchemaNode } from "./schema";
+import { buildSchema, isGroup, val, type ChoiceOption, type Field, type SchemaNode } from "./schema";
 
 /**
  * Adaptador esquema → paletón de órdenes (Tab / Ctrl+K).
@@ -20,6 +20,29 @@ import { buildSchema, isGroup, val, type Field, type SchemaNode } from "./schema
  *   la opción es alcanzable ahí ahora mismo). Sirve para nacer un chip en el
  *   lienzo, igual que el desgarro del radial.
  */
+/**
+ * Control editable EN LÍNEA de una orden: el paletón lo pinta en la propia fila
+ * para ajustar el valor sin ir al panel. Lleva cierres a los `get`/`set` reales
+ * del esquema (los mismos que usa el dock), así editar aquí mueve el editor y se
+ * refleja en todas las superficies. Solo número/interruptor/elección son
+ * editables en línea; el resto (acciones, modos) no trae `edit`.
+ */
+export type CommandEdit =
+  | {
+      kind: "number";
+      min: number;
+      max: number;
+      step: number;
+      decimals: number;
+      /** Curva de respuesta del deslizador (>1 da más resolución abajo). */
+      gamma: number;
+      unit: string;
+      get: () => number;
+      set: (v: number) => void;
+    }
+  | { kind: "toggle"; get: () => boolean; set: (v: boolean) => void }
+  | { kind: "choice"; options: ChoiceOption[]; get: () => string; set: (v: string) => void };
+
 export interface Command {
   id: string;
   label: string;
@@ -31,6 +54,8 @@ export interface Command {
   kind: Field["kind"] | "mode";
   /** Acción intrínseca (solo acciones, toggles y modos de pincel la tienen). */
   run: (() => void) | null;
+  /** Control editable en línea (número/interruptor/elección), o null. */
+  edit: CommandEdit | null;
   /** Pestaña del dock que abre esta opción, o null si no vive en el dock. */
   dockTab: string | null;
   /** Camino en el árbol radial para nacer un chip, o null si no es alcanzable. */
@@ -84,12 +109,28 @@ function fieldToCommand(
 
   let run: (() => void) | null = null;
   let on = false;
+  let edit: CommandEdit | null = null;
   if (f.kind === "action") {
     run = f.run;
     if (f.toggled) on = f.toggled(s);
   } else if (f.kind === "toggle") {
     on = f.get(s);
     run = () => f.set(!f.get(editor.state));
+    edit = { kind: "toggle", get: () => f.get(editor.state), set: (v) => f.set(v) };
+  } else if (f.kind === "number") {
+    edit = {
+      kind: "number",
+      min: f.min,
+      max: f.max,
+      step: f.step ?? 1,
+      decimals: f.decimals ?? 0,
+      gamma: f.gamma ?? 1,
+      unit: f.unit ?? "",
+      get: () => f.get(editor.state),
+      set: (v) => f.set(v),
+    };
+  } else if (f.kind === "choice") {
+    edit = { kind: "choice", options: f.options, get: () => f.get(editor.state), set: (v) => f.set(v) };
   }
 
   return {
@@ -100,6 +141,7 @@ function fieldToCommand(
     trail,
     kind: f.kind,
     run,
+    edit,
     dockTab,
     radialPath: radial.get(f.id) ?? null,
     on,
@@ -162,6 +204,7 @@ export function buildCommands(editor: Editor, state: EditorState, hooks: MenuHoo
           trail: [domainLabel],
           kind: "mode",
           run: () => bm.activate(m.value),
+          edit: null,
           dockTab: tabId,
           radialPath: radial.get(id) ?? null,
           on: bm.isToolActive(state) && bm.current(state) === m.value,

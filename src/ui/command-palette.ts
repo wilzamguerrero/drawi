@@ -4,7 +4,7 @@ import { MateriaEdge } from "./fx/materia-edge";
 import { MateriaFx, prefersReducedMotion } from "./fx/materia";
 import { icon } from "./icons";
 import type { MenuHooks } from "./hotbox/menu";
-import { buildCommands, type Command } from "./model/to-commands";
+import { buildCommands, type Command, type CommandEdit } from "./model/to-commands";
 
 /**
  * Puertos del paletón hacia el resto de la app: abrir la opción en su panel del
@@ -86,6 +86,9 @@ export class CommandPalette {
   readonly el: HTMLElement;
   private open = false;
 
+  /** Clave para recordar entre sesiones dónde se dejó el buscador. */
+  private static readonly STATE_KEY = "drawi.cmd.state";
+
   private editor: Editor;
   private hooks: MenuHooks;
   private ports: PalettePorts;
@@ -110,11 +113,18 @@ export class CommandPalette {
   private rows: HTMLElement[] = [];
   private activeIndex = -1;
   private query = "";
+  /** Id de la última orden resaltada: se restaura al reabrir el buscador. */
+  private lastActiveId: string | null = null;
 
   constructor(editor: Editor, hooks: MenuHooks, ports: PalettePorts) {
     this.editor = editor;
     this.hooks = hooks;
     this.ports = ports;
+
+    // Recuperar dónde se quedó el buscador la última vez (consulta + fila).
+    const saved = this.readState();
+    this.query = saved.q;
+    this.lastActiveId = saved.id;
 
     this.input = el("input", {
       class: "cmd-input",
@@ -127,6 +137,7 @@ export class CommandPalette {
     this.input.addEventListener("input", () => {
       this.query = this.input.value;
       this.renderResults();
+      this.saveState();
     });
 
     const head = el("div", { class: "cmd-head cmd-rise" }, [
@@ -205,12 +216,16 @@ export class CommandPalette {
     this.el.hidden = false;
     this.open = true;
 
-    // Órdenes al día (etiquetas y estados frescos) y filtro en limpio. Se derivan
-    // del esquema único, con el estado del momento para la ruta y los estados.
+    // Órdenes al día (etiquetas y estados frescos). Se derivan del esquema único,
+    // con el estado del momento para la ruta y los estados. NO se limpia la
+    // consulta: el buscador retoma donde se quedó (misma búsqueda y fila).
     this.commands = buildCommands(this.editor, this.editor.state, this.hooks);
-    this.query = "";
-    this.input.value = "";
+    this.input.value = this.query;
+    // Capturar la fila recordada ANTES de renderResults: este fija la fila 0 (y de
+    // paso sobreescribe lastActiveId), así que sin capturar aquí se perdería.
+    const restoreId = this.lastActiveId;
     this.renderResults();
+    this.restoreActive(restoreId);
 
     window.clearTimeout(this.fxTimer);
     window.clearTimeout(this.bloomTimer);
@@ -280,6 +295,7 @@ export class CommandPalette {
   hide(): void {
     if (!this.open) return;
     this.open = false;
+    this.saveState();
 
     window.clearTimeout(this.fxTimer);
     window.clearTimeout(this.bloomTimer);
@@ -345,8 +361,11 @@ export class CommandPalette {
   }
 
   private focusInput(): void {
-    // Enfocar sin desplazar el cuadro recién formado.
+    // Enfocar sin desplazar el cuadro recién formado. Se selecciona el texto
+    // recordado para que baste teclear para reemplazarlo (y Enter re-ejecute la
+    // fila recordada si no se toca nada).
     this.input.focus({ preventScroll: true });
+    this.input.select();
   }
 
   /** Filtra las órdenes por la consulta y repinta la lista. */
@@ -390,11 +409,14 @@ export class CommandPalette {
     }
 
     picked.forEach(({ cmd, hits }, k) => {
-      const row = el("li", { class: "cmd-row", role: "option" }, [
-        el("span", { class: "cmd-ico", html: cmd.icon ? icon(cmd.icon) : "" }),
-        this.renderMain(cmd, hits),
-        this.renderActions(cmd),
-      ]);
+      const row = el("li", { class: "cmd-row", role: "option" });
+      row.appendChild(el("span", { class: "cmd-ico", html: cmd.icon ? icon(cmd.icon) : "" }));
+      row.appendChild(this.renderMain(cmd, hits));
+      // Control editable en línea (número/interruptor/elección) antes de los botones:
+      // ajustar el valor sin salir del buscador ni ir al panel.
+      const editEl = this.renderEdit(cmd, row);
+      if (editEl) row.appendChild(editEl);
+      row.appendChild(this.renderActions(cmd));
       setClass(row, "is-on", cmd.on);
       setClass(row, "is-disabled", cmd.disabled);
       // Índice para escalonar la entrada fila a fila al abrir (--row).
@@ -477,6 +499,48 @@ export class CommandPalette {
     this.activeIndex = ((i % n) + n) % n; // envuelve arriba/abajo
     this.rows.forEach((r, idx) => setClass(r, "is-active", idx === this.activeIndex));
     this.rows[this.activeIndex]?.scrollIntoView({ block: "nearest" });
+    // Recordar la fila resaltada para restaurarla al reabrir.
+    this.lastActiveId = this.filtered[this.activeIndex]?.id ?? null;
+  }
+
+  /**
+   * Restaura la fila resaltada la última vez (por id) si sigue en la lista
+   * filtrada; si no, deja la mejor coincidencia (índice 0, ya fijado por
+   * renderResults). Solo se usa al abrir; escribir vuelve a fijar la 0.
+   */
+  private restoreActive(id: string | null): void {
+    if (!id) return;
+    const i = this.filtered.findIndex((c) => c.id === id);
+    if (i >= 0) this.setActive(i);
+  }
+
+  /** Lee el estado guardado del buscador (consulta + fila). Tolera su ausencia. */
+  private readState(): { q: string; id: string | null } {
+    try {
+      const raw = window.localStorage.getItem(CommandPalette.STATE_KEY);
+      if (raw) {
+        const o = JSON.parse(raw) as { q?: unknown; id?: unknown };
+        return {
+          q: typeof o.q === "string" ? o.q : "",
+          id: typeof o.id === "string" ? o.id : null,
+        };
+      }
+    } catch {
+      // Sin almacenamiento (modo privado) o JSON corrupto: se empieza en limpio.
+    }
+    return { q: "", id: null };
+  }
+
+  /** Persiste dónde se quedó el buscador para la próxima vez que se abra. */
+  private saveState(): void {
+    try {
+      window.localStorage.setItem(
+        CommandPalette.STATE_KEY,
+        JSON.stringify({ q: this.query, id: this.lastActiveId }),
+      );
+    } catch {
+      // Sin almacenamiento: el recuerdo sigue vivo durante la sesión (en memoria).
+    }
   }
 
   private runActive(): void {
@@ -498,6 +562,128 @@ export class CommandPalette {
     if (cmd.run) cmd.run();
     else if (cmd.dockTab) this.ports.openPanel(cmd.dockTab, cmd.id);
     else if (cmd.radialPath) this.ports.spawnChip(cmd.radialPath, cmd.id);
+  }
+
+  /**
+   * Control editable EN LÍNEA de la fila, si la orden trae uno (número,
+   * interruptor o elección). Deja ajustar el valor sin ir al panel: mueve los
+   * `set` reales del esquema, así el cambio se refleja en el dock y el radial.
+   * El valor se ve siempre (para escanear los ajustes de un vistazo); los mandos
+   * se realzan al pasar por encima o con la fila activa (como los botones). Los
+   * mandos DETIENEN la propagación para no disparar la acción primaria de la fila.
+   */
+  private renderEdit(cmd: Command, row: HTMLElement): HTMLElement | null {
+    const e = cmd.edit;
+    if (!e || cmd.disabled) return null;
+    if (e.kind === "toggle") return this.renderToggleEdit(e, row);
+    if (e.kind === "number") return this.renderNumberEdit(e);
+    return this.renderChoiceEdit(e);
+  }
+
+  /** Interruptor en línea: un botón-pastilla que refleja y alterna el estado. */
+  private renderToggleEdit(e: Extract<CommandEdit, { kind: "toggle" }>, row: HTMLElement): HTMLElement {
+    const pill = el("button", {
+      class: "cmd-edit cmd-toggle",
+      type: "button",
+      aria: { label: "Alternar" },
+    }, [el("span", { class: "cmd-toggle-knob" })]);
+    const sync = (): void => {
+      const on = e.get();
+      setClass(pill, "is-on", on);
+      setClass(row, "is-on", on);
+      pill.title = on ? "Activado" : "Desactivado";
+    };
+    sync();
+    pill.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    pill.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      e.set(!e.get());
+      sync();
+    });
+    return pill;
+  }
+
+  /**
+   * Número en línea: deslizador + lectura del valor entre botones − / +. El
+   * deslizador replica la curva `gamma` del dock (misma sensación) y los botones
+   * saltan por el `step` del esquema; ambos escriben por el mismo `set`. Todo el
+   * grupo detiene la propagación para no disparar la acción primaria de la fila
+   * (ni cerrar el paletón al arrastrar).
+   */
+  private renderNumberEdit(e: Extract<CommandEdit, { kind: "number" }>): HTMLElement {
+    const RES = 1000;
+    const gamma = e.gamma > 0 ? e.gamma : 1;
+    const toSlider = (v: number): number => {
+      const t = (v - e.min) / (e.max - e.min || 1);
+      return Math.round(Math.pow(Math.max(0, Math.min(1, t)), 1 / gamma) * RES);
+    };
+    const fromSlider = (sv: number): number => {
+      const t = Math.pow(sv / RES, gamma);
+      const v = e.min + t * (e.max - e.min);
+      return e.step > 0 ? Math.round(v / e.step) * e.step : v;
+    };
+    const p = Math.pow(10, e.decimals);
+    const clamp = (n: number): number => Math.min(e.max, Math.max(e.min, Math.round(n * p) / p));
+    const fmt = (n: number): string => `${n.toFixed(e.decimals)}${e.unit ? ` ${e.unit}` : ""}`;
+
+    const dec = el("button", { class: "cmd-num-btn", type: "button", title: "Menos", html: icon("minus") });
+    const range = el("input", { class: "cmd-num-range", type: "range", min: 0, max: RES, step: 1 }) as HTMLInputElement;
+    const readout = el("span", { class: "cmd-num-val" });
+    const inc = el("button", { class: "cmd-num-btn", type: "button", title: "Mas", html: icon("plus") });
+
+    const paint = (v: number): void => {
+      range.style.setProperty("--fill", `${(toSlider(v) / RES) * 100}%`);
+    };
+    const sync = (): void => {
+      const v = e.get();
+      readout.textContent = fmt(v);
+      range.value = String(toSlider(v));
+      paint(v);
+      dec.toggleAttribute("disabled", v <= e.min);
+      inc.toggleAttribute("disabled", v >= e.max);
+    };
+    const bump = (dir: number): void => {
+      e.set(clamp(e.get() + dir * e.step));
+      sync();
+    };
+    sync();
+
+    dec.addEventListener("click", () => bump(-1));
+    inc.addEventListener("click", () => bump(1));
+    range.addEventListener("input", () => {
+      const v = clamp(fromSlider(Number(range.value)));
+      e.set(v);
+      readout.textContent = fmt(v);
+      paint(v);
+      dec.toggleAttribute("disabled", v <= e.min);
+      inc.toggleAttribute("disabled", v >= e.max);
+    });
+
+    const wrap = el("span", { class: "cmd-edit cmd-num" }, [dec, range, readout, inc]);
+    // Un solo guardián para todo el grupo: ni el clic ni el arrastre llegan a la
+    // fila (que abriría la acción y cerraría el paletón).
+    wrap.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    wrap.addEventListener("click", (ev) => ev.stopPropagation());
+    return wrap;
+  }
+
+  /** Elección en línea: un chip con la opción actual; al pulsarlo avanza (con vuelta). */
+  private renderChoiceEdit(e: Extract<CommandEdit, { kind: "choice" }>): HTMLElement {
+    const chip = el("button", { class: "cmd-edit cmd-choice", type: "button", title: "Cambiar" });
+    const sync = (): void => {
+      const cur = e.options.find((o) => o.value === e.get());
+      chip.textContent = cur ? cur.label : e.get();
+    };
+    sync();
+    chip.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    chip.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (e.options.length === 0) return;
+      const i = e.options.findIndex((o) => o.value === e.get());
+      e.set(e.options[(i + 1) % e.options.length].value);
+      sync();
+    });
+    return chip;
   }
 
   /** Activa/desactiva la cascada del contenido (clase en el contenedor raíz). */
