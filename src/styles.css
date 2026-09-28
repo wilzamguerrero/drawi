@@ -68,6 +68,17 @@
   box-sizing: border-box;
 }
 
+/* Sin anillo de foco del navegador en NINGUNA parte: al navegar con teclado o al
+   pulsar Alt/combinaciones, el navegador dibuja un recuadro blanco sobre el
+   elemento con foco. La app comunica el estado con sus propios realces (hover,
+   .is-active, acento), así que ese anillo sobra y se quita globalmente. Los
+   contornos de acento propios usan .is-active, no :focus, así que no se ven
+   afectados. */
+:focus,
+:focus-visible {
+  outline: none;
+}
+
 html,
 body {
   margin: 0;
@@ -286,6 +297,7 @@ body {
 .topbar .btn:hover:not(:disabled),
 .hud > .btn:hover:not(:disabled) {
   background: transparent;
+  border-color: transparent;
   color: var(--hud-ink);
   opacity: 0.7;
 }
@@ -1708,7 +1720,7 @@ body {
   display: flex;
   flex-direction: column;
   max-height: min(86vh, 760px);
-  padding: 32px 42px 30px;
+  padding: 46px 48px 42px 58px;
 }
 
 /* Cuerpo desplazable: TODO en una sola tirada (comandos, notas e historial). Se
@@ -1777,10 +1789,18 @@ body {
     filter: none;
     transition: none;
   }
+  .help-collapse-body,
+  .help-collapse-chevron {
+    transition: none;
+  }
 }
 
+/* Cabecera: marca a la izquierda y la X a la derecha, alineada por arriba con
+   ZENCE (la palabra grande), no con el bloque entero. */
 .help-head {
-  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
 }
 
 /* Marca + versión en una línea, alineadas por su base. */
@@ -1794,18 +1814,6 @@ body {
   margin: 0;
   font-size: 20px;
   letter-spacing: 0.02em;
-}
-
-/* Píldora con la versión actual, junto a la marca. */
-.help-version {
-  font: 600 10.5px/1 var(--mono);
-  letter-spacing: 0.06em;
-  color: var(--accent);
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(90, 159, 212, 0.08);
-  white-space: nowrap;
 }
 
 /* Lockup de marca: ZENCE grande y DRAW pequeño debajo, alineados a la izquierda.
@@ -1833,17 +1841,95 @@ body {
   color: var(--accent);
 }
 
-.help-sub {
-  margin: 3px 0 0;
+/* La X va como un ítem más de la fila (sin posición absoluta) y se sube un pelín
+   (margin negativo) para que su centro case con el centro de ZENCE. */
+.help-close {
+  flex: 0 0 auto;
+  margin-top: -4px;
   color: var(--muted);
-  font-size: 12.5px;
 }
 
-.help-close {
-  position: absolute;
-  top: 16px;
-  right: 16px;
+/* -------------------------------------------------------- atajos plegables
+
+   Los atajos abren COLAPSADOS: solo se ve la cabecera pulsable ("Atajos de
+   teclado") y el panel muestra directamente el historial. Al pulsar, la rejilla
+   se despliega con una transición de altura (truco grid 0fr→1fr) y el chevron
+   gira. La cabecera se re-colapsa cada vez que se abre la ayuda. Sin recuadro (a
+   petición): la cabecera es una fila limpia, como un título de sección. */
+.help-collapse {
+  border: none;
+}
+
+.help-collapse-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font: 600 11px/1 var(--font);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: opacity 0.16s ease;
+}
+
+.help-collapse-head:hover {
+  opacity: 0.7;
+}
+
+.help-collapse-ico {
+  display: inline-flex;
+}
+
+.help-collapse-ico svg {
+  width: 14px;
+  height: 14px;
+}
+
+.help-collapse-title {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+/* Chevron: apunta hacia abajo (plegado) y gira 180° al abrir. */
+.help-collapse-chevron {
+  display: inline-flex;
   color: var(--muted);
+  transition: transform 0.26s cubic-bezier(0.2, 1, 0.3, 1);
+}
+
+.help-collapse-chevron svg {
+  width: 16px;
+  height: 16px;
+}
+
+.help-collapse.is-open .help-collapse-chevron {
+  transform: rotate(180deg);
+}
+
+/* Cuerpo plegable: la rejilla de fila 0fr→1fr anima la altura sin saber su medida.
+   El envoltorio interior recorta con overflow mientras colapsa. */
+.help-collapse-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s cubic-bezier(0.2, 1, 0.3, 1);
+}
+
+.help-collapse.is-open .help-collapse-body {
+  grid-template-rows: 1fr;
+}
+
+.help-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* El relleno de la rejilla va aquí (no en el body) para que a 0fr no deje hueco. */
+.help-collapse-inner .help-columns {
+  padding: 14px 0 6px;
 }
 
 .help-columns {
@@ -1873,41 +1959,55 @@ body {
   height: 14px;
 }
 
-.help-list {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 5px 12px;
-  margin: 0;
+/* Filas de atajo estilo "hoja de teclas": descripción a la izquierda (una línea) y
+   la(s) pastilla(s) de tecla a la derecha, separadas por una línea de puntos tenue.
+   La fila entera es baja y regular, para que la columna se lea como una tabla. */
+.help-cmds {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.help-key {
-  font: 500 11px/1.5 var(--mono);
+.help-cmd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  padding: 3px 0;
+}
+
+.help-cmd-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Pastilla(s) de tecla, alineadas a la derecha; varias teclas quedan juntas. */
+.help-cmd-keys {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.help-kbd {
+  font: 500 10.5px/1.6 var(--mono);
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 5px;
   padding: 0 6px;
   white-space: nowrap;
-  justify-self: start;
-}
-
-.help-desc {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.help-notes {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 16px 26px;
 }
 
 /* --------------------------------------------------------------- secciones
 
-   Todo va en UNA sola tirada desplazable: primero los comandos y, más abajo, cada
-   bloque (notas, novedades) abre con un pequeño encabezado de sección separado por
-   una línea, para orientarse mientras se baja con el scroll. */
+   Todo va en UNA sola tirada desplazable: arriba los atajos (plegables) y, más
+   abajo, "Novedades" abre con un pequeño encabezado separado por una línea. */
 .help-section {
   margin-top: 26px;
   padding-top: 20px;
@@ -1945,11 +2045,10 @@ body {
   gap: 18px;
 }
 
+/* Sin tarjeta (a petición): cada versión va directa sobre el fondo del panel, sin
+   recuadro ni relleno gris. Las separa el gap de .help-changelog. */
 .help-release {
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.02);
+  padding: 0;
 }
 
 .help-release-head {
@@ -1960,14 +2059,11 @@ body {
   margin-bottom: 10px;
 }
 
+/* Etiqueta de versión: texto de acento a secas, sin píldora ni fondo. */
 .help-release-v {
   font: 700 12px/1 var(--mono);
   letter-spacing: 0.04em;
   color: var(--accent);
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(90, 159, 212, 0.1);
 }
 
 .help-release-title {
@@ -2018,29 +2114,31 @@ body {
 .help-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--line-soft);
 }
 
-.help-credit {
+/* Crédito de autoría al pie: misma etiqueta "DEV" que el splash del arranque.
+   La pastilla es el único bloque sólido (fondo claro, texto oscuro) sobre el
+   negro del panel, y el usuario va en gris tenue al lado. */
+.help-dev {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
-.help-credit-ico {
-  display: inline-flex;
-  color: var(--accent);
-}
-
-.help-credit-ico svg {
-  width: 14px;
-  height: 14px;
+.help-dev-tag {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--text);
+  color: #0a0a0a;
+  font: 700 9px/17px var(--font);
+  letter-spacing: 0.12em;
 }
 
 .help-credit-v {
