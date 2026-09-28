@@ -13,7 +13,7 @@ import { DockRenderer } from "./model/render-dock";
 import { buildSchema } from "./model/schema";
 
 /** Categorías del dock. Cada una agrupa las secciones de una herramienta. */
-type CatId = "color" | "brush" | "shape" | "symmetry" | "matter";
+type CatId = "color" | "brush" | "symmetry" | "matter";
 
 interface CatDef {
   id: CatId;
@@ -22,11 +22,10 @@ interface CatDef {
 }
 
 const CATEGORIES: CatDef[] = [
-  { id: "color", label: "Color", icon: "droplet" },
   { id: "brush", label: "Pincel", icon: "brush" },
-  { id: "shape", label: "Forma", icon: "shape" },
+  { id: "matter", label: "Materia", icon: "shape" },
+  { id: "color", label: "Color", icon: "droplet" },
   { id: "symmetry", label: "Simetría", icon: "symmetry" },
-  { id: "matter", label: "Materia", icon: "matter" },
 ];
 
 /**
@@ -36,7 +35,7 @@ const CATEGORIES: CatDef[] = [
  */
 const TOOL_TO_CAT: Partial<Record<ToolId, CatId>> = {
   brush: "brush",
-  shape: "shape",
+  shape: "matter",
   matter: "matter",
   symmetry: "symmetry",
 };
@@ -237,9 +236,10 @@ export class SideDock {
     // =================================================== páginas por categoría
     this.pages.color = el("div", { class: "dock-page" }, [this.sections.color]);
     this.pages.brush = el("div", { class: "dock-page" }, [this.sections.brush, this.sections.stabilize]);
-    this.pages.shape = el("div", { class: "dock-page" }, [this.sections.shape]);
     this.pages.symmetry = el("div", { class: "dock-page" }, [this.sections.symmetry]);
-    this.pages.matter = el("div", { class: "dock-page" }, [this.sections.field, this.sections.physics]);
+    // Materia arranca con los ajustes de Forma (antes pestaña propia): la forma
+    // se coloca al dibujar y alimenta la materia, así que viven juntas.
+    this.pages.matter = el("div", { class: "dock-page" }, [this.sections.shape, this.sections.field, this.sections.physics]);
 
     // Cabecera del cajón: título de la categoría abierta + botón de cerrar.
     const titleEl = el("span", { class: "dock-title" });
