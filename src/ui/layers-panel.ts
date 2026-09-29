@@ -215,6 +215,7 @@ export class LayersPanel {
     const maskThumb = el("canvas", { class: "layer-mask-thumb" });
     maskThumb.width = 28; maskThumb.height = 28;
     maskThumb.title = "Máscara · doble clic para invertir (Ctrl+I)";
+    maskThumb.setAttribute("aria-label", "Máscara de capa");
     maskThumb.addEventListener("dblclick", () => ed.invertLayerMask(layer.id));
     const name = el("span", { class: "layer-name", text: layer.name });
     name.addEventListener("dblclick", () => this.editName(layer, name));
@@ -259,6 +260,12 @@ export class LayersPanel {
     setClass(row.strip, "has-color", layer.color !== "none");
     setClass(row.maskThumb, "is-hidden", !layer.mask);
     setClass(row.maskThumb, "is-inverted", !!layer.mask?.inverted);
+    if (layer.mask) {
+      row.maskThumb.title = layer.mask.inverted
+        ? "Máscara invertida · doble clic para volver a invertir (Ctrl+I)"
+        : "Máscara normal · doble clic para invertir (Ctrl+I)";
+      row.maskThumb.setAttribute("aria-label", layer.mask.inverted ? "Máscara invertida" : "Máscara normal");
+    }
   }
 
   /** ¿La capa está dentro del ámbito de la aislada (su grupo o descendiente)? */
@@ -318,15 +325,25 @@ export class LayersPanel {
     const ctx = row.maskThumb.getContext("2d");
     if (!ctx || !layer.mask) return;
     const W = row.maskThumb.width, H = row.maskThumb.height;
+    const inverted = layer.mask.inverted;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#fff";
+    // La miniatura usa la misma convención que el compositor: el fondo
+    // representa el estado por defecto y cada trazo cambia oculto/revelado.
+    ctx.fillStyle = inverted ? "#000" : "#fff";
     ctx.fillRect(0, 0, W, H);
-    this.fitAndFill(ctx, W, H, layer.mask.items, true);
+    this.fitAndFill(ctx, W, H, layer.mask.items, true, inverted);
   }
 
   /** Encaja los items en el lienzo (según la caja del documento) y los rellena. */
-  private fitAndFill(ctx: CanvasRenderingContext2D, W: number, H: number, items: readonly InkItem[], mask: boolean): void {
+  private fitAndFill(
+    ctx: CanvasRenderingContext2D,
+    W: number,
+    H: number,
+    items: readonly InkItem[],
+    mask: boolean,
+    inverted = false,
+  ): void {
     const b = this.editor.doc.contentBounds();
     if (b.w <= 0 || b.h <= 0) return;
     const pad = 4;
@@ -334,10 +351,19 @@ export class LayersPanel {
     const ox = (W - b.w * scale) / 2 - b.x * scale;
     const oy = (H - b.h * scale) / 2 - b.y * scale;
     for (const item of items) {
-      if (item.erase) continue;
+      // En una máscara, erase representa un trazo de revelado. Al invertir,
+      // los papeles de ocultar y revelar se intercambian visualmente.
+      if (!mask && item.erase) continue;
       const paths = item.polys.filter((p) => p.length >= 3).map((p) => polygonToPath2D(p, item.smooth));
       if (paths.length === 0) continue;
-      ctx.fillStyle = mask ? "#000" : cssRgba(hexToRgb(item.color), item.opacity);
+      if (mask) {
+        const reveal = item.erase !== inverted;
+        ctx.fillStyle = reveal
+          ? `rgba(255,255,255,${item.opacity})`
+          : `rgba(0,0,0,${item.opacity})`;
+      } else {
+        ctx.fillStyle = cssRgba(hexToRgb(item.color), item.opacity);
+      }
       for (const m of item.transforms) {
         ctx.setTransform(scale, 0, 0, scale, ox, oy);
         transformCtx(ctx, m);

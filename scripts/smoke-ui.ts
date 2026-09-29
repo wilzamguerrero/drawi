@@ -220,6 +220,8 @@ noThrow("restablecer la vista", () => { ed.camera.reset(); ed.emitState(); });
 noThrow("nueva capa", () => ed.addLayer());
 noThrow("nuevo grupo", () => ed.addGroup());
 noThrow("mascara en la capa activa", () => { const l = ed.doc.activeLayer; if (l && l.kind !== "matter") ed.toggleLayerMask(l.id, true); });
+noThrow("invertir mascara", () => { const l = ed.doc.activeLayer; if (l && l.mask) { ed.invertLayerMask(l.id); } });
+ok("la mascara quedo invertida", (() => { const l = ed.doc.activeLayer; return !!l?.mask?.inverted; })());
 ok("hay varias capas", ed.doc.layers.length >= 3, `${ed.doc.layers.length} capas`);
 const svg = noThrow("exportar SVG", () => exportSvg(ed.doc)) as string | null;
 ok("el SVG tiene contenido", !!svg && svg.startsWith("<svg") && svg.length > 400, `${svg?.length ?? 0} bytes`);

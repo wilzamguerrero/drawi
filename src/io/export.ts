@@ -425,10 +425,12 @@ export function exportSvg(doc: SceneDocument, options: Partial<ExportOptions> = 
   }
 
   // <mask> pintable de la capa: un trazo que oculta va a negro y uno que revela a
-  // blanco; con la máscara invertida se cambian los papeles (y el fondo).
+  // blanco; con la máscara invertida se cambian los papeles (y el fondo). Una
+  // máscara invertida vacía oculta la capa entera, igual que el compositor.
   function paintMaskFor(layer: SceneLayer): string | null {
     const mask = layer.mask;
-    if (!mask || mask.items.length === 0) return null;
+    if (!mask) return null;
+    if (mask.items.length === 0 && !mask.inverted) return null;
     const inv = mask.inverted;
     const id = nextId("mask");
     const m: string[] = [maskOpen(id), boxRect(inv ? "#000" : "#fff")];
