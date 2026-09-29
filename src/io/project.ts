@@ -1,13 +1,18 @@
 import type { SceneDocument } from "../scene/document";
 import { snapshotBody, restoreBody, type BodySnapshot } from "../scene/document";
 import type { InkItem } from "../scene/types";
+import type { SceneLayer } from "../scene/layer";
 import type { SymmetryState } from "../symmetry/symmetry";
 import type { WorldSettings } from "../physics/world";
 import type { FieldStyle } from "../render/field-gl";
 import type { BrushSettings } from "../stroke/types";
 import type { ShapeDef } from "../physics/shapes";
 
-export const PROJECT_VERSION = 1;
+/**
+ * v1: tinta plana sin capas. v2: modelo de capas (`layers` + `activeLayerId`);
+ * los `items` siguen planos, ahora cada uno con su `layerId`.
+ */
+export const PROJECT_VERSION = 2;
 
 export interface ProjectFile {
   format: "drawi";
@@ -15,6 +20,9 @@ export interface ProjectFile {
   name: string;
   background: string;
   items: InkItem[];
+  /** Capas (v2+). Ausente en proyectos v1: se migran al abrir. */
+  layers?: SceneLayer[];
+  activeLayerId?: string;
   bodies: BodySnapshot[];
   symmetry: SymmetryState;
   world: WorldSettings;
@@ -44,6 +52,8 @@ export function serializeProject({ doc, brush, camera }: SerializeInput): string
     name: doc.meta.name,
     background: doc.meta.background,
     items: doc.items,
+    layers: doc.layers,
+    activeLayerId: doc.activeLayerId,
     bodies: doc.bodies.map(snapshotBody),
     symmetry: { ...doc.symmetry },
     world: { ...doc.physics.settings, gravity: { ...doc.physics.settings.gravity } },
@@ -75,6 +85,16 @@ export function applyProject(doc: SceneDocument, file: ProjectFile): void {
   doc.physics.settings = { ...file.world, gravity: { ...file.world.gravity } };
   doc.field = { ...file.field };
   doc.shape = { ...file.shape };
+  if (Array.isArray(file.layers) && file.layers.length > 0) {
+    // Proyecto v2: capas explícitas. `ensureLayers` repara cualquier hueco
+    // (falta la materia, item huérfano, activeLayerId inválido).
+    doc.layers = file.layers;
+    doc.activeLayerId = file.activeLayerId ?? "";
+    doc.ensureLayers();
+  } else {
+    // Proyecto v1: tinta plana. Envolverla en una capa por defecto.
+    doc.migrateFlatItems();
+  }
   doc.physics.clear();
   for (const b of file.bodies) doc.physics.add(restoreBody(b));
   doc.inkRevision++;

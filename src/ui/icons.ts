@@ -91,6 +91,14 @@ export const ICONS: Record<string, string> = {
   panel: svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M14 4v16"/>`),
   search: svg(`<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4 4"/>`),
   enter: svg(`<path d="M20 6v5a3 3 0 0 1-3 3H5"/><path d="m9 10-4 4 4 4"/>`),
+  eye: svg(`<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.7"/>`),
+  eyeOff: svg(`<path d="M4 4l16 16"/><path d="M9.6 5.9A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3.3 3.9"/><path d="M6.3 8.1A17 17 0 0 0 2.5 12S6 18.5 12 18.5a9.4 9.4 0 0 0 3-.5"/><path d="M9.9 9.9a2.7 2.7 0 0 0 3.8 3.8"/>`),
+  mask: svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="12" cy="12" r="4.5" fill="currentColor" stroke="none"/>`),
+  clip: svg(`<path d="M6 3v10a5 5 0 0 0 5 5h7"/><path d="m15 15 3 3-3 3"/><path d="M6 3H4M6 3h2"/>`),
+  duplicate: svg(`<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/>`),
+  merge: svg(`<path d="M12 3v8"/><path d="m8 8 4 3 4-3"/><path d="M5 15h14"/><path d="M5 19h14"/>`),
+  flatten: svg(`<path d="M4 8h16M4 12h16M4 16h16"/>`),
+  lock: svg(`<rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>`),
 };
 
 export function icon(name: keyof typeof ICONS | string): string {

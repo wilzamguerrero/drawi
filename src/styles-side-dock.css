@@ -444,3 +444,343 @@
     animation: none;
   }
 }
+
+/* ===================================================================
+   Panel de capas (estilo Photoshop)
+   =================================================================== */
+
+.layers-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* --------------------------------------------------------- cabecera */
+/* Fusión + opacidad + relleno + bloqueos de la capa activa. */
+.layers-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #23232a;
+}
+
+/* Sin capa editable (materia o ninguna): se atenúa y no responde. */
+.layers-head.is-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.layers-locks {
+  display: flex;
+  gap: 4px;
+}
+
+/* --------------------------------------------------------- lista */
+.layers-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.layers-list.is-dragging {
+  cursor: grabbing;
+}
+
+/* Cada fila: franja de color · ojo · miniatura · nombre · máscara · asa. */
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 0;
+  border-radius: 7px;
+  background: #1b1b1f;
+  border: 1px solid transparent;
+  cursor: pointer;
+  user-select: none;
+}
+
+.layer-row:hover {
+  background: #202027;
+}
+
+.layer-row.is-active {
+  background: #2a3f57;
+  border-color: #5a9fd4;
+}
+
+/* Anidamiento en grupos: sangría por nivel. */
+.layer-row.depth-1 { margin-left: 14px; }
+.layer-row.depth-2 { margin-left: 28px; }
+.layer-row.depth-3 { margin-left: 42px; }
+.layer-row.depth-4 { margin-left: 56px; }
+
+.layer-row.is-hidden-layer .layer-thumb,
+.layer-row.is-hidden-layer .layer-name,
+.layer-row.is-hidden-layer .layer-kind {
+  opacity: 0.4;
+}
+
+.layer-row.is-solo-dim {
+  opacity: 0.35;
+}
+
+/* Franja de etiqueta de color en el flanco izquierdo. */
+.layer-strip {
+  width: 4px;
+  align-self: stretch;
+  border-radius: 7px 0 0 7px;
+  background: transparent;
+}
+
+.layer-strip.has-color {
+  box-shadow: inset 2px 0 0 0 currentColor;
+}
+
+/* Ojo de visibilidad. */
+.layer-eye {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #cdd0d6;
+  cursor: pointer;
+}
+
+.layer-eye:hover {
+  background: #2c2c34;
+}
+
+.layer-eye svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Ojo en modo aislar (solo): acento. */
+.layer-eye.is-solo {
+  color: #ffcf5a;
+}
+
+/* Miniatura de la capa. */
+.layer-thumb {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 4px;
+  background:
+    conic-gradient(#3a3a42 0 25%, #2a2a30 0 50%, #3a3a42 0 75%, #2a2a30 0) 0 0 / 12px 12px;
+  border: 1px solid #34343c;
+}
+
+/* Glifo de tipo (carpeta / materia) cuando la fila no lleva miniatura. */
+.layer-kind {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: #b7bcc6;
+}
+
+.layer-kind svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Nombre de la capa. */
+.layer-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 12px/1.3 var(--font);
+  color: #e6e8ec;
+}
+
+/* Edición del nombre in situ. */
+.layer-name-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 5px;
+  border: 1px solid #5a9fd4;
+  border-radius: 5px;
+  background: #101014;
+  color: #ffffff;
+  font: 500 12px/1.3 var(--font);
+}
+
+/* Miniatura de la máscara. */
+.layer-mask-thumb {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: 1px solid #34343c;
+  cursor: pointer;
+}
+
+.layer-mask-thumb.is-hidden {
+  display: none;
+}
+
+/* Máscara invertida: aro para distinguirla de un vistazo. */
+.layer-mask-thumb.is-inverted {
+  border-color: #ffcf5a;
+}
+
+/* Indicadores (bloqueo, alfa, clip): franjas discretas a la derecha del nombre. */
+.layer-badges {
+  flex: none;
+  display: flex;
+  gap: 3px;
+}
+
+.layer-row.is-locked .layer-badges::before {
+  content: "🔒";
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.layer-row.is-alpha .layer-badges::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7fb2e0;
+}
+
+.layer-row.is-clip .layer-name::before {
+  content: "⌐ ";
+  color: #7fb2e0;
+  opacity: 0.8;
+}
+
+/* Fila en modo máscara activa: acento cálido en el borde. */
+.layer-row.is-mask-active {
+  border-color: #ffcf5a;
+}
+
+/* Asa de arrastre. */
+.layer-grip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 22px;
+  color: #6a6a72;
+  cursor: grab;
+  touch-action: none;
+}
+
+.layer-grip:hover {
+  color: #b7bcc6;
+}
+
+.layer-grip svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Línea que marca dónde caerá la capa al soltar. */
+.layers-drop-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #5a9fd4;
+  box-shadow: 0 0 6px #5a9fd4;
+  border-radius: 2px;
+  display: none;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* --------------------------------------------------------- barra inferior */
+.layers-footer {
+  display: flex;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid #23232a;
+}
+
+.layers-footer .ctrl {
+  flex: 1 1 auto;
+}
+
+/* --------------------------------------------------------- menú contextual */
+.layers-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 168px;
+  padding: 5px;
+  border-radius: 10px;
+  background: #161619;
+  border: 1px solid #2c2c34;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.layers-menu-item {
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #e6e8ec;
+  font: 500 12px/1 var(--font);
+  cursor: pointer;
+}
+
+.layers-menu-item:hover {
+  background: #2a3f57;
+}
+
+.layers-menu-item.is-disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.layers-menu-sep {
+  height: 1px;
+  margin: 3px 4px;
+  background: #2c2c34;
+}
+
+/* Submenú de etiquetas de color: fila de puntos. */
+.layers-menu-colors {
+  display: flex;
+  gap: 5px;
+  padding: 7px 8px 4px;
+}
+
+.layers-menu-color {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.layers-menu-color.is-active {
+  border-color: #ffffff;
+}
+
+/* "Sin color": aro hueco con una diagonal. */
+.layers-menu-color.is-none {
+  border-color: #4a4a52;
+  background:
+    linear-gradient(45deg, transparent 45%, #ff6b6b 45%, #ff6b6b 55%, transparent 55%);
+}

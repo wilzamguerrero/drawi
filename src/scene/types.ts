@@ -32,6 +32,13 @@ export interface InkItem {
   gy1: number;
   /** Trazo de borrado: se pinta con destination-out para recortar la tinta. */
   erase?: boolean;
+  /** Capa a la que pertenece (fija el z junto al orden de `doc.layers`). */
+  layerId: string;
+  /**
+   * Pintado con el alfa de la capa bloqueado: se compone con `source-atop`, así
+   * solo cae sobre píxeles que ya existían en la capa.
+   */
+  atop?: boolean;
   bounds: Rect;
 }
 

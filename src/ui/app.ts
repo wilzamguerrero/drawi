@@ -1,4 +1,5 @@
 import { Editor, type EditorState } from "../app/editor";
+import { Diagnostics } from "../app/diagnostics";
 import { el, setClass } from "./dom";
 import { autosave, exportImage, exportVector, newDocument, openProject, restoreAutosave, saveProject } from "./file-actions";
 import { HelpOverlay } from "./help";
@@ -35,6 +36,7 @@ export class App {
   private pantone: PantoneWheel;
   private panels: Panels;
   private sideDock: SideDock;
+  private diagnostics: Diagnostics;
   private stage: HTMLElement;
   private chrome: HTMLElement;
 
@@ -74,6 +76,10 @@ export class App {
       this.pantone.open();
       this.wake();
     });
+    // Panel de diagnóstico del render (Ctrl+Alt+D). También accesible desde la
+    // consola como `window.__drawiDiag` para inspeccionar el pipeline en vivo.
+    this.diagnostics = new Diagnostics(this.editor);
+    (window as unknown as { __drawiDiag: Diagnostics }).__drawiDiag = this.diagnostics;
     // Puertos de alto nivel compartidos por el menú radial y el paletón: ambos
     // solo declaran intención y es la app quien la resuelve (panel, diálogo...).
     const hooks: MenuHooks = {
@@ -139,6 +145,13 @@ export class App {
       if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         this.commandPalette.toggle();
+        return;
+      }
+      // Ctrl+Alt+D: panel de diagnóstico del render. Antes del filtro de INPUT
+      // para poder alternarlo desde cualquier sitio.
+      if ((e.ctrlKey || e.metaKey) && e.altKey && (e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        this.diagnostics.toggle();
         return;
       }
       const target = e.target as HTMLElement | null;

@@ -7,6 +7,7 @@ import { createBody, PhysicsWorld, type Body, type WorldSettings } from "../phys
 import { DEFAULT_SYMMETRY, symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
 import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
 import { EMPTY_RECT, unionRect, type InkItem, type Rect } from "./types";
+import { cloneLayer, makeMask, type LayerColor, type SceneLayer } from "./layer";
 
 export interface DocumentMeta {
   name: string;
@@ -35,6 +36,8 @@ export interface BodySnapshot {
 
 export interface SceneSnapshot {
   items: InkItem[];
+  layers: SceneLayer[];
+  activeLayerId: string;
   bodies: BodySnapshot[];
   symmetry: SymmetryState;
   world: WorldSettings;
@@ -100,6 +103,11 @@ export class SceneDocument {
   };
 
   items: InkItem[] = [];
+  /** Capas ordenadas de abajo (índice 0) arriba. El z global lo da este orden. */
+  layers: SceneLayer[] = [];
+  activeLayerId = "";
+  private layerCounter = 0;
+
   readonly physics = new PhysicsWorld();
   symmetry: SymmetryState = cloneSymmetry(DEFAULT_SYMMETRY);
   field: FieldStyle = { ...DEFAULT_FIELD_STYLE };
@@ -107,6 +115,10 @@ export class SceneDocument {
 
   /** Cambia con cada modificacion; los renderizadores lo usan como cache key. */
   inkRevision = 0;
+
+  constructor() {
+    this.resetLayers();
+  }
 
   get bodies(): Body[] {
     return this.physics.bodies;
@@ -116,7 +128,296 @@ export class SceneDocument {
     return this.items.length === 0 && this.physics.bodies.length === 0;
   }
 
+  // ----------------------------------------------------------------- capas
+
+  /** Deja el documento con una sola capa de tinta y la pseudo-capa de materia. */
+  resetLayers(): void {
+    this.layerCounter = 0;
+    const ink = this.makeInkLayer();
+    const matter = this.makeMatterLayer();
+    this.layers = [ink, matter];
+    this.activeLayerId = ink.id;
+  }
+
+  private makeInkLayer(name?: string): SceneLayer {
+    this.layerCounter++;
+    return {
+      id: uid(),
+      kind: "ink",
+      name: name ?? `Capa ${this.layerCounter}`,
+      visible: true,
+      opacity: 1,
+      fill: 1,
+      blend: "source-over",
+      locked: false,
+      alphaLock: false,
+      clip: false,
+      color: "none",
+      collapsed: false,
+      parentId: null,
+    };
+  }
+
+  private makeMatterLayer(): SceneLayer {
+    return {
+      id: "matter",
+      kind: "matter",
+      name: "Materia",
+      visible: true,
+      opacity: 1,
+      fill: 1,
+      blend: "source-over",
+      locked: false,
+      alphaLock: false,
+      clip: false,
+      color: "none",
+      collapsed: false,
+      parentId: null,
+    };
+  }
+
+  /** Envuelve items planos (proyectos v1) en una capa de tinta por defecto. */
+  migrateFlatItems(): void {
+    this.resetLayers();
+    const inkId = this.activeLayerId;
+    for (const it of this.items) it.layerId = inkId;
+    this.inkRevision++;
+  }
+
+  /**
+   * Restablece las invariantes de capas tras cargar o migrar: al menos una capa
+   * de tinta, la pseudo-capa de materia, un `activeLayerId` válido y ningún item
+   * huérfano (los que apunten a una capa inexistente van a la primera de tinta).
+   */
+  ensureLayers(): void {
+    if (!this.layers.some((l) => l.kind === "matter")) this.layers.push(this.makeMatterLayer());
+    if (!this.layers.some((l) => l.kind === "ink")) this.layers.unshift(this.makeInkLayer());
+    const ids = new Set(this.layers.map((l) => l.id));
+    const inkId = (this.firstInkLayer() as SceneLayer).id;
+    for (const it of this.items) if (!ids.has(it.layerId)) it.layerId = inkId;
+    if (!ids.has(this.activeLayerId)) this.activeLayerId = inkId;
+  }
+
+  get activeLayer(): SceneLayer | undefined {
+    return this.layerById(this.activeLayerId);
+  }
+
+  get matterLayer(): SceneLayer | undefined {
+    return this.layers.find((l) => l.kind === "matter");
+  }
+
+  layerById(id: string): SceneLayer | undefined {
+    return this.layers.find((l) => l.id === id);
+  }
+
+  /** Items de una capa, en el orden en que fueron dibujados (z interno). */
+  layerItems(id: string): InkItem[] {
+    return this.items.filter((it) => it.layerId === id);
+  }
+
+  /** Capas hijas de un grupo (o de la raíz si `parentId` es null), en orden. */
+  childLayers(parentId: string | null): SceneLayer[] {
+    return this.layers.filter((l) => l.parentId === parentId);
+  }
+
+  /** Primera capa de tinta editable (para no dejar nunca el documento sin destino). */
+  private firstInkLayer(): SceneLayer | undefined {
+    return this.layers.find((l) => l.kind === "ink");
+  }
+
+  /** Índice de una capa en el array (o -1). */
+  private layerIndex(id: string): number {
+    return this.layers.findIndex((l) => l.id === id);
+  }
+
+  /** Crea una capa de tinta nueva encima de la activa y la deja seleccionada. */
+  addLayer(): SceneLayer {
+    const layer = this.makeInkLayer();
+    const active = this.activeLayer;
+    layer.parentId = active && active.kind !== "matter" ? active.parentId : null;
+    const at = active ? this.layerIndex(active.id) + 1 : this.layers.length;
+    this.layers.splice(at, 0, layer);
+    this.activeLayerId = layer.id;
+    this.inkRevision++;
+    return layer;
+  }
+
+  /** Crea un grupo (carpeta) encima de la activa. */
+  addGroup(name?: string): SceneLayer {
+    this.layerCounter++;
+    const group: SceneLayer = {
+      ...this.makeInkLayer(name ?? `Grupo ${this.layerCounter}`),
+      id: uid(),
+      kind: "group",
+    };
+    const active = this.activeLayer;
+    const at = active ? this.layerIndex(active.id) + 1 : this.layers.length;
+    this.layers.splice(at, 0, group);
+    this.activeLayerId = group.id;
+    this.inkRevision++;
+    return group;
+  }
+
+  /** Elimina una capa (y, si es grupo, sus hijas) junto con sus items. */
+  removeLayer(id: string): void {
+    const layer = this.layerById(id);
+    if (!layer || layer.kind === "matter") return;
+    const ids = new Set<string>([id]);
+    if (layer.kind === "group") {
+      for (const child of this.layers) if (child.parentId === id) ids.add(child.id);
+    }
+    // No dejar el documento sin ninguna capa de tinta.
+    const remainingInk = this.layers.filter((l) => l.kind === "ink" && !ids.has(l.id));
+    if (remainingInk.length === 0) {
+      // Vaciar la capa en vez de borrarla: siempre debe quedar un destino.
+      this.items = this.items.filter((it) => !ids.has(it.layerId));
+      if (layer.mask) layer.mask = makeMask();
+      this.inkRevision++;
+      return;
+    }
+    this.items = this.items.filter((it) => !ids.has(it.layerId));
+    this.layers = this.layers.filter((l) => !ids.has(l.id));
+    if (ids.has(this.activeLayerId)) {
+      this.activeLayerId = (this.firstInkLayer() ?? this.layers[0]).id;
+    }
+    this.inkRevision++;
+  }
+
+  /** Duplica una capa de tinta con todos sus items (ids nuevos). */
+  duplicateLayer(id: string): SceneLayer | null {
+    const layer = this.layerById(id);
+    if (!layer || layer.kind !== "ink") return null;
+    const copy = cloneLayer(layer);
+    copy.id = uid();
+    copy.name = `${layer.name} copia`;
+    const at = this.layerIndex(id) + 1;
+    this.layers.splice(at, 0, copy);
+    // Copiar sus items justo después de los originales, con id y capa nuevos.
+    const clones = this.layerItems(id).map((it) => ({
+      ...it,
+      id: uid(),
+      polys: it.polys.map((p) => p.slice()),
+      transforms: it.transforms.slice(),
+      layerId: copy.id,
+    }));
+    // Insertar tras el último item de la capa original para conservar el z.
+    let insertAt = this.items.length;
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      if (this.items[i].layerId === id) {
+        insertAt = i + 1;
+        break;
+      }
+    }
+    this.items.splice(insertAt, 0, ...clones);
+    this.activeLayerId = copy.id;
+    this.inkRevision++;
+    return copy;
+  }
+
+  /** Combina una capa con la de tinta inmediatamente inferior (misma carpeta). */
+  mergeDown(id: string): void {
+    const layer = this.layerById(id);
+    if (!layer || layer.kind !== "ink") return;
+    const idx = this.layerIndex(id);
+    let below: SceneLayer | undefined;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (this.layers[i].kind === "ink" && this.layers[i].parentId === layer.parentId) {
+        below = this.layers[i];
+        break;
+      }
+    }
+    if (!below) return;
+    for (const it of this.items) if (it.layerId === id) it.layerId = below.id;
+    this.layers = this.layers.filter((l) => l.id !== id);
+    this.activeLayerId = below.id;
+    this.inkRevision++;
+  }
+
+  /** Funde toda la tinta en una sola capa (conserva la materia). */
+  flatten(): void {
+    const ink = this.firstInkLayer();
+    if (!ink) return;
+    for (const it of this.items) it.layerId = ink.id;
+    ink.parentId = null;
+    ink.clip = false;
+    this.layers = this.layers.filter((l) => l.kind === "matter" || l.id === ink.id);
+    this.activeLayerId = ink.id;
+    this.inkRevision++;
+  }
+
+  /** Reordena/reubica una capa: la mueve ante `beforeId` (o al final) y reparenta. */
+  moveLayer(id: string, beforeId: string | null, parentId: string | null): void {
+    const idx = this.layerIndex(id);
+    if (idx < 0) return;
+    const layer = this.layers[idx];
+    if (layer.kind === "matter") return;
+    const [moved] = this.layers.splice(idx, 1);
+    moved.parentId = parentId;
+    let at = this.layers.length;
+    if (beforeId) {
+      const bi = this.layerIndex(beforeId);
+      if (bi >= 0) at = bi;
+    }
+    this.layers.splice(at, 0, moved);
+    this.inkRevision++;
+  }
+
+  setActiveLayer(id: string): void {
+    if (this.layerById(id)) this.activeLayerId = id;
+  }
+
+  setLayer(id: string, patch: Partial<SceneLayer>): void {
+    const layer = this.layerById(id);
+    if (!layer) return;
+    Object.assign(layer, patch);
+    this.inkRevision++;
+  }
+
+  /** Añade/quita máscara a una capa. */
+  toggleMask(id: string, on?: boolean): void {
+    const layer = this.layerById(id);
+    if (!layer || layer.kind === "matter") return;
+    const want = on ?? !layer.mask;
+    if (want && !layer.mask) layer.mask = makeMask();
+    else if (!want) layer.mask = undefined;
+    this.inkRevision++;
+  }
+
+  invertMask(id: string): void {
+    const layer = this.layerById(id);
+    if (!layer?.mask) return;
+    layer.mask.inverted = !layer.mask.inverted;
+    this.inkRevision++;
+  }
+
+  /** Empuja un trazo a la máscara de una capa. */
+  addMaskStroke(id: string, item: InkItem): void {
+    const layer = this.layerById(id);
+    if (!layer) return;
+    if (!layer.mask) layer.mask = makeMask();
+    item.layerId = id;
+    layer.mask.items.push(item);
+    this.inkRevision++;
+  }
+
+  setLayerColor(id: string, color: LayerColor): void {
+    this.setLayer(id, { color });
+  }
+
+  /**
+   * Capa de tinta donde deben caer los trazos nuevos: la activa si es de tinta;
+   * si no (materia o grupo), la primera capa de tinta. Así dibujar nunca asigna
+   * un trazo a una capa que el compositor no pinta (la materia lo omitiría y el
+   * trazo quedaría invisible). `ensureLayers` garantiza que siempre hay ≥1.
+   */
+  inkTarget(): SceneLayer {
+    const active = this.activeLayer;
+    if (active && active.kind === "ink") return active;
+    return this.firstInkLayer() as SceneLayer;
+  }
+
   addItem(item: InkItem): InkItem {
+    if (!item.layerId) item.layerId = this.inkTarget().id;
     this.items.push(item);
     this.inkRevision++;
     return item;
@@ -181,6 +482,7 @@ export class SceneDocument {
       gy0: bounds.y,
       gy1: bounds.y + bounds.h,
       bounds,
+      layerId: "",
     };
   }
 
@@ -198,6 +500,8 @@ export class SceneDocument {
   snapshot(): SceneSnapshot {
     return {
       items: this.items.slice(),
+      layers: this.layers.map(cloneLayer),
+      activeLayerId: this.activeLayerId,
       bodies: this.physics.bodies.map(snapshotBody),
       symmetry: cloneSymmetry(this.symmetry),
       world: cloneWorld(this.physics.settings),
@@ -208,6 +512,8 @@ export class SceneDocument {
 
   restore(snap: SceneSnapshot): void {
     this.items = snap.items.slice();
+    this.layers = snap.layers.map(cloneLayer);
+    this.activeLayerId = snap.activeLayerId;
     this.symmetry = cloneSymmetry(snap.symmetry);
     this.physics.settings = cloneWorld(snap.world);
     this.field = { ...snap.field };

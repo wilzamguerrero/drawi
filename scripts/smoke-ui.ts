@@ -215,6 +215,12 @@ ok("la rueda cambio el zoom", Math.abs(ed.state.zoom - 1) > 1e-6, `zoom=${ed.sta
 noThrow("restablecer la vista", () => { ed.camera.reset(); ed.emitState(); });
 
 // --- Exportacion y proyecto ---
+// Antes de exportar, montamos varias capas (una suelta, un grupo y una máscara)
+// para que la exportación por capas recorra orden, grupos y máscara de verdad.
+noThrow("nueva capa", () => ed.addLayer());
+noThrow("nuevo grupo", () => ed.addGroup());
+noThrow("mascara en la capa activa", () => { const l = ed.doc.activeLayer; if (l && l.kind !== "matter") ed.toggleLayerMask(l.id, true); });
+ok("hay varias capas", ed.doc.layers.length >= 3, `${ed.doc.layers.length} capas`);
 const svg = noThrow("exportar SVG", () => exportSvg(ed.doc)) as string | null;
 ok("el SVG tiene contenido", !!svg && svg.startsWith("<svg") && svg.length > 400, `${svg?.length ?? 0} bytes`);
 ok("el SVG cierra bien", !!svg && svg.trim().endsWith("</svg>"));
@@ -226,6 +232,8 @@ ok("el proyecto es JSON valido", !!proj && (() => { try { JSON.parse(proj); retu
 const parsed = noThrow("reanalizar proyecto", () => parseProject(proj!)) as any;
 ok("el proyecto conserva los items", !!parsed && Array.isArray(parsed.items) && parsed.items.length === ed.state.items,
    `${parsed?.items?.length} vs ${ed.state.items}`);
+ok("el proyecto conserva las capas", !!parsed && Array.isArray(parsed.layers) && parsed.layers.length === ed.doc.layers.length,
+   `${parsed?.layers?.length} vs ${ed.doc.layers.length}`);
 noThrow("guardar proyecto (descarga)", () => saveProject(ed));
 noThrow("autoguardado", () => autosave(ed));
 

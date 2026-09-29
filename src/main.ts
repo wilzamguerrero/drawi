@@ -5,6 +5,7 @@ import "./styles-radial-chips.css";
 import "./styles-panels.css";
 import "./styles-side-dock.css";
 import "./styles-command.css";
+import "./styles-diagnostics.css";
 import { App } from "./ui/app";
 import { startFavicon } from "./ui/favicon";
 

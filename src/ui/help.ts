@@ -67,6 +67,19 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
     ],
   },
   {
+    title: "Capas",
+    icon: "layers",
+    rows: [
+      ["Ctrl+Shift+N", "Nueva capa"],
+      ["Ctrl+Shift+G", "Nuevo grupo"],
+      ["Ctrl+G", "Recortar a la inferior"],
+      ["Ctrl+I", "Invertir mascara"],
+      ["Supr", "Borrar capa"],
+      ["Alt+clic ojo", "Aislar (solo)"],
+      ["Doble clic nombre", "Renombrar"],
+    ],
+  },
+  {
     title: "Vista e historial",
     icon: "fit",
     rows: [
@@ -76,7 +89,7 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
       ["Ctrl+Z", "Deshacer"],
       ["Ctrl+Shift+Z", "Rehacer"],
       ["Shift+Supr", "Limpiar todo"],
-      ["Esc", "Cancelar gesto"],
+      ["Esc", "Cancelar / salir de mascara"],
     ],
   },
 ];

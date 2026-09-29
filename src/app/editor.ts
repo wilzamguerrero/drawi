@@ -12,10 +12,13 @@ import { Camera } from "../render/camera";
 import { FieldRenderer, type FieldStyle } from "../render/field-gl";
 import { FieldFallbackRenderer } from "../render/field-2d";
 import { InkRenderer } from "../render/ink-renderer";
+import { Compositor } from "../render/compositor";
 import { Layer } from "../render/layer";
 import { OverlayRenderer, type OverlayState } from "../render/overlay-renderer";
 import { SceneDocument } from "../scene/document";
+import type { LayerColor, SceneLayer } from "../scene/layer";
 import type { HistoryStatus } from "./history";
+import type { DiagSnapshot } from "./diagnostics";
 import { History } from "./history";
 import { DEFAULT_BRUSH, type BrushSettings } from "../stroke/types";
 import { symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
@@ -67,6 +70,13 @@ export interface EditorState {
   background: string;
   showWalls: boolean;
   debugColliders: boolean;
+  /** Capas del documento (abajo→arriba) para el panel. */
+  layers: SceneLayer[];
+  activeLayerId: string;
+  /** Capa aislada (modo foco), o null. */
+  soloLayerId: string | null;
+  /** El pincel pinta la máscara de la capa activa, no su contenido. */
+  maskMode: boolean;
 }
 
 interface EditorEvents extends Record<string, unknown> {
@@ -115,6 +125,7 @@ export class Editor {
   private fieldCanvas: HTMLCanvasElement;
 
   private inkRenderer = new InkRenderer();
+  private compositor = new Compositor(this.inkRenderer);
   private overlayRenderer = new OverlayRenderer();
   private fieldRenderer: FieldRenderer;
   private fieldFallback = new FieldFallbackRenderer();
@@ -125,6 +136,10 @@ export class Editor {
   private tempTool: ToolId | null = null;
 
   private wet: WetStroke | null = null;
+  /** Pintar sobre la máscara de la capa activa en vez de su contenido. */
+  private maskMode = false;
+  /** Capa aislada (modo foco): solo ella se compone; null = todas. */
+  private soloLayerId: string | null = null;
   private highlight: Body | null = null;
   private cursor: Vec2 | null = null;
   private cursorKind: "pen" | "touch" | "mouse" = "mouse";
@@ -236,6 +251,10 @@ export class Editor {
       background: this.doc.meta.background,
       showWalls: this.showWalls,
       debugColliders: this.debugColliders,
+      layers: this.doc.layers,
+      activeLayerId: this.doc.activeLayerId,
+      soloLayerId: this.soloLayerId,
+      maskMode: this.maskMode,
     };
   }
 
@@ -346,6 +365,108 @@ export class Editor {
     this.host.style.background = hex;
     this.history.record("Fondo", before);
     this.emitState();
+  }
+
+  // --------------------------------------------------------------- capas
+
+  /** Ejecuta una mutación de capas registrándola en el historial y refrescando. */
+  private layerEdit(label: string, run: () => void): void {
+    const before = this.doc.snapshot();
+    run();
+    this.history.record(label, before);
+    this.inkLayer.invalidate();
+    this.emitState();
+  }
+
+  addLayer(): void {
+    this.layerEdit("Nueva capa", () => this.doc.addLayer());
+  }
+
+  addGroup(): void {
+    this.layerEdit("Nuevo grupo", () => this.doc.addGroup());
+  }
+
+  removeLayer(id: string): void {
+    this.layerEdit("Borrar capa", () => this.doc.removeLayer(id));
+  }
+
+  duplicateLayer(id: string): void {
+    this.layerEdit("Duplicar capa", () => this.doc.duplicateLayer(id));
+  }
+
+  mergeLayerDown(id: string): void {
+    this.layerEdit("Combinar capa", () => this.doc.mergeDown(id));
+  }
+
+  flattenLayers(): void {
+    this.layerEdit("Aplanar", () => this.doc.flatten());
+  }
+
+  moveLayer(id: string, beforeId: string | null, parentId: string | null): void {
+    this.layerEdit("Reordenar capa", () => this.doc.moveLayer(id, beforeId, parentId));
+  }
+
+  /** Cambios de propiedad de capa (opacidad, fusión, ojo, bloqueos, nombre…). */
+  setLayer(id: string, patch: Partial<SceneLayer>): void {
+    this.layerEdit("Ajustar capa", () => this.doc.setLayer(id, patch));
+    if (id === "matter") this.applyMatterStyle();
+  }
+
+  /** Lienzo activo de la materia (WebGL o el 2D de reserva). */
+  private matterCanvas(): HTMLCanvasElement {
+    return this.fieldRenderer.available ? this.fieldCanvas : this.fieldLayer.canvas;
+  }
+
+  /** Vuelca la visibilidad/opacidad de la pseudo-capa Materia sobre su plano. */
+  applyMatterStyle(): void {
+    const m = this.doc.matterLayer;
+    const canvas = this.matterCanvas();
+    if (!m) return;
+    canvas.style.display = m.visible ? "" : "none";
+    canvas.style.opacity = String(m.opacity);
+  }
+
+  setLayerColor(id: string, color: LayerColor): void {
+    this.layerEdit("Color de capa", () => this.doc.setLayerColor(id, color));
+  }
+
+  toggleLayerMask(id: string, on?: boolean): void {
+    this.layerEdit("Máscara de capa", () => this.doc.toggleMask(id, on));
+  }
+
+  invertLayerMask(id: string): void {
+    this.layerEdit("Invertir máscara", () => this.doc.invertMask(id));
+  }
+
+  /** Selecciona la capa activa (sin historial: no altera el documento). */
+  setActiveLayer(id: string): void {
+    this.doc.setActiveLayer(id);
+    this.inkLayer.invalidate();
+    this.emitState();
+  }
+
+  /** Alterna el modo de foco (aislar una capa) sin tocar el documento. */
+  toggleSolo(id: string): void {
+    this.soloLayerId = this.soloLayerId === id ? null : id;
+    this.inkLayer.invalidate();
+    this.emitState();
+  }
+
+  /** Alterna el modo máscara: el pincel pinta la máscara de la capa activa. */
+  setMaskMode(on: boolean): void {
+    if (this.maskMode === on) return;
+    this.maskMode = on;
+    // Al entrar en modo máscara, garantizar que la capa activa tenga máscara.
+    if (on) {
+      const layer = this.doc.activeLayer;
+      if (layer && layer.kind !== "matter" && !layer.mask) this.doc.toggleMask(layer.id, true);
+    }
+    this.inkLayer.invalidate();
+    this.emitState();
+  }
+
+  toggleMaskMode(): void {
+    this.setMaskMode(!this.maskMode);
   }
 
   setRunning(on: boolean): void {
@@ -493,6 +614,30 @@ export class Editor {
     this.fieldFallback.invalidate();
   }
 
+  /**
+   * Fotografía cruda del pipeline para el panel de diagnóstico (Ctrl+Alt+D).
+   * Expone los lienzos reales y el estado interno sin dar acceso de escritura:
+   * el panel solo lee y sondea píxeles para distinguir "no se pinta" de "se
+   * pinta pero no se ve".
+   */
+  debugState(): DiagSnapshot {
+    return {
+      host: this.host,
+      dpr: this.dpr,
+      camera: this.camera,
+      doc: this.doc,
+      fieldAvailable: this.fieldRenderer.available,
+      soloId: this.soloLayerId,
+      maskMode: this.maskMode,
+      canvases: [
+        { name: "tinta", role: "ink", canvas: this.inkLayer.canvas, dirty: this.inkLayer.dirty },
+        { name: "materia", role: "field", canvas: this.matterCanvas(), dirty: this.fieldLayer.dirty },
+        { name: "húmedo", role: "wet", canvas: this.wetLayer.canvas, dirty: this.wetLayer.dirty },
+        { name: "superpuesto", role: "overlay", canvas: this.overlayLayer.canvas, dirty: this.overlayLayer.dirty },
+      ],
+    };
+  }
+
   /** Nombre del documento (lo muestra la barra superior y viaja en el .drawi). */
   setName(name: string): void {
     this.doc.meta.name = name.trim() || "Sin titulo";
@@ -543,14 +688,31 @@ export class Editor {
         editor.setColor(hex);
       },
       setWet(wet: WetStroke | null): void {
-        const wasErase = editor.wet?.erase;
         editor.wet = wet;
-        editor.wetLayer.invalidate();
-        // El borrado se compone sobre la propia capa de tinta (destination-out),
-        // no en la capa humeda: hay que repintar la tinta para verlo en vivo.
-        if (wet?.erase || wasErase) editor.inkLayer.invalidate();
+        // El trazo húmedo se compone dentro de la capa activa: siempre hay que
+        // recomponer la tinta para verlo en vivo (pinte contenido o máscara).
+        editor.inkLayer.invalidate();
       },
       commitWet(wet: WetStroke): void {
+        // La materia (y los grupos) no admiten tinta. Si la capa activa no es de
+        // tinta, el trazo se redirige a la primera capa de tinta y esta se vuelve
+        // activa: así dibujar NUNCA produce trazos invisibles (antes el item se
+        // asignaba a la pseudo-capa "Materia", que el compositor omite).
+        let layer = editor.doc.activeLayer;
+        if (!layer || layer.kind !== "ink") {
+          const target = editor.doc.inkTarget();
+          if (target.id !== editor.doc.activeLayerId) {
+            editor.doc.setActiveLayer(target.id);
+            editor.status(`La materia no admite tinta: se dibuja en "${target.name}"`);
+          }
+          layer = target;
+        }
+        if (layer.locked) {
+          editor.status("Capa bloqueada");
+          editor.wet = null;
+          editor.inkLayer.invalidate();
+          return;
+        }
         const item = editor.doc.buildItem(
           wet.polys,
           wet.color,
@@ -561,7 +723,14 @@ export class Editor {
         );
         if (!item) return;
         item.transforms = wet.transforms;
-        editor.doc.addItem(item);
+        if (editor.maskMode) {
+          // En modo máscara el trazo va a la máscara de la capa, no al lienzo.
+          editor.doc.addMaskStroke(layer.id, item);
+        } else {
+          // Alfa bloqueado: el item se compondrá con source-atop (no se derrama).
+          if (layer.alphaLock) item.atop = true;
+          editor.doc.addItem(item);
+        }
         editor.inkLayer.invalidate();
         editor.emitState();
         editor.events.emit("dirty", undefined);
@@ -765,6 +934,28 @@ export class Editor {
         this.redo();
         return;
       }
+
+      // Atajos de capas (todos con Ctrl/Cmd). No deben dispararse tecleando.
+      if (mod && !editingText) {
+        const k = e.key.toLowerCase();
+        // Nueva capa (Ctrl+Shift+N) / nuevo grupo (Ctrl+Shift+G).
+        if (e.shiftKey && k === "n") { e.preventDefault(); this.addLayer(); return; }
+        if (e.shiftKey && k === "g") { e.preventDefault(); this.addGroup(); return; }
+        // Recorte a la capa inferior (Ctrl+G).
+        if (!e.shiftKey && k === "g") {
+          e.preventDefault();
+          const l = this.doc.activeLayer;
+          if (l && l.kind !== "matter") this.setLayer(l.id, { clip: !l.clip });
+          return;
+        }
+        // Invertir la máscara de la capa activa (Ctrl+I).
+        if (k === "i") {
+          e.preventDefault();
+          const l = this.doc.activeLayer;
+          if (l?.mask) this.invertLayerMask(l.id);
+          return;
+        }
+      }
       if (mod) return;
 
       // El resto de atajos de una tecla no deben dispararse mientras se teclea.
@@ -819,11 +1010,21 @@ export class Editor {
           this.resetView();
           break;
         case "escape":
-          this.onCancel();
+          // En modo máscara, Esc sale de él antes que cancelar el gesto en curso.
+          if (this.maskMode) this.setMaskMode(false);
+          else this.onCancel();
           break;
         case "delete":
         case "backspace":
-          if (e.shiftKey) this.clearAll();
+          if (e.shiftKey) { this.clearAll(); break; }
+          // Supr sin Shift borra la capa activa (nunca deja el documento sin tinta;
+          // es reversible con deshacer). Sobre la pseudo-capa "Materia" no cabe
+          // borrar la capa —siempre existe—, así que se vacía su contenido.
+          {
+            const l = this.doc.activeLayer;
+            if (l?.kind === "matter") this.clearMatter();
+            else if (l) this.removeLayer(l.id);
+          }
           break;
         default:
           break;
@@ -910,25 +1111,15 @@ export class Editor {
     }
 
     if (this.inkLayer.dirty) {
-      this.inkLayer.clear();
-      this.inkRenderer.render(this.inkLayer, this.doc.items, this.camera);
-      // Vista previa en vivo del borrado (modo Pincel/Forma): se recorta sobre
-      // la tinta ya pintada; al soltar se consolida como item con `erase`.
-      if (this.wet && this.wet.erase) {
-        this.inkRenderer.renderWet(
-          this.inkLayer,
-          this.wet.polys,
-          this.wet.transforms,
-          this.camera,
-          this.wet.color,
-          this.wet.opacity,
-          this.wet.smooth,
-          this.wet.gradient,
-          this.wet.gy0,
-          this.wet.gy1,
-          true,
-        );
-      }
+      // El compositor compone todas las capas (orden, opacidad, relleno, fusión,
+      // máscara, alfa y recorte) y pinta en vivo el trazo húmedo dentro de la
+      // capa activa (o su máscara, en modo máscara).
+      this.compositor.composite(this.inkLayer, this.doc, this.camera, {
+        wet: this.wet,
+        activeLayerId: this.doc.activeLayerId,
+        maskMode: this.maskMode,
+        soloId: this.soloLayerId,
+      });
       this.inkLayer.dirty = false;
     }
 
@@ -944,22 +1135,9 @@ export class Editor {
     }
 
     if (this.wetLayer.dirty) {
+      // El trazo húmedo se compone ahora dentro de la capa activa (compositor),
+      // así respeta su opacidad/fusión/máscara/alfa. La capa húmeda queda libre.
       this.wetLayer.clear();
-      // El wet de borrado se pinta en la capa de tinta (arriba), no aquí.
-      if (this.wet && !this.wet.erase) {
-        this.inkRenderer.renderWet(
-          this.wetLayer,
-          this.wet.polys,
-          this.wet.transforms,
-          this.camera,
-          this.wet.color,
-          this.wet.opacity,
-          this.wet.smooth,
-          this.wet.gradient,
-          this.wet.gy0,
-          this.wet.gy1,
-        );
-      }
       this.wetLayer.dirty = false;
     }
 

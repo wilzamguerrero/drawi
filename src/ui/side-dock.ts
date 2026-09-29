@@ -9,6 +9,7 @@ import { blurSoon, el, setClass } from "./dom";
 import { MateriaEdge } from "./fx/materia-edge";
 import type { MenuHooks } from "./hotbox/menu";
 import { icon } from "./icons";
+import { LayersPanel } from "./layers-panel";
 import { DockRenderer } from "./model/render-dock";
 import { buildSchema, isGroup, val, type Domain, type Field, type SchemaNode } from "./model/schema";
 
@@ -26,6 +27,7 @@ interface TabDef {
 
 const DOCK_TABS: TabDef[] = [
   { domain: "brush" },
+  { domain: "layers" },
   { domain: "matter-cfg", icon: "shape" },
   { domain: "color" },
   { domain: "symmetry" },
@@ -254,6 +256,11 @@ export class SideDock {
     // Hornear a tinta (el radial trae su propia acción `bake`).
     const bake = button({ label: "Hornear a tinta", iconName: "bake", title: "Convierte el contorno fundido en trazos editables", onClick: () => editor.bakeMatter() });
     this.customs.set("bake-dock", { el: bake.el });
+
+    // Panel de capas (estilo Photoshop): monta LayersPanel y lo sincroniza cada
+    // fotograma. Toda la interacción (filas, arrastre, menú) vive en la clase.
+    const layers = new LayersPanel(editor);
+    this.customs.set("layers-panel", { el: layers.el, sync: (s) => layers.update(s) });
   }
   /** ¿El nodo (dominio, grupo o campo) aparece en el dock? */
   private inDock(n: SchemaNode): boolean {

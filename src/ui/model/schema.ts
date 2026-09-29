@@ -476,7 +476,21 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     ],
   };
 
+  // ------------------------------------------------------------- Capas
+  // Panel de capas estilo Photoshop: solo dock. Es un único campo `custom` cuyo
+  // adaptador (que monta `LayersPanel`) se cablea en `buildCustoms` del dock;
+  // aquí solo se declara su lugar, como con el selector de color.
+  const layers: Domain = {
+    id: "layers",
+    label: "Capas",
+    icon: "layers",
+    surfaces: ["dock"],
+    children: [
+      { kind: "custom", id: "layers-panel", label: "Capas", surfaces: ["dock"] },
+    ],
+  };
+
   // Orden de la raíz = orden del radial (Archivo arriba, luego en el sentido del
   // reloj). El dock elige su subconjunto y disposición desde estos mismos datos.
-  return [file, brush, color, matter, symmetry, view];
+  return [file, brush, color, layers, matter, symmetry, view];
 }

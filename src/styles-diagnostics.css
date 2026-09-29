@@ -1,0 +1,98 @@
+/*
+ * Panel de diagnóstico del render (Ctrl+Alt+D).
+ *
+ * Flota sobre TODO (z-index máximo) porque su razón de ser es inspeccionar por
+ * qué el lienzo no muestra nada: debe verse aunque otro velo esté encima. Solo
+ * aparece con la clase .is-open; mientras tanto no estorba (display:none).
+ */
+.diag-overlay {
+  display: none;
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 2147483000;
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(70vh, 640px);
+  flex-direction: column;
+  background: rgba(14, 14, 17, 0.94);
+  color: #e7e7ea;
+  border: 1px solid #2a2a33;
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  font: 12px/1.45 ui-monospace, "SFMono-Regular", "Consolas", monospace;
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+
+.diag-overlay.is-open {
+  display: flex;
+}
+
+.diag-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #23232a;
+  background: #161619;
+}
+
+.diag-bar strong {
+  margin-right: auto;
+  font-size: 12px;
+  color: #f4f4f6;
+}
+
+.diag-btn {
+  padding: 3px 8px;
+  border: 1px solid #33333d;
+  border-radius: 7px;
+  background: #23232a;
+  color: #d6d6dc;
+  font: inherit;
+  cursor: pointer;
+}
+
+.diag-btn:hover {
+  background: #2f2f39;
+  color: #fff;
+}
+
+.diag-body {
+  padding: 8px 10px 12px;
+  overflow: auto;
+}
+
+.diag-h {
+  margin: 10px 0 4px;
+  color: #8fb7ff;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+}
+
+.diag-h:first-child {
+  margin-top: 0;
+}
+
+.diag-row {
+  display: flex;
+  gap: 10px;
+  padding: 1px 0;
+}
+
+.diag-k {
+  flex: 0 0 140px;
+  color: #9a9aa4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diag-v {
+  flex: 1 1 auto;
+  color: #e7e7ea;
+  word-break: break-word;
+}
