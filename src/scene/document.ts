@@ -239,10 +239,6 @@ export class SceneDocument {
     return this.layers.filter((l) => l.kind === "matter");
   }
 
-  get matterLayer(): SceneLayer | undefined {
-    return this.matterLayers[0];
-  }
-
   matterTarget(): SceneLayer {
     const active = this.activeLayer;
     if (active?.kind === "matter") return active;
