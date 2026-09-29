@@ -35,6 +35,8 @@ export interface Body {
   isStatic: boolean;
 
   color: string;
+  /** Capa de materia a la que pertenece el cuerpo. */
+  layerId: string;
   /** Grupo de fusion: solo se funden cuerpos del mismo grupo (0 = todos). */
   group: number;
   /** Radio de fusion propio; 0 = usa el global. */
@@ -114,7 +116,7 @@ const SLEEP_TIME = 0.8;
 export function createBody(
   shape: ShapeDef,
   pos: Vec2,
-  opts: Partial<Pick<Body, "angle" | "color" | "group" | "isStatic" | "density" | "restitution" | "friction" | "blend">> = {},
+  opts: Partial<Pick<Body, "angle" | "color" | "group" | "isStatic" | "density" | "restitution" | "friction" | "blend" | "layerId">> = {},
 ): Body {
   const local = colliderVerts(shape);
   const density = opts.density ?? 0.0012;
@@ -140,6 +142,7 @@ export function createBody(
     density,
     isStatic,
     color: opts.color ?? "#e2571f",
+    layerId: opts.layerId ?? "",
     group: opts.group ?? 0,
     blend: opts.blend ?? 0,
     awake: true,
@@ -239,6 +242,20 @@ export class PhysicsWorld {
     const i = this.bodies.findIndex((b) => b.id === id);
     if (i >= 0) this.bodies.splice(i, 1);
     if (this.drag && this.drag.body.id === id) this.drag = null;
+  }
+
+  bodiesOf(layerId: string): Body[] {
+    return this.bodies.filter((b) => b.layerId === layerId);
+  }
+
+  removeByLayer(layerId: string): void {
+    for (let i = this.bodies.length - 1; i >= 0; i--) {
+      if (this.bodies[i].layerId === layerId) {
+        const id = this.bodies[i].id;
+        this.bodies.splice(i, 1);
+        if (this.drag && this.drag.body.id === id) this.drag = null;
+      }
+    }
   }
 
   clear(): void {

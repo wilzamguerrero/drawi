@@ -69,6 +69,9 @@ export function exportVector(editor: Editor, options: Partial<ExportOptions> = {
 
 export function newDocument(editor: Editor): string {
   editor.clearAll();
+  // Restablece la estructura de capas: una sola de tinta y ninguna de materia
+  // (esta última nace al crear el primer cuerpo), sin arrastrar las del anterior.
+  editor.doc.resetLayers();
   editor.setName("Sin titulo");
   editor.resetView();
   editor.history.clear();

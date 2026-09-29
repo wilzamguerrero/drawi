@@ -197,7 +197,7 @@ export class Diagnostics {
 
     section(`Capas (${doc.layers.length})`);
     for (const l of doc.layers) {
-      const n = l.kind === "matter" ? doc.bodies.length : doc.layerItems(l.id).length;
+      const n = l.kind === "matter" ? doc.physics.bodiesOf(l.id).length : doc.layerItems(l.id).length;
       const flags = `${l.kind} · ${n} it · op ${fmt(l.opacity)} · fill ${fmt(l.fill)} · ${l.blend}`;
       line(`${l.visible ? "ojo" : " — "} ${l.name}`, flags + (l.id === doc.activeLayerId ? " · ACTIVA" : ""));
     }

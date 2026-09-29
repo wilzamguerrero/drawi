@@ -34,6 +34,9 @@ export class ShapeTool implements Tool {
     this.spawned = [];
 
     const transforms = symmetryTransforms(ctx.doc.symmetry);
+    // La materia nueva cae en la capa de materia activa; si no hay ninguna, se
+    // crea una (dentro del historial del gesto, asi deshacer tambien la quita).
+    const target = ctx.doc.matterTarget();
     for (let i = 0; i < transforms.length; i++) {
       const p = apply(transforms[i], { x: w.x, y: w.y });
       const body = createBody({ ...ctx.doc.shape }, { x: p.x, y: p.y }, {
@@ -41,6 +44,7 @@ export class ShapeTool implements Tool {
         blend: ctx.doc.field.blend,
         restitution: ctx.doc.physics.settings.restitution,
         friction: ctx.doc.physics.settings.friction,
+        layerId: target.id,
       });
       // Mientras se dimensiona no debe caer.
       setBodyStatic(body, true);

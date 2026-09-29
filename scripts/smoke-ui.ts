@@ -187,6 +187,26 @@ noThrow("mover materia con el raton", () => {
   for (let i = 1; i <= 10; i++) send("pointermove", 445 + i * 8, 330 - i * 4, 0.5);
   send("pointerup", 525, 290, 0);
 });
+// La materia ya no es una pseudo-capa fija: sembrar debe haber creado su capa.
+ok("sembrar crea una capa de materia", ed.doc.matterLayers.length >= 1, `${ed.doc.matterLayers.length} capas de materia`);
+ok("los cuerpos tienen capa asignada", ed.doc.bodies.every((b) => !!b.layerId));
+
+// Segunda capa de materia con su propio subconjunto de cuerpos.
+noThrow("nueva capa de materia", () => ed.addMatterLayer());
+ok("hay dos capas de materia", ed.doc.matterLayers.length >= 2, `${ed.doc.matterLayers.length}`);
+noThrow("sembrar en la segunda capa", () => ed.seedMatter(4));
+{
+  const second = ed.doc.matterLayers[ed.doc.matterLayers.length - 1];
+  ok("la segunda capa recibio cuerpos", ed.doc.physics.bodiesOf(second.id).length > 0,
+     `${ed.doc.physics.bodiesOf(second.id).length} cuerpos`);
+  const before = ed.state.bodies;
+  const inSecond = ed.doc.physics.bodiesOf(second.id).length;
+  noThrow("borrar la segunda capa de materia", () => ed.removeLayer(second.id));
+  ok("borrar la capa quita solo sus cuerpos", ed.state.bodies === before - inSecond,
+     `${before} -> ${ed.state.bodies} (quitados ${inSecond})`);
+  ok("la capa de materia desaparecio", !ed.doc.layerById(second.id));
+}
+
 noThrow("sembrar materia", () => ed.seedMatter(6));
 noThrow("alternar muros", () => ed.toggleWalls());
 noThrow("alternar colisionadores", () => ed.toggleColliders());
@@ -248,6 +268,7 @@ ok("rehacer restaura el trabajo", ed.state.items > 0, `${ed.state.items} items`)
 const itemsBefore = ed.state.items;
 noThrow("documento nuevo", () => newDocument(ed));
 ok("el documento nuevo esta vacio", ed.state.items === 0, `${itemsBefore} -> ${ed.state.items}`);
+ok("el documento nuevo no trae capa de materia", ed.doc.matterLayers.length === 0, `${ed.doc.matterLayers.length} capas de materia`);
 ok("el lienzo nuevo no resucita lo anterior", restoreAutosave(ed) === false && ed.state.items === 0, `${ed.state.items} items`);
 
 // Ronda limpia de autoguardado: dibujar, guardar, vaciar, restaurar.

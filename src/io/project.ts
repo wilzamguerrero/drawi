@@ -10,9 +10,11 @@ import type { ShapeDef } from "../physics/shapes";
 
 /**
  * v1: tinta plana sin capas. v2: modelo de capas (`layers` + `activeLayerId`);
- * los `items` siguen planos, ahora cada uno con su `layerId`.
+ * los `items` siguen planos, ahora cada uno con su `layerId`. v3: la materia
+ * deja de ser una pseudo-capa única: cada cuerpo lleva `layerId` y puede haber
+ * varias capas de materia (o ninguna).
  */
-export const PROJECT_VERSION = 2;
+export const PROJECT_VERSION = 3;
 
 export interface ProjectFile {
   format: "drawi";
@@ -85,18 +87,29 @@ export function applyProject(doc: SceneDocument, file: ProjectFile): void {
   doc.physics.settings = { ...file.world, gravity: { ...file.world.gravity } };
   doc.field = { ...file.field };
   doc.shape = { ...file.shape };
+  // Los cuerpos entran primero para que `ensureLayers` sepa a qué capa de
+  // materia reasignar los que vengan sin `layerId` (proyectos v1/v2).
+  doc.physics.clear();
+  for (const b of file.bodies) doc.physics.add(restoreBody(b));
+
   if (Array.isArray(file.layers) && file.layers.length > 0) {
-    // Proyecto v2: capas explícitas. `ensureLayers` repara cualquier hueco
-    // (falta la materia, item huérfano, activeLayerId inválido).
+    // Proyecto v2+: capas explícitas. `ensureLayers` repara cualquier hueco
+    // (item huérfano, activeLayerId inválido, cuerpo sin capa de materia).
     doc.layers = file.layers;
     doc.activeLayerId = file.activeLayerId ?? "";
     doc.ensureLayers();
   } else {
-    // Proyecto v1: tinta plana. Envolverla en una capa por defecto.
+    // Proyecto v1: tinta plana. Envolverla en una capa por defecto; los cuerpos
+    // caen en una capa de materia que crea `ensureLayers`.
     doc.migrateFlatItems();
+    doc.ensureLayers();
   }
-  doc.physics.clear();
-  for (const b of file.bodies) doc.physics.add(restoreBody(b));
+
+  // Legado (<v3): el modelo antiguo forzaba una capa de materia aunque no
+  // hubiera cuerpos. Se elimina si quedó vacía, para no mostrar una fila que el
+  // usuario no creó. Los proyectos v3 conservan las capas tal cual.
+  if ((file.version ?? 0) < 3) doc.dropEmptyMatterLayers();
+
   doc.inkRevision++;
 }
 

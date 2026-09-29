@@ -280,34 +280,40 @@ export function renderToCanvas(
   ctx.setTransform(opt.scale, 0, 0, opt.scale, -box.x * opt.scale, -box.y * opt.scale);
   ctx.lineJoin = "round";
 
-  // Materia: pseudo-capa con plano propio; se pinta encima, como en pantalla.
-  const matterLayer = doc.matterLayer;
-  const matterOn = opt.matter && (!matterLayer || matterLayer.visible);
-  const matterAlpha = matterLayer ? matterLayer.opacity : 1;
-  if (matterOn) {
-    const loops = fieldLoops(doc.bodies, doc.field, opt.fieldCell);
-    for (const loop of loops) {
-      const path = new Path2D();
-      path.moveTo(loop.poly[0].x, loop.poly[0].y);
-      for (let i = 1; i < loop.poly.length; i++) path.lineTo(loop.poly[i].x, loop.poly[i].y);
-      path.closePath();
-      ctx.globalAlpha = clamp01(doc.field.alpha) * matterAlpha;
-      ctx.fillStyle = cssRgba(loop.color, 1);
-      ctx.fill(path);
-      if (doc.field.shade > 0) {
-        ctx.save();
-        ctx.clip(path);
-        ctx.strokeStyle = cssRgba(mixRgb(loop.color, { r: 0, g: 0, b: 0 }, 0.45), doc.field.shade * 0.6);
-        ctx.lineWidth = Math.max(2, doc.field.depth * 0.5);
-        ctx.stroke(path);
-        ctx.restore();
-      }
-      if (doc.field.outline > 0) {
-        ctx.strokeStyle = cssRgba(hexToRgb(doc.field.outlineColor), 1);
-        ctx.lineWidth = doc.field.outline;
-        ctx.stroke(path);
+  // Materia: cada capa se pinta encima de la tinta con su opacidad y fusión,
+  // en el mismo orden (abajo→arriba) que en pantalla.
+  if (opt.matter) {
+    for (const layer of doc.matterLayers) {
+      if (!layer.visible) continue;
+      const bodies = doc.physics.bodiesOf(layer.id);
+      if (bodies.length === 0) continue;
+      const layerAlpha = clamp01(doc.field.alpha) * clamp01(layer.opacity * layer.fill);
+      ctx.globalCompositeOperation = layer.blend;
+      const loops = fieldLoops(bodies, doc.field, opt.fieldCell);
+      for (const loop of loops) {
+        const path = new Path2D();
+        path.moveTo(loop.poly[0].x, loop.poly[0].y);
+        for (let i = 1; i < loop.poly.length; i++) path.lineTo(loop.poly[i].x, loop.poly[i].y);
+        path.closePath();
+        ctx.globalAlpha = layerAlpha;
+        ctx.fillStyle = cssRgba(loop.color, 1);
+        ctx.fill(path);
+        if (doc.field.shade > 0) {
+          ctx.save();
+          ctx.clip(path);
+          ctx.strokeStyle = cssRgba(mixRgb(loop.color, { r: 0, g: 0, b: 0 }, 0.45), doc.field.shade * 0.6);
+          ctx.lineWidth = Math.max(2, doc.field.depth * 0.5);
+          ctx.stroke(path);
+          ctx.restore();
+        }
+        if (doc.field.outline > 0) {
+          ctx.strokeStyle = cssRgba(hexToRgb(doc.field.outlineColor), 1);
+          ctx.lineWidth = doc.field.outline;
+          ctx.stroke(path);
+        }
       }
       ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
     }
   }
 
@@ -530,12 +536,17 @@ export function exportSvg(doc: SceneDocument, options: Partial<ExportOptions> = 
 
   parts.push(...compositeLayersSvg(doc.childLayers(null)));
 
-  const matterLayer = doc.matterLayer;
-  if (opt.matter && (!matterLayer || matterLayer.visible)) {
-    const alpha = clamp01(doc.field.alpha) * (matterLayer ? matterLayer.opacity : 1);
-    const loops = fieldLoops(doc.bodies, doc.field, opt.fieldCell);
-    if (loops.length > 0) {
-      parts.push(`<g opacity="${fmt(alpha)}">`);
+  // Materia: un <g> por capa visible, con su opacidad y su modo de fusión, en
+  // el mismo orden que en pantalla (abajo→arriba), siempre encima de la tinta.
+  if (opt.matter) {
+    for (const layer of doc.matterLayers) {
+      if (!layer.visible) continue;
+      const bodies = doc.physics.bodiesOf(layer.id);
+      if (bodies.length === 0) continue;
+      const alpha = clamp01(doc.field.alpha) * clamp01(layer.opacity * layer.fill);
+      const loops = fieldLoops(bodies, doc.field, opt.fieldCell);
+      if (loops.length === 0) continue;
+      parts.push(`<g opacity="${fmt(alpha)}"${blendStyle(layer.blend)}>`);
       for (const loop of loops) {
         const d = polygonToSvgPath(loop.poly, false);
         const stroke =

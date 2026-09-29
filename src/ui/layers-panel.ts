@@ -103,30 +103,29 @@ export class LayersPanel {
     const mask = button({ iconName: "mask", title: "Añadir máscara", onClick: () => this.editActive((id) => ed.toggleLayerMask(id)) });
     const group = button({ iconName: "folder", title: "Nuevo grupo (Ctrl+Shift+G)", onClick: () => ed.addGroup() });
     const add = button({ iconName: "plus", title: "Nueva capa (Ctrl+Shift+N)", onClick: () => ed.addLayer() });
+    const matter = button({ iconName: "matter", title: "Nueva capa de materia", onClick: () => ed.addMatterLayer() });
     const del = button({ iconName: "trash", variant: "danger", title: "Borrar capa (Supr)", onClick: () => this.deleteActive() });
-    return el("div", { class: "layers-footer" }, [clip.el, mask.el, group.el, add.el, del.el]);
+    return el("div", { class: "layers-footer" }, [clip.el, mask.el, group.el, add.el, matter.el, del.el]);
   }
 
   private active(): SceneLayer | undefined {
     return this.editor.doc.activeLayer;
   }
 
-  /**
-   * Papelera / Supr sobre la capa activa. La pseudo-capa "Materia" no se puede
-   * borrar (siempre existe su plano), así que su papelera VACÍA la materia en su
-   * lugar; el resto de capas se borran normalmente.
-   */
+  /** Papelera / Supr sobre la capa activa. Materia sí es una capa eliminable. */
   private deleteActive(): void {
     const l = this.active();
     if (!l) return;
-    if (l.kind === "matter") this.editor.clearMatter();
+    if (l.kind === "matter") this.editor.removeLayer(l.id);
     else this.editor.removeLayer(l.id);
   }
 
-  /** Ejecuta una acción sobre la capa activa si existe y no es la materia. */
+  /** Ejecuta una acción sobre la capa activa. La materia acepta opacidad, fusión
+   * y bloqueo; los ajustes que no le aplican (recorte, alfa, máscara) los ignora
+   * el compositor de materia. */
   private editActive(run: (id: string) => void): void {
     const l = this.active();
-    if (l && l.kind !== "matter") run(l.id);
+    if (l) run(l.id);
   }
   // METHODS_PLACEHOLDER
 
@@ -169,18 +168,22 @@ export class LayersPanel {
     this.syncHead(state);
   }
 
-  /** Cabecera: refleja las propiedades de la capa activa. */
+  /** Cabecera: refleja las propiedades de la capa activa. La materia usa
+   * opacidad/fusión/bloqueo; alfa, recorte y máscara solo aplican a la tinta. */
   private syncHead(state: EditorState): void {
     const l = this.editor.doc.activeLayer;
-    const editable = !!l && l.kind !== "matter";
-    setClass(this.head, "is-disabled", !editable);
+    setClass(this.head, "is-disabled", !l);
     if (!l) return;
+    const inkLike = l.kind !== "matter";
     this.blendSel.set(l.blend);
     this.opacity.set(Math.round(l.opacity * 100));
     this.fill.set(Math.round(l.fill * 100));
     this.lockBtn.setActive(l.locked);
     this.alphaBtn.setActive(l.alphaLock);
     this.maskModeBtn.setActive(state.maskMode);
+    // Los controles que no aplican a la materia se atenúan sin ocultarse.
+    setClass(this.alphaBtn.el, "is-disabled", !inkLike);
+    setClass(this.maskModeBtn.el, "is-disabled", !inkLike);
   }
 
   /** Rehace la lista de filas conservando el mapa por id. */
@@ -470,17 +473,18 @@ export class LayersPanel {
 
     const isInk = layer.kind === "ink";
     const isMatter = layer.kind === "matter";
-    if (!isMatter) {
+    if (isMatter) {
+      // La materia sí es una capa eliminable: vaciar sus cuerpos o borrar la capa.
+      item("Vaciar materia", () => ed.clearMatterLayer(layer.id));
+      item("Borrar capa", () => ed.removeLayer(layer.id));
+      sep();
+    } else {
       item("Duplicar", () => ed.duplicateLayer(layer.id), !isInk);
       item("Combinar hacia abajo", () => ed.mergeLayerDown(layer.id), !isInk);
       item("Aplanar imagen", () => ed.flattenLayers());
       sep();
       item(layer.mask ? "Quitar máscara" : "Añadir máscara", () => ed.toggleLayerMask(layer.id));
       if (layer.mask) item("Invertir máscara", () => ed.invertLayerMask(layer.id));
-      sep();
-    } else {
-      // La capa "Materia" no se borra ni se combina: solo se puede vaciar.
-      item("Vaciar materia", () => ed.clearMatter());
       sep();
     }
 

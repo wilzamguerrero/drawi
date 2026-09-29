@@ -32,6 +32,7 @@ export interface BodySnapshot {
   density: number;
   restitution: number;
   friction: number;
+  layerId: string;
 }
 
 export interface SceneSnapshot {
@@ -65,6 +66,7 @@ export function snapshotBody(b: Body): BodySnapshot {
     density: b.density,
     restitution: b.restitution,
     friction: b.friction,
+    layerId: b.layerId,
   };
 }
 
@@ -78,6 +80,7 @@ export function restoreBody(s: BodySnapshot): Body {
     density: s.density,
     restitution: s.restitution,
     friction: s.friction,
+    layerId: s.layerId,
   });
   body.id = s.id;
   body.vel.x = s.vx;
@@ -130,12 +133,17 @@ export class SceneDocument {
 
   // ----------------------------------------------------------------- capas
 
-  /** Deja el documento con una sola capa de tinta y la pseudo-capa de materia. */
+  /**
+   * Deja el documento con una sola capa de tinta y ninguna de materia.
+   *
+   * La materia no es una pseudo-capa fija: nace cuando se crea el primer cuerpo
+   * (`matterTarget`) y desaparece al borrar su capa. Asi el panel no muestra una
+   * fila "Materia" vacia en un documento donde nadie ha creado materia.
+   */
   resetLayers(): void {
     this.layerCounter = 0;
     const ink = this.makeInkLayer();
-    const matter = this.makeMatterLayer();
-    this.layers = [ink, matter];
+    this.layers = [ink];
     this.activeLayerId = ink.id;
   }
 
@@ -158,11 +166,11 @@ export class SceneDocument {
     };
   }
 
-  private makeMatterLayer(): SceneLayer {
+  private makeMatterLayer(name?: string): SceneLayer {
     return {
-      id: "matter",
+      id: uid(),
       kind: "matter",
-      name: "Materia",
+      name: name ?? "Materia",
       visible: true,
       opacity: 1,
       fill: 1,
@@ -184,26 +192,63 @@ export class SceneDocument {
     this.inkRevision++;
   }
 
-  /**
-   * Restablece las invariantes de capas tras cargar o migrar: al menos una capa
-   * de tinta, la pseudo-capa de materia, un `activeLayerId` válido y ningún item
-   * huérfano (los que apunten a una capa inexistente van a la primera de tinta).
-   */
+  /** Restablece las invariantes de capas tras cargar o migrar: al menos una capa
+   * de tinta, un `activeLayerId` válido y ningún item huérfano. Los cuerpos sin
+   * capa de materia válida se reagrupan en una (existente o recién creada). */
   ensureLayers(): void {
-    if (!this.layers.some((l) => l.kind === "matter")) this.layers.push(this.makeMatterLayer());
     if (!this.layers.some((l) => l.kind === "ink")) this.layers.unshift(this.makeInkLayer());
     const ids = new Set(this.layers.map((l) => l.id));
     const inkId = (this.firstInkLayer() as SceneLayer).id;
     for (const it of this.items) if (!ids.has(it.layerId)) it.layerId = inkId;
     if (!ids.has(this.activeLayerId)) this.activeLayerId = inkId;
+
+    // Cuerpos huérfanos (sin capa de materia, o apuntando a una inexistente):
+    // van a la primera capa de materia; si no hay ninguna, se crea una. Solo se
+    // crea una capa de materia cuando de verdad hay cuerpos que alojar.
+    let matterLayers = this.layers.filter((l) => l.kind === "matter");
+    const orphans = this.bodies.filter((b) => !matterLayers.some((l) => l.id === b.layerId));
+    if (orphans.length > 0) {
+      let target = matterLayers[0];
+      if (!target) {
+        target = this.makeMatterLayer();
+        this.layers.push(target);
+      }
+      for (const b of orphans) b.layerId = target.id;
+    }
+  }
+
+  /** Quita capas de materia sin cuerpos (usado al migrar proyectos antiguos que
+   * forzaban una capa de materia aunque el usuario no hubiera creado nada). */
+  dropEmptyMatterLayers(): void {
+    const empties = this.layers.filter(
+      (l) => l.kind === "matter" && this.physics.bodiesOf(l.id).length === 0,
+    );
+    if (empties.length === 0) return;
+    const ids = new Set(empties.map((l) => l.id));
+    this.layers = this.layers.filter((l) => !ids.has(l.id));
+    if (ids.has(this.activeLayerId)) {
+      this.activeLayerId = (this.firstInkLayer() ?? this.layers[0]).id;
+    }
   }
 
   get activeLayer(): SceneLayer | undefined {
     return this.layerById(this.activeLayerId);
   }
 
+  get matterLayers(): SceneLayer[] {
+    return this.layers.filter((l) => l.kind === "matter");
+  }
+
   get matterLayer(): SceneLayer | undefined {
-    return this.layers.find((l) => l.kind === "matter");
+    return this.matterLayers[0];
+  }
+
+  matterTarget(): SceneLayer {
+    const active = this.activeLayer;
+    if (active?.kind === "matter") return active;
+    const existing = this.matterLayers[this.matterLayers.length - 1];
+    if (existing) return existing;
+    return this.addMatterLayer();
   }
 
   layerById(id: string): SceneLayer | undefined {
@@ -258,10 +303,35 @@ export class SceneDocument {
     return group;
   }
 
-  /** Elimina una capa (y, si es grupo, sus hijas) junto con sus items. */
+  /** Crea una capa de materia encima de la activa. */
+  addMatterLayer(name?: string): SceneLayer {
+    const layer = this.makeMatterLayer(name);
+    const active = this.activeLayer;
+    const at = active ? this.layerIndex(active.id) + 1 : this.layers.length;
+    this.layers.splice(at, 0, layer);
+    this.activeLayerId = layer.id;
+    this.inkRevision++;
+    return layer;
+  }
+
+  /**
+   * Elimina una capa con su contenido: los items si es de tinta (y, si es
+   * grupo, también los de sus hijas) o los cuerpos si es de materia.
+   */
   removeLayer(id: string): void {
     const layer = this.layerById(id);
-    if (!layer || layer.kind === "matter") return;
+    if (!layer) return;
+
+    if (layer.kind === "matter") {
+      this.physics.removeByLayer(id);
+      this.layers = this.layers.filter((l) => l.id !== id);
+      if (this.activeLayerId === id) {
+        this.activeLayerId = (this.firstInkLayer() ?? this.layers[0]).id;
+      }
+      this.inkRevision++;
+      return;
+    }
+
     const ids = new Set<string>([id]);
     if (layer.kind === "group") {
       for (const child of this.layers) if (child.parentId === id) ids.add(child.id);
@@ -345,12 +415,12 @@ export class SceneDocument {
     this.inkRevision++;
   }
 
-  /** Reordena/reubica una capa: la mueve ante `beforeId` (o al final) y reparenta. */
+  /** Reordena/reubica una capa. La materia puede moverse para ordenar su z. */
   moveLayer(id: string, beforeId: string | null, parentId: string | null): void {
     const idx = this.layerIndex(id);
     if (idx < 0) return;
     const layer = this.layers[idx];
-    if (layer.kind === "matter") return;
+    if (layer.kind === "matter" && parentId !== null) return; // no anidar matter en grupos
     const [moved] = this.layers.splice(idx, 1);
     moved.parentId = parentId;
     let at = this.layers.length;
@@ -437,8 +507,9 @@ export class SceneDocument {
     this.inkRevision++;
   }
 
-  clearMatter(): void {
-    this.physics.clear();
+  clearMatter(layerId?: string): void {
+    if (layerId) this.physics.removeByLayer(layerId);
+    else this.physics.clear();
   }
 
   clearAll(): void {
@@ -520,6 +591,7 @@ export class SceneDocument {
     this.meta.background = snap.background;
     this.physics.clear();
     for (const b of snap.bodies) this.physics.add(restoreBody(b));
+    this.ensureLayers();
     this.inkRevision++;
   }
 }

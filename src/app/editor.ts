@@ -10,7 +10,7 @@ import type { Body } from "../physics/world";
 import { fieldContours } from "../physics/marching";
 import { Camera } from "../render/camera";
 import { FieldRenderer, type FieldStyle } from "../render/field-gl";
-import { FieldFallbackRenderer } from "../render/field-2d";
+import { MatterCompositor } from "../render/matter-compositor";
 import { InkRenderer } from "../render/ink-renderer";
 import { Compositor } from "../render/compositor";
 import { Layer } from "../render/layer";
@@ -120,15 +120,15 @@ export class Editor {
   private host: HTMLElement;
   private inkLayer: Layer;
   private wetLayer: Layer;
-  private fieldLayer: Layer;
   private overlayLayer: Layer;
+  /** Lienzo WebGL del campo (fuera de pantalla); el compositor de materia lo usa. */
   private fieldCanvas: HTMLCanvasElement;
 
   private inkRenderer = new InkRenderer();
   private compositor = new Compositor(this.inkRenderer);
   private overlayRenderer = new OverlayRenderer();
   private fieldRenderer: FieldRenderer;
-  private fieldFallback = new FieldFallbackRenderer();
+  private matter: MatterCompositor;
 
   private pointer: PointerInput;
   private tools: Record<ToolId, Tool>;
@@ -166,15 +166,17 @@ export class Editor {
     this.inkLayer = new Layer("layer layer-ink");
     this.wetLayer = new Layer("layer layer-wet");
     this.overlayLayer = new Layer("layer layer-overlay");
-    this.fieldLayer = new Layer("layer layer-field-2d");
 
+    // El campo WebGL rinde a un lienzo fuera de pantalla; el compositor de
+    // materia lo vuelca por capa (con su opacidad/fusión) sobre su propio
+    // lienzo, que es el que se muestra encima de la tinta.
     this.fieldCanvas = document.createElement("canvas");
-    this.fieldCanvas.className = "layer layer-field";
+    this.fieldCanvas.className = "layer layer-field-src";
     this.fieldRenderer = new FieldRenderer(this.fieldCanvas);
+    this.matter = new MatterCompositor(this.fieldRenderer);
 
     host.appendChild(this.inkLayer.canvas);
-    if (this.fieldRenderer.available) host.appendChild(this.fieldCanvas);
-    else host.appendChild(this.fieldLayer.canvas);
+    host.appendChild(this.matter.output.canvas);
     host.appendChild(this.wetLayer.canvas);
     host.appendChild(this.overlayLayer.canvas);
     host.style.background = this.doc.meta.background;
@@ -343,14 +345,13 @@ export class Editor {
   setWorld(patch: Partial<WorldSettings>): void {
     Object.assign(this.doc.physics.settings, patch);
     this.doc.physics.wakeAll();
-    this.fieldFallback.invalidate();
+    this.matter.invalidate();
     this.emitState();
   }
 
   setField(patch: Partial<FieldStyle>): void {
     this.doc.field = { ...this.doc.field, ...patch };
-    this.fieldFallback.invalidate();
-    this.fieldLayer.invalidate();
+    this.matter.invalidate();
     this.emitState();
   }
 
@@ -386,6 +387,11 @@ export class Editor {
     this.layerEdit("Nuevo grupo", () => this.doc.addGroup());
   }
 
+  addMatterLayer(): void {
+    this.layerEdit("Nueva capa de materia", () => this.doc.addMatterLayer());
+    this.status("Nueva capa de materia creada");
+  }
+
   removeLayer(id: string): void {
     this.layerEdit("Borrar capa", () => this.doc.removeLayer(id));
   }
@@ -409,21 +415,14 @@ export class Editor {
   /** Cambios de propiedad de capa (opacidad, fusión, ojo, bloqueos, nombre…). */
   setLayer(id: string, patch: Partial<SceneLayer>): void {
     this.layerEdit("Ajustar capa", () => this.doc.setLayer(id, patch));
-    if (id === "matter") this.applyMatterStyle();
+    // La materia se compone por capa: opacidad, fusión y visibilidad se aplican
+    // al volcar cada capa, así que basta con marcar el compositor sucio.
+    if (this.doc.layerById(id)?.kind === "matter") this.matter.invalidate();
   }
 
-  /** Lienzo activo de la materia (WebGL o el 2D de reserva). */
+  /** Lienzo compuesto de la materia (el que se muestra sobre la tinta). */
   private matterCanvas(): HTMLCanvasElement {
-    return this.fieldRenderer.available ? this.fieldCanvas : this.fieldLayer.canvas;
-  }
-
-  /** Vuelca la visibilidad/opacidad de la pseudo-capa Materia sobre su plano. */
-  applyMatterStyle(): void {
-    const m = this.doc.matterLayer;
-    const canvas = this.matterCanvas();
-    if (!m) return;
-    canvas.style.display = m.visible ? "" : "none";
-    canvas.style.opacity = String(m.opacity);
+    return this.matter.output.canvas;
   }
 
   setLayerColor(id: string, color: LayerColor): void {
@@ -503,8 +502,7 @@ export class Editor {
   private afterHistory(message: string): void {
     this.inkRenderer.prune(this.doc.items);
     this.inkLayer.invalidate();
-    this.fieldFallback.invalidate();
-    this.fieldLayer.invalidate();
+    this.matter.invalidate();
     this.overlayLayer.invalidate();
     this.status(message);
     this.emitState();
@@ -525,6 +523,15 @@ export class Editor {
     this.doc.clearMatter();
     this.history.record("Limpiar materia", before);
     this.afterHistory("Materia borrada");
+  }
+
+  /** Vacía solo los cuerpos de una capa de materia (sin borrar la capa). */
+  clearMatterLayer(id: string): void {
+    if (this.doc.physics.bodiesOf(id).length === 0) return;
+    const before = this.doc.snapshot();
+    this.doc.clearMatter(id);
+    this.history.record("Vaciar capa de materia", before);
+    this.afterHistory("Capa de materia vaciada");
   }
 
   clearAll(): void {
@@ -565,6 +572,7 @@ export class Editor {
   /** Siembra n cuerpos aleatorios dentro de la vista. */
   seedMatter(n = 8): void {
     const before = this.doc.snapshot();
+    const target = this.doc.matterTarget();
     const view = this.camera.visibleBounds(-40);
     for (let i = 0; i < n; i++) {
       const shape = randomShape(this.rng, this.doc.shape);
@@ -577,6 +585,7 @@ export class Editor {
         {
           color: this.rng.pick(this.palette.colors),
           blend: this.doc.field.blend,
+          layerId: target.id,
         },
       );
       body.angle = this.rng.range(0, Math.PI * 2);
@@ -609,9 +618,8 @@ export class Editor {
 
   invalidateAll(): void {
     this.inkLayer.invalidate();
-    this.fieldLayer.invalidate();
+    this.matter.invalidate();
     this.overlayLayer.invalidate();
-    this.fieldFallback.invalidate();
   }
 
   /**
@@ -631,7 +639,7 @@ export class Editor {
       maskMode: this.maskMode,
       canvases: [
         { name: "tinta", role: "ink", canvas: this.inkLayer.canvas, dirty: this.inkLayer.dirty },
-        { name: "materia", role: "field", canvas: this.matterCanvas(), dirty: this.fieldLayer.dirty },
+        { name: "materia", role: "field", canvas: this.matterCanvas(), dirty: this.matter.dirty },
         { name: "húmedo", role: "wet", canvas: this.wetLayer.canvas, dirty: this.wetLayer.dirty },
         { name: "superpuesto", role: "overlay", canvas: this.overlayLayer.canvas, dirty: this.overlayLayer.dirty },
       ],
@@ -739,8 +747,7 @@ export class Editor {
         editor.inkLayer.invalidate();
       },
       invalidateField(): void {
-        editor.fieldLayer.invalidate();
-        editor.fieldFallback.invalidate();
+        editor.matter.invalidate();
       },
       invalidateOverlay(): void {
         editor.overlayLayer.invalidate();
@@ -881,7 +888,7 @@ export class Editor {
     ctx.fillRect(0, 0, 1, 1);
     const sources: HTMLCanvasElement[] = [
       this.inkLayer.canvas,
-      this.fieldRenderer.available ? this.fieldCanvas : this.fieldLayer.canvas,
+      this.matter.output.canvas,
       this.wetLayer.canvas,
     ];
     for (const src of sources) {
@@ -1017,13 +1024,11 @@ export class Editor {
         case "delete":
         case "backspace":
           if (e.shiftKey) { this.clearAll(); break; }
-          // Supr sin Shift borra la capa activa (nunca deja el documento sin tinta;
-          // es reversible con deshacer). Sobre la pseudo-capa "Materia" no cabe
-          // borrar la capa —siempre existe—, así que se vacía su contenido.
+          // Supr sin Shift borra la capa activa (incluida la materia, con sus
+          // cuerpos). Nunca deja el documento sin tinta; es reversible con Ctrl+Z.
           {
             const l = this.doc.activeLayer;
-            if (l?.kind === "matter") this.clearMatter();
-            else if (l) this.removeLayer(l.id);
+            if (l) this.removeLayer(l.id);
           }
           break;
         default:
@@ -1065,9 +1070,9 @@ export class Editor {
     this.camera.setViewport(w, h);
     this.inkLayer.resize(w, h, dpr);
     this.wetLayer.resize(w, h, dpr);
-    this.fieldLayer.resize(w, h, dpr);
     this.overlayLayer.resize(w, h, dpr);
     this.fieldRenderer.resize(w, h, dpr);
+    this.matter.resize(w, h, dpr);
     this.pointer.refreshRect();
     this.invalidateAll();
     this.needsResize = false;
@@ -1105,8 +1110,7 @@ export class Editor {
       const moving = this.doc.bodies.some((b) => b.awake);
       if (moving || this.doc.physics.dragging) {
         this.doc.physics.update(dt);
-        this.fieldLayer.invalidate();
-        this.fieldFallback.invalidate();
+        this.matter.invalidate();
       }
     }
 
@@ -1123,15 +1127,10 @@ export class Editor {
       this.inkLayer.dirty = false;
     }
 
-    if (this.fieldRenderer.available) {
-      if (this.fieldLayer.dirty) {
-        this.fieldRenderer.render(this.doc.bodies, this.camera, this.doc.field, this.dpr);
-        this.fieldLayer.dirty = false;
-      }
-    } else if (this.fieldLayer.dirty) {
-      this.fieldLayer.clear();
-      this.fieldFallback.render(this.fieldLayer, this.doc.bodies, this.camera, this.doc.field);
-      this.fieldLayer.dirty = false;
+    if (this.matter.dirty) {
+      // Cada capa de materia se rinde y compone con su opacidad/fusión sobre un
+      // único lienzo que se muestra encima de la tinta.
+      this.matter.render(this.doc, this.camera, this.dpr);
     }
 
     if (this.wetLayer.dirty) {
