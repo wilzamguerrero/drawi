@@ -37,30 +37,44 @@ export class FieldFallbackRenderer {
     ctx.globalAlpha = clamp01(style.alpha);
     ctx.lineJoin = "round";
 
+    // Los lazos de un mismo color se rellenan JUNTOS con la regla even-odd: así
+    // un lazo interior (un hueco del campo) resta en vez de taparse. Rellenar
+    // cada lazo por separado, como se hacía antes, pintaba los huecos de negro y
+    // cerraba los espacios que la GPU sí deja abiertos.
+    const groups = new Map<string, { color: Rgb; path: Path2D }>();
     for (const loop of this.cached) {
-      const path = new Path2D();
+      const c = loop.color;
+      const key = `${c.r},${c.g},${c.b}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = { color: c, path: new Path2D() };
+        groups.set(key, g);
+      }
       const poly = loop.poly;
-      path.moveTo(poly[0].x, poly[0].y);
-      for (let i = 1; i < poly.length; i++) path.lineTo(poly[i].x, poly[i].y);
-      path.closePath();
+      g.path.moveTo(poly[0].x, poly[0].y);
+      for (let i = 1; i < poly.length; i++) g.path.lineTo(poly[i].x, poly[i].y);
+      g.path.closePath();
+    }
 
-      ctx.fillStyle = cssRgba(loop.color, 1);
-      ctx.fill(path);
+    const outlineW = style.outline / camera.zoom;
+    for (const g of groups.values()) {
+      ctx.fillStyle = cssRgba(g.color, 1);
+      ctx.fill(g.path, "evenodd");
 
       if (style.shade > 0) {
-        // Ladera falsa: borde mas oscuro por dentro.
+        // Ladera falsa: borde mas oscuro por dentro (recortado al relleno real).
         ctx.save();
-        ctx.clip(path);
-        ctx.strokeStyle = cssRgba(mixRgb(loop.color, { r: 0, g: 0, b: 0 }, 0.45), style.shade * 0.6);
+        ctx.clip(g.path, "evenodd");
+        ctx.strokeStyle = cssRgba(mixRgb(g.color, { r: 0, g: 0, b: 0 }, 0.45), style.shade * 0.6);
         ctx.lineWidth = Math.max(2, style.depth * 0.5);
-        ctx.stroke(path);
+        ctx.stroke(g.path);
         ctx.restore();
       }
 
       if (style.outline > 0) {
         ctx.strokeStyle = cssRgba(hexToRgb(style.outlineColor), 1);
-        ctx.lineWidth = style.outline / camera.zoom;
-        ctx.stroke(path);
+        ctx.lineWidth = outlineW;
+        ctx.stroke(g.path);
       }
     }
 
@@ -73,9 +87,12 @@ export class FieldFallbackRenderer {
     style: FieldStyle,
     camera: Camera,
   ): Array<{ poly: Array<{ x: number; y: number }>; color: Rgb }> {
-    // Celda ligada al zoom: fino cuando se ve de cerca, grueso de lejos.
-    const cell = clamp01(1 / Math.max(camera.zoom, 0.05)) * 3 + 2.5;
-    const loops = fieldContours(bodies, style.blend, { cell, iso: 0 });
+    // Celda ligada al zoom: fina de cerca, gruesa de lejos. Más fina que antes
+    // para que los huecos pequeños del campo se resuelvan como lazos (si el paso
+    // no los muestrea, no hay hueco que restar). minArea bajo para no descartar
+    // esos huecos pequeños, a cambio de algo más de ruido de rejilla.
+    const cell = clamp01(1 / Math.max(camera.zoom, 0.05)) * 2 + 1.5;
+    const loops = fieldContours(bodies, style.blend, { cell, iso: 0, minArea: 3 });
     const colors = bodies.map((b) => {
       const c = hexToRgb(b.color);
       return [c.r / 255, c.g / 255, c.b / 255] as [number, number, number];
