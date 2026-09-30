@@ -59,7 +59,14 @@ export class App {
     this.topBar = new TopBar(this.editor, () => this.help.toggle());
     // El pin se recuerda entre sesiones. Por defecto viene activo (fijado).
     this.pinned = this.readPinnedPref();
-    this.statusBar = new StatusBar(this.pinned, (pinned) => this.setPinned(pinned));
+    this.statusBar = new StatusBar(
+      this.pinned,
+      (pinned) => this.setPinned(pinned),
+      () => {
+        this.editor.toggleEngine();
+        this.wake();
+      },
+    );
     this.pantone = new PantoneWheel(
       (hex) => {
         this.editor.setColor(hex);
@@ -80,6 +87,8 @@ export class App {
     // consola como `window.__drawiDiag` para inspeccionar el pipeline en vivo.
     this.diagnostics = new Diagnostics(this.editor);
     (window as unknown as { __drawiDiag: Diagnostics }).__drawiDiag = this.diagnostics;
+    // También el editor crudo, para volcar el estado del campo desde consola.
+    (window as unknown as { __drawiEditor: Editor }).__drawiEditor = this.editor;
     // Puertos de alto nivel compartidos por el menú radial y el paletón: ambos
     // solo declaran intención y es la app quien la resuelve (panel, diálogo...).
     const hooks: MenuHooks = {

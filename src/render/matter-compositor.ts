@@ -24,6 +24,9 @@ export class MatterCompositor {
   /** Repintado pendiente; el bucle lo consulta y lo limpia. */
   dirty = true;
 
+  /** Forzar el respaldo 2D aunque WebGL esté disponible (interruptor GPU/CPU). */
+  forceCpu = false;
+
   // Respaldo 2D: un renderizador por capa para que su caché de contornos no se
   // pise entre capas (WebGL no lo necesita: rinde cada capa a su mismo canvas).
   private fallbacks = new Map<string, FieldFallbackRenderer>();
@@ -81,7 +84,7 @@ export class MatterCompositor {
     style: FieldStyle,
     dpr: number,
   ): HTMLCanvasElement | null {
-    if (this.field.available) {
+    if (this.field.available && !this.forceCpu) {
       this.field.render(bodies, camera, style, dpr);
       return this.field.canvas;
     }

@@ -1675,6 +1675,15 @@ body {
   letter-spacing: 0.06em;
 }
 
+/* GPU/CPU es un interruptor cuando WebGL2 está disponible. */
+.status-engine.is-clickable {
+  cursor: pointer;
+}
+
+.status-engine.is-clickable:hover {
+  background: var(--hud-chip-hover, rgba(127, 127, 127, 0.22));
+}
+
 /* El indicador de motor (GPU/CPU) mantiene la tinta adaptativa aunque esté en
    modo aviso: un color fijo no se invierte con el blend y se ve mal sobre
    fondos claros. La advertencia se comunica igual por el texto "CPU". */

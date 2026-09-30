@@ -64,7 +64,10 @@ export interface EditorState {
   items: number;
   bodies: number;
   running: boolean;
+  /** El campo se pinta ahora mismo por GPU (WebGL2) y no por el respaldo CPU. */
   webgl: boolean;
+  /** WebGL2 está disponible: el chip GPU/CPU puede alternar. */
+  webglAvailable: boolean;
   fps: number;
   pen: PenReadout | null;
   background: string;
@@ -247,7 +250,8 @@ export class Editor {
       items: this.doc.items.length,
       bodies: this.doc.bodies.length,
       running: this.running,
-      webgl: this.fieldRenderer.available,
+      webgl: this.fieldRenderer.available && !this.matter.forceCpu,
+      webglAvailable: this.fieldRenderer.available,
       fps: this.fps,
       pen: this.pen,
       background: this.doc.meta.background,
@@ -644,6 +648,20 @@ export class Editor {
         { name: "superpuesto", role: "overlay", canvas: this.overlayLayer.canvas, dirty: this.overlayLayer.dirty },
       ],
     };
+  }
+
+  /**
+   * Alterna el motor del campo entre GPU (WebGL2) y el respaldo CPU. Sin efecto
+   * si WebGL2 no está disponible (no hay a qué volver). Devuelve el modo nuevo:
+   * true = GPU. Sirve para comparar ambos renders a mano.
+   */
+  toggleEngine(): boolean {
+    if (!this.fieldRenderer.available) return false;
+    this.matter.forceCpu = !this.matter.forceCpu;
+    this.matter.invalidate();
+    this.status(this.matter.forceCpu ? "Campo por CPU (forzado)" : "Campo por GPU (WebGL2)");
+    this.emitState();
+    return !this.matter.forceCpu;
   }
 
   /** Nombre del documento (lo muestra la barra superior y viaja en el .drawi). */

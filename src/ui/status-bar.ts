@@ -49,7 +49,15 @@ export class StatusBar {
    *   estado. Fijado = el HUD queda siempre visible; suelto = vuelve a aparecer
    *   y esconderse solo con la inactividad.
    */
-  constructor(initialPinned = false, onTogglePin?: (pinned: boolean) => void) {
+  private onToggleEngine?: () => void;
+  private engineCanToggle = false;
+
+  constructor(
+    initialPinned = false,
+    onTogglePin?: (pinned: boolean) => void,
+    onToggleEngine?: () => void,
+  ) {
+    this.onToggleEngine = onToggleEngine;
     // Nace ya visible (is-fresh) para que el HUD no arranque con el hueco vacio;
     // el primer status() real hara el swap suave sobre este.
     this.message = el("span", { class: "status-message is-fresh", text: "Listo" });
@@ -58,6 +66,11 @@ export class StatusBar {
     this.zoom = el("span", { class: "status-chip" });
     this.fps = el("span", { class: "status-chip" });
     this.engine = el("span", { class: "status-chip status-engine" });
+    // El chip GPU/CPU es un interruptor: al pulsarlo se fuerza el respaldo CPU
+    // o se vuelve a GPU. Útil para comparar ambos renders del campo.
+    this.engine.addEventListener("click", () => {
+      if (this.engineCanToggle) this.onToggleEngine?.();
+    });
 
     this.penKind = el("span", { class: "pen-kind", text: "--" });
     this.penBar = el("span", { class: "pen-bar-fill" });
@@ -137,10 +150,14 @@ export class StatusBar {
     this.fps.textContent = `${num(state.fps, 0)} fps`;
     setClass(this.fps, "is-warn", state.fps < 45);
     this.engine.textContent = state.webgl ? "GPU" : "CPU";
-    this.engine.title = state.webgl
-      ? "Campo de materia por WebGL2"
-      : "Sin WebGL2: el campo se traza por CPU con marching squares";
+    this.engineCanToggle = state.webglAvailable;
+    this.engine.title = !state.webglAvailable
+      ? "Sin WebGL2: el campo se traza por CPU con marching squares"
+      : state.webgl
+        ? "Campo por WebGL2 — clic para forzar CPU"
+        : "Campo por CPU (forzado) — clic para volver a GPU";
     setClass(this.engine, "is-warn", !state.webgl);
+    setClass(this.engine, "is-clickable", state.webglAvailable);
 
     const pen = state.pen;
     if (!pen) {

@@ -67,8 +67,8 @@ float sdRoundBox(vec2 p, vec2 b, float r) {
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
 }
 
-float sdCapsule(vec2 p, float half, float r) {
-  p.x -= clamp(p.x, -half, half);
+float sdCapsule(vec2 p, float hlen, float r) {
+  p.x -= clamp(p.x, -hlen, hlen);
   return length(p) - r;
 }
 
@@ -134,36 +134,40 @@ void main() {
 
     vec3 ci = texelFetch(uData, ivec2(3, i), 0).rgb;
     float h = clamp(0.5 + 0.5 * (d - di) / kk, 0.0, 1.0);
-    d = mix(d, di, h) - kk * h * (1.0 - h);
+    // smin robusto: mix(di, d, 1-h) en vez de mix(d, di, h). Es el mismo valor,
+    // pero ANGLE/D3D11 compila mix(x,y,a) a lerp = x + a*(y-x); con el centinela
+    // d=1e20 y h=1, mix(d,di,1) = 1e20 + (di-1e20) cancela y da 0 en float32 (di
+    // se pierde), rompiendo la fusion. Con el acumulador como 2o arg y peso ~0,
+    // el termino gigante se multiplica por 0 y no se resta. Equivale al smin CPU.
+    d = mix(di, d, 1.0 - h) - kk * h * (1.0 - h);
     col = mix(col, ci, h);
   }
 
   if (uCount == 0) { fragColor = vec4(0.0); return; }
 
-  float aa = max(fwidth(d), 1e-4);
+  // 1 pixel de dispositivo en unidades de mundo. El campo d esta en mundo, asi
+  // que todo umbral en px (contorno, antialias) hay que traerlo a esta escala.
+  float px = 1.0 / max(uZoom, 1e-4);
+  // fwidth(d) se dispara en las costuras de la fusion suave (el termino -k*h*(1-h)
+  // mete un pico de gradiente); si no se acota, el antialias engorda y el contorno
+  // sangra en almendras negras. Lo fijamos a ~1px real.
+  float aa = clamp(fwidth(d), 0.5 * px, 2.5 * px);
   float inside = 1.0 - smoothstep(-aa, aa, d);
   if (inside <= 0.001 && uOutline <= 0.0) { fragColor = vec4(0.0); return; }
 
-  // Normal 2.5D: la pendiente del campo da la ladera, la profundidad da la cupula.
-  float depth = clamp(-d / max(uDepth, 1.0), 0.0, 1.0);
-  float z = sqrt(max(0.0, 1.0 - (1.0 - depth) * (1.0 - depth)));
-  vec2 grad = vec2(dFdx(d), dFdy(d));
-  float gl = length(grad);
-  vec2 n2 = gl > 1e-6 ? grad / gl : vec2(0.0);
-  vec3 nrm = normalize(vec3(n2 * (1.0 - z), z + 0.15));
-  vec3 lightDir = normalize(vec3(-0.45, -0.62, 0.72));
-
-  float diff = clamp(dot(nrm, lightDir), 0.0, 1.0);
-  float spec = pow(clamp(dot(reflect(-lightDir, nrm), vec3(0.0, 0.0, 1.0)), 0.0, 1.0), 24.0);
-  float ao = mix(1.0, 0.72, clamp(1.0 - depth * 1.6, 0.0, 1.0));
-
-  vec3 shaded = col * mix(1.0, 0.55 + 0.75 * diff, uShade) * ao;
-  shaded += vec3(1.0) * spec * uGloss * uShade;
+  // Relleno plano del color fusionado, igual que el respaldo CPU: todo el
+  // interior del blob es el mismo color, asi que las formas que se funden se
+  // leen como una sola silueta. NO se oscurece por grosor de campo: eso pintaba
+  // de negro los cuellos y solapes finos (las "almendras"), que es justo lo que
+  // rompia la fusion. La unica marca es el contorno fino sobre el cruce por 0.
+  vec3 shaded = col;
 
   float alpha = inside * uAlpha;
 
   if (uOutline > 0.0) {
-    float halfW = uOutline * 0.5;
+    // uOutline viene en px de pantalla; el contorno se mide contra abs(d) que
+    // esta en mundo, por eso se convierte con px.
+    float halfW = uOutline * 0.5 * px;
     float edge = 1.0 - smoothstep(halfW - aa, halfW + aa, abs(d));
     shaded = mix(shaded, uOutlineColor, edge);
     alpha = max(alpha, edge * uAlpha);
@@ -226,6 +230,10 @@ export class FieldRenderer {
     if (!gl) {
       this.available = false;
       this.lastError = "WebGL2 no disponible";
+      console.warn(
+        "[drawi] Campo por CPU: getContext('webgl2') devolvió null. " +
+          "Probable aceleración por hardware desactivada o GPU en lista de bloqueo (revisa chrome://gpu).",
+      );
       return;
     }
     try {
@@ -236,6 +244,7 @@ export class FieldRenderer {
       this.available = false;
       this.lastError = err instanceof Error ? err.message : String(err);
       this.gl = null;
+      console.warn("[drawi] Campo por CPU: falló la inicialización de WebGL2:", this.lastError);
     }
   }
 
