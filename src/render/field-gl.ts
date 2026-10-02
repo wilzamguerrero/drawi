@@ -1,12 +1,28 @@
 import { hexToRgb } from "../core/color";
 import { clamp } from "../core/math";
 import type { Camera } from "./camera";
+import { computeBridges } from "../physics/bridges";
 import { boundingRadius, SHAPE_CODE, shapeParams, starM } from "../physics/shapes";
 import type { Body } from "../physics/world";
+
+/** Forma de los puentes entre cuerpos. */
+export type BridgeStyle = "direct" | "torn" | "organic";
+
+export const BRIDGE_STYLE_CODE: Record<BridgeStyle, number> = {
+  direct: 0,
+  torn: 1,
+  organic: 2,
+};
 
 export interface FieldStyle {
   /** Radio de fusion global en unidades de mundo. */
   blend: number;
+  /** Alcance global de los puentes dirigidos entre cuerpos, en unidades de
+   *  mundo. 0 = sin puentes. Cada cuerpo puede sobreescribirlo con su propio
+   *  `bridgeReach` (ver `Body`). No atrae los cuerpos: solo los funde. */
+  bridgeReach: number;
+  /** Forma del puente: recto, desgarrado (discontinuo) u organico (ondula). */
+  bridgeStyle: BridgeStyle;
   /** Grosor del contorno en px de pantalla (0 = sin contorno). */
   outline: number;
   outlineColor: string;
@@ -22,6 +38,8 @@ export interface FieldStyle {
 
 export const DEFAULT_FIELD_STYLE: FieldStyle = {
   blend: 26,
+  bridgeReach: 0,
+  bridgeStyle: "direct",
   outline: 2,
   outlineColor: "#0d0f14",
   shade: 0.75,
@@ -32,6 +50,8 @@ export const DEFAULT_FIELD_STYLE: FieldStyle = {
 
 const MAX_BODIES = 512;
 const TEXELS = 4;
+const MAX_LINKS = 1024;
+const LINK_TEXELS = 2;
 
 const VERT = `#version 300 es
 in vec2 aPos;
@@ -56,11 +76,61 @@ uniform float uShade;
 uniform float uGloss;
 uniform float uAlpha;
 uniform float uDepth;
+uniform float uBridgeReach;
+uniform int   uLinkCount;
+uniform int   uBridgeStyle;
+uniform float uTime;
 uniform sampler2D uData;
+uniform sampler2D uLinks;
 
 const float PI = 3.141592653589793;
 
 float sdCircle(vec2 p, float r) { return length(p) - r; }
+
+/** Distancia a un segmento AB (para el cuello capsular de los puentes). */
+float sdSegment(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a;
+  vec2 ba = b - a;
+  float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+/**
+ * Distancia con signo de un puente segun su estilo.
+ *  0 = recto (capsula), 1 = desgarrado (grosor que se pellizca a 0 en cuentas),
+ *  2 = organico (la linea central ondula y se mueve con el tiempo).
+ */
+float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
+  vec2 ba = b - a;
+  float len = max(length(ba), 1e-4);
+  vec2 dir = ba / len;
+  vec2 nrm = vec2(-dir.y, dir.x);
+  vec2 pa = p - a;
+  float along = dot(pa, dir);
+  float h = clamp(along / len, 0.0, 1.0);
+
+  if (style == 1) {
+    // Desgarrado: cuentas separadas por pellizcos a radio ~0.
+    float proj = clamp(along, 0.0, len);
+    float base = length(p - (a + dir * proj));
+    float beads = 0.5 + 0.5 * cos(h * len * 0.09 + phase);
+    float rr = r * (beads * beads * 1.35 - 0.18);
+    return base - rr;
+  }
+  if (style == 2) {
+    // Organico: la linea central ondula con el tiempo.
+    float perp = dot(pa, nrm);
+    float amp = r * 1.1;
+    float freq = 6.2831 * (len / 220.0 + 0.5);
+    float wob = amp * sin(h * freq + uTime * 1.6 + phase);
+    float dLine = abs(perp - wob);
+    float d = along < 0.0 ? length(pa) : (along > len ? length(p - b) : dLine);
+    return d - r;
+  }
+  // Recto.
+  float proj = clamp(along, 0.0, len);
+  return length(p - (a + dir * proj)) - r;
+}
 
 float sdRoundBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + r;
@@ -118,6 +188,7 @@ void main() {
   vec3 col = vec3(0.0);
   float k = max(uBlend, 0.001);
 
+  // --- Campo base: union suave de cada cuerpo con su propio radio de fusion ---
   for (int i = 0; i < ${MAX_BODIES}; i++) {
     if (i >= uCount) break;
     vec4 t0 = texelFetch(uData, ivec2(0, i), 0);
@@ -128,19 +199,35 @@ void main() {
     if (dot(rel, rel) > reach * reach) continue;
 
     vec4 t1 = texelFetch(uData, ivec2(1, i), 0);
-    // Rotacion inversa al espacio local del cuerpo.
     vec2 lp = vec2(rel.x * t0.z + rel.y * t0.w, -rel.x * t0.w + rel.y * t0.z);
     float di = shapeSdf(lp, t1);
-
     vec3 ci = texelFetch(uData, ivec2(3, i), 0).rgb;
+
     float h = clamp(0.5 + 0.5 * (d - di) / kk, 0.0, 1.0);
-    // smin robusto: mix(di, d, 1-h) en vez de mix(d, di, h). Es el mismo valor,
-    // pero ANGLE/D3D11 compila mix(x,y,a) a lerp = x + a*(y-x); con el centinela
-    // d=1e20 y h=1, mix(d,di,1) = 1e20 + (di-1e20) cancela y da 0 en float32 (di
-    // se pierde), rompiendo la fusion. Con el acumulador como 2o arg y peso ~0,
-    // el termino gigante se multiplica por 0 y no se resta. Equivale al smin CPU.
     d = mix(di, d, 1.0 - h) - kk * h * (1.0 - h);
     col = mix(col, ci, h);
+  }
+
+  // --- Puentes dirigidos: cuellos capsulares precalculados en CPU ---
+  // Cada enlace une dos cuerpos concretos a lo largo de la recta entre sus
+  // centros, asi el puente nunca sale "hacia todos lados" y el coste escala con
+  // el numero real de enlaces (con descarte por distancia al segmento).
+  for (int li = 0; li < ${MAX_LINKS}; li++) {
+    if (li >= uLinkCount) break;
+    vec4 l0 = texelFetch(uLinks, ivec2(0, li), 0); // ax, ay, bx, by
+    vec4 l1 = texelFetch(uLinks, ivec2(1, li), 0); // r, k, colorPacked, phase
+    float seg = linkField(w, l0.xy, l0.zw, l1.x, uBridgeStyle, l1.w);
+    float kL = max(l1.y, 0.001);
+    if (seg > kL + 2.0) continue;
+    // Desempaquetar color (r*65536 + g*256 + b, enteros 0..255).
+    float p = l1.z;
+    float rr = floor(p / 65536.0);
+    float gg = floor(mod(p, 65536.0) / 256.0);
+    float bb = mod(p, 256.0);
+    vec3 lc = vec3(rr, gg, bb) / 255.0;
+    float h = clamp(0.5 + 0.5 * (d - seg) / kL, 0.0, 1.0);
+    d = mix(seg, d, 1.0 - h) - kL * h * (1.0 - h);
+    col = mix(col, lc, h);
   }
 
   if (uCount == 0) { fragColor = vec4(0.0); return; }
@@ -206,10 +293,13 @@ export class FieldRenderer {
   private program: WebGLProgram | null = null;
   private vao: WebGLVertexArrayObject | null = null;
   private tex: WebGLTexture | null = null;
+  private linkTex: WebGLTexture | null = null;
   private data = new Float32Array(MAX_BODIES * TEXELS * 4);
+  private linkData = new Float32Array(MAX_LINKS * LINK_TEXELS * 4);
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private texWidth = 0;
   private texHeight = 0;
+  private linkTexHeight = 0;
   private lastError: string | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -289,6 +379,13 @@ export class FieldRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    this.linkTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.linkTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
     for (const name of [
       "uResolution",
       "uCenter",
@@ -302,7 +399,12 @@ export class FieldRenderer {
       "uGloss",
       "uAlpha",
       "uDepth",
+      "uBridgeReach",
+      "uLinkCount",
+      "uBridgeStyle",
+      "uTime",
       "uData",
+      "uLinks",
     ]) {
       this.uniforms[name] = gl.getUniformLocation(prog, name);
     }
@@ -323,7 +425,7 @@ export class FieldRenderer {
     gl.clear(gl.COLOR_BUFFER_BIT);
   }
 
-  render(bodies: readonly Body[], camera: Camera, style: FieldStyle, dpr: number): void {
+  render(bodies: readonly Body[], camera: Camera, style: FieldStyle, dpr: number, time = 0): void {
     const gl = this.gl;
     if (!gl || !this.program) return;
 
@@ -334,11 +436,14 @@ export class FieldRenderer {
     if (count === 0) return;
 
     this.uploadBodies(gl, bodies, count);
+    const linkCount = this.uploadLinks(gl, bodies, style.bridgeReach);
 
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vao);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.linkTex);
 
     const u = this.uniforms;
     gl.uniform2f(u.uResolution!, this.canvas.width, this.canvas.height);
@@ -354,12 +459,47 @@ export class FieldRenderer {
     gl.uniform1f(u.uGloss!, clamp(style.gloss, 0, 2));
     gl.uniform1f(u.uAlpha!, clamp(style.alpha, 0, 1));
     gl.uniform1f(u.uDepth!, Math.max(1, style.depth));
+    gl.uniform1f(u.uBridgeReach!, Math.max(0, style.bridgeReach));
+    gl.uniform1i(u.uLinkCount!, linkCount);
+    gl.uniform1i(u.uBridgeStyle!, BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0);
+    gl.uniform1f(u.uTime!, time);
     gl.uniform1i(u.uData!, 0);
+    gl.uniform1i(u.uLinks!, 1);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
+  }
+
+  /** Precalcula los puentes y los sube a la textura de enlaces. */
+  private uploadLinks(gl: WebGL2RenderingContext, bodies: readonly Body[], globalReach: number): number {
+    const links = computeBridges(bodies, globalReach);
+    const count = Math.min(links.length, MAX_LINKS);
+    const d = this.linkData;
+    for (let i = 0; i < count; i++) {
+      const l = links[i];
+      const o = i * LINK_TEXELS * 4;
+      d[o] = l.ax;
+      d[o + 1] = l.ay;
+      d[o + 2] = l.bx;
+      d[o + 3] = l.by;
+      d[o + 4] = l.r;
+      d[o + 5] = l.k;
+      d[o + 6] = l.r8 * 65536 + l.g8 * 256 + l.b8;
+      d[o + 7] = 0;
+    }
+
+    gl.bindTexture(gl.TEXTURE_2D, this.linkTex);
+    // Siempre al menos 1 fila para que la textura sea valida aunque no haya enlaces.
+    const rows = Math.max(1, count);
+    if (this.linkTexHeight !== rows) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, LINK_TEXELS, rows, 0, gl.RGBA, gl.FLOAT, d, 0);
+      this.linkTexHeight = rows;
+    } else if (count > 0) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LINK_TEXELS, count, gl.RGBA, gl.FLOAT, d, 0);
+    }
+    return count;
   }
 
   private uploadBodies(gl: WebGL2RenderingContext, bodies: readonly Body[], count: number): void {
@@ -384,7 +524,7 @@ export class FieldRenderer {
       d[o + 8] = boundingRadius(b.shape);
       d[o + 9] = b.blend;
       d[o + 10] = b.group;
-      d[o + 11] = 1;
+      d[o + 11] = b.bridgeReach;
 
       const c = hexToRgb(b.color);
       d[o + 12] = c.r / 255;
@@ -420,6 +560,7 @@ export class FieldRenderer {
     if (this.program) gl.deleteProgram(this.program);
     if (this.vao) gl.deleteVertexArray(this.vao);
     if (this.tex) gl.deleteTexture(this.tex);
+    if (this.linkTex) gl.deleteTexture(this.linkTex);
     this.gl = null;
   }
 }

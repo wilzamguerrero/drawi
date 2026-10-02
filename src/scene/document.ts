@@ -28,6 +28,7 @@ export interface BodySnapshot {
   color: string;
   group: number;
   blend: number;
+  bridgeReach: number;
   isStatic: boolean;
   density: number;
   restitution: number;
@@ -62,6 +63,7 @@ export function snapshotBody(b: Body): BodySnapshot {
     color: b.color,
     group: b.group,
     blend: b.blend,
+    bridgeReach: b.bridgeReach,
     isStatic: b.isStatic,
     density: b.density,
     restitution: b.restitution,
@@ -76,6 +78,7 @@ export function restoreBody(s: BodySnapshot): Body {
     color: s.color,
     group: s.group,
     blend: s.blend,
+    bridgeReach: s.bridgeReach ?? -1,
     isStatic: s.isStatic,
     density: s.density,
     restitution: s.restitution,

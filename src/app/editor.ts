@@ -7,9 +7,10 @@ import { PointerInput, type GestureState, type InputSample } from "../input/poin
 import { DEFAULT_SHAPE, randomShape, type ShapeDef } from "../physics/shapes";
 import { createBody, setBodyStatic, type WorldSettings } from "../physics/world";
 import type { Body } from "../physics/world";
+import { computeBridges } from "../physics/bridges";
 import { fieldContours } from "../physics/marching";
 import { Camera } from "../render/camera";
-import { FieldRenderer, type FieldStyle } from "../render/field-gl";
+import { FieldRenderer, BRIDGE_STYLE_CODE, type FieldStyle } from "../render/field-gl";
 import { MatterCompositor } from "../render/matter-compositor";
 import { InkRenderer } from "../render/ink-renderer";
 import { Compositor } from "../render/compositor";
@@ -23,6 +24,7 @@ import { History } from "./history";
 import { DEFAULT_BRUSH, type BrushSettings } from "../stroke/types";
 import { symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
 import { BrushTool } from "../tools/brush-tool";
+import { BridgeTool } from "../tools/bridge-tool";
 import { MatterTool } from "../tools/matter-tool";
 import { HandTool, PickerTool } from "../tools/picker-tool";
 import { ShapeTool } from "../tools/shape-tool";
@@ -73,6 +75,8 @@ export interface EditorState {
   background: string;
   showWalls: boolean;
   debugColliders: boolean;
+  /** Dibuja el radio de alcance de puentes de cada cuerpo. */
+  showBridgeReach: boolean;
   /** Capas del documento (abajo→arriba) para el panel. */
   layers: SceneLayer[];
   activeLayerId: string;
@@ -119,6 +123,7 @@ export class Editor {
   running = true;
   showWalls = false;
   debugColliders = false;
+  showBridgeReach = false;
 
   private host: HTMLElement;
   private inkLayer: Layer;
@@ -198,6 +203,7 @@ export class Editor {
       brush: new BrushTool(),
       shape: new ShapeTool(),
       matter: new MatterTool(),
+      bridge: new BridgeTool(),
       symmetry: new SymmetryTool(),
       picker: new PickerTool(),
       hand: new HandTool(),
@@ -257,6 +263,7 @@ export class Editor {
       background: this.doc.meta.background,
       showWalls: this.showWalls,
       debugColliders: this.debugColliders,
+      showBridgeReach: this.showBridgeReach,
       layers: this.doc.layers,
       activeLayerId: this.doc.activeLayerId,
       soloLayerId: this.soloLayerId,
@@ -491,6 +498,12 @@ export class Editor {
     this.emitState();
   }
 
+  toggleBridgeReach(): void {
+    this.showBridgeReach = !this.showBridgeReach;
+    this.overlayLayer.invalidate();
+    this.emitState();
+  }
+
   undo(): void {
     const label = this.history.undo();
     if (!label) return;
@@ -556,7 +569,8 @@ export class Editor {
   bakeMatter(): void {
     const bodies = this.doc.bodies;
     if (bodies.length === 0) return;
-    const loops = fieldContours(bodies, this.doc.field.blend, { cell: 2.5 });
+    const bridges = computeBridges(bodies, this.doc.field.bridgeReach);
+    const loops = fieldContours(bodies, this.doc.field.blend, { cell: 2.5 }, bridges, BRIDGE_STYLE_CODE[this.doc.field.bridgeStyle] ?? 0);
     if (loops.length === 0) return;
 
     const before = this.doc.snapshot();
@@ -928,6 +942,7 @@ export class Editor {
       b: "brush",
       f: "shape",
       m: "matter",
+      p: "bridge",
       s: "symmetry",
       i: "picker",
       h: "hand",
@@ -1145,10 +1160,22 @@ export class Editor {
       this.inkLayer.dirty = false;
     }
 
+    // Puentes organicos: ondulan con el tiempo, asi que hay que repintar el
+    // campo cada frame (solo en GPU; el shader lee uTime). En CPU quedan
+    // estaticos para no re-extraer contornos cada frame.
+    if (
+      this.doc.field.bridgeStyle === "organic" &&
+      this.fieldRenderer.available &&
+      !this.matter.forceCpu &&
+      (this.doc.field.bridgeReach > 0 || this.doc.bodies.some((b) => b.bridgeReach > 0))
+    ) {
+      this.matter.invalidate();
+    }
+
     if (this.matter.dirty) {
       // Cada capa de materia se rinde y compone con su opacidad/fusión sobre un
       // único lienzo que se muestra encima de la tinta.
-      this.matter.render(this.doc, this.camera, this.dpr);
+      this.matter.render(this.doc, this.camera, this.dpr, now / 1000);
     }
 
     if (this.wetLayer.dirty) {
@@ -1186,6 +1213,8 @@ export class Editor {
       showWalls: this.showWalls,
       walls: this.doc.physics.bounds,
       debugColliders: this.debugColliders,
+      showBridgeReach: this.showBridgeReach || this.toolId === "bridge",
+      bridgeReach: this.doc.field.bridgeReach,
       bodies: this.doc.bodies,
     };
   }

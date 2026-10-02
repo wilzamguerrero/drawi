@@ -3,8 +3,8 @@ import { snapshotBody, restoreBody, type BodySnapshot } from "../scene/document"
 import type { InkItem } from "../scene/types";
 import type { SceneLayer } from "../scene/layer";
 import type { SymmetryState } from "../symmetry/symmetry";
-import type { WorldSettings } from "../physics/world";
-import type { FieldStyle } from "../render/field-gl";
+import { DEFAULT_WORLD, type WorldSettings } from "../physics/world";
+import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
 import type { BrushSettings } from "../stroke/types";
 import type { ShapeDef } from "../physics/shapes";
 
@@ -12,9 +12,9 @@ import type { ShapeDef } from "../physics/shapes";
  * v1: tinta plana sin capas. v2: modelo de capas (`layers` + `activeLayerId`);
  * los `items` siguen planos, ahora cada uno con su `layerId`. v3: la materia
  * deja de ser una pseudo-capa única: cada cuerpo lleva `layerId` y puede haber
- * varias capas de materia (o ninguna).
+ * varias capas de materia (o ninguna). v4: alcance de cohesion configurable.
  */
-export const PROJECT_VERSION = 3;
+export const PROJECT_VERSION = 4;
 
 export interface ProjectFile {
   format: "drawi";
@@ -84,8 +84,10 @@ export function applyProject(doc: SceneDocument, file: ProjectFile): void {
   doc.meta.background = file.background;
   doc.items = file.items;
   doc.symmetry = { ...file.symmetry };
-  doc.physics.settings = { ...file.world, gravity: { ...file.world.gravity } };
-  doc.field = { ...file.field };
+  // Merge con los defaults: un proyecto anterior a un campo nuevo no debe
+  // recibirlo como `undefined` (rompería el control y el render).
+  doc.physics.settings = { ...DEFAULT_WORLD, ...file.world, gravity: { ...file.world.gravity } };
+  doc.field = { ...DEFAULT_FIELD_STYLE, ...file.field };
   doc.shape = { ...file.shape };
   // Los cuerpos entran primero para que `ensureLayers` sepa a qué capa de
   // materia reasignar los que vengan sin `layerId` (proyectos v1/v2).

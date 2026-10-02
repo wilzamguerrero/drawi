@@ -1,10 +1,11 @@
 import { hexToRgb, cssRgba, mixRgb, type Rgb } from "../core/color";
 import { clamp01 } from "../core/math";
+import { computeBridges } from "../physics/bridges";
 import { fieldContours } from "../physics/marching";
 import { sampleField, type FieldSample } from "../physics/sdf";
 import type { Body } from "../physics/world";
 import type { Camera } from "./camera";
-import type { FieldStyle } from "./field-gl";
+import { BRIDGE_STYLE_CODE, type FieldStyle } from "./field-gl";
 import type { Layer } from "./layer";
 
 /**
@@ -92,7 +93,9 @@ export class FieldFallbackRenderer {
     // no los muestrea, no hay hueco que restar). minArea bajo para no descartar
     // esos huecos pequeños, a cambio de algo más de ruido de rejilla.
     const cell = clamp01(1 / Math.max(camera.zoom, 0.05)) * 2 + 1.5;
-    const loops = fieldContours(bodies, style.blend, { cell, iso: 0, minArea: 3 });
+    const bridges = computeBridges(bodies, style.bridgeReach);
+    const styleCode = BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0;
+    const loops = fieldContours(bodies, style.blend, { cell, iso: 0, minArea: 3 }, bridges, styleCode);
     const colors = bodies.map((b) => {
       const c = hexToRgb(b.color);
       return [c.r / 255, c.g / 255, c.b / 255] as [number, number, number];
@@ -108,7 +111,7 @@ export class FieldFallbackRenderer {
       }
       cx /= poly.length;
       cy /= poly.length;
-      sampleField(cx, cy, bodies, style.blend, colors, sample);
+      sampleField(cx, cy, bodies, style.blend, colors, sample, bridges, styleCode);
       return {
         poly,
         color: {
@@ -127,9 +130,9 @@ export class FieldFallbackRenderer {
 
 /** Huella barata del estado: si no cambia, el contorno cacheado sirve. */
 function stateKey(bodies: readonly Body[], style: FieldStyle, zoom: number): string {
-  let s = `${bodies.length}|${style.blend.toFixed(2)}|${zoom.toFixed(2)}`;
+  let s = `${bodies.length}|${style.blend.toFixed(2)}|${style.bridgeReach.toFixed(2)}|${style.bridgeStyle}|${zoom.toFixed(2)}`;
   for (const b of bodies) {
-    s += `|${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)},${b.angle.toFixed(2)},${b.shape.size.toFixed(1)}`;
+    s += `|${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)},${b.angle.toFixed(2)},${b.shape.size.toFixed(1)},${b.bridgeReach.toFixed(0)}`;
   }
   return s;
 }

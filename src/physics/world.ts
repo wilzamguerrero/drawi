@@ -41,6 +41,8 @@ export interface Body {
   group: number;
   /** Radio de fusion propio; 0 = usa el global. */
   blend: number;
+  /** Alcance de puentes propio; -1 = usa el global, 0 = sin puentes. */
+  bridgeReach: number;
 
   awake: boolean;
   sleepTimer: number;
@@ -56,6 +58,9 @@ export interface WorldSettings {
   gravity: Vec2;
   /** Atraccion mutua: hace que las formas se busquen y se fundan. */
   cohesion: number;
+  /** Alcance de la atraccion entre centros, en unidades de mundo.
+   *  0 = comportamiento legacy `(a.radius + b.radius) * 2.6`. */
+  cohesionDistance: number;
   /** Amortiguacion lineal por segundo (0 = sin perdidas). */
   damping: number;
   restitution: number;
@@ -73,6 +78,7 @@ export interface WorldSettings {
 export const DEFAULT_WORLD: WorldSettings = {
   gravity: { x: 0, y: 900 },
   cohesion: 0,
+  cohesionDistance: 0,
   damping: 0.25,
   restitution: 0.15,
   friction: 0.35,
@@ -116,7 +122,7 @@ const SLEEP_TIME = 0.8;
 export function createBody(
   shape: ShapeDef,
   pos: Vec2,
-  opts: Partial<Pick<Body, "angle" | "color" | "group" | "isStatic" | "density" | "restitution" | "friction" | "blend" | "layerId">> = {},
+  opts: Partial<Pick<Body, "angle" | "color" | "group" | "isStatic" | "density" | "restitution" | "friction" | "blend" | "bridgeReach" | "layerId">> = {},
 ): Body {
   const local = colliderVerts(shape);
   const density = opts.density ?? 0.0012;
@@ -145,6 +151,7 @@ export function createBody(
     layerId: opts.layerId ?? "",
     group: opts.group ?? 0,
     blend: opts.blend ?? 0,
+    bridgeReach: opts.bridgeReach ?? -1,
     awake: true,
     sleepTimer: 0,
     minx: 0,
@@ -402,7 +409,8 @@ export class PhysicsWorld {
         const dx = b.pos.x - a.pos.x;
         const dy = b.pos.y - a.pos.y;
         const d2 = dx * dx + dy * dy;
-        const reach = (a.radius + b.radius) * 2.6;
+        const legacyReach = (a.radius + b.radius) * 2.6;
+        const reach = this.settings.cohesionDistance > 0 ? this.settings.cohesionDistance : legacyReach;
         if (d2 > reach * reach || d2 < 1e-6) continue;
         const d = Math.sqrt(d2);
         const falloff = 1 - d / reach;

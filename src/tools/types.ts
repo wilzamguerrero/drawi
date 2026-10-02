@@ -9,12 +9,13 @@ import type { BrushSettings, Polygon } from "../stroke/types";
 import type { Body } from "../physics/world";
 import type { PullFamily } from "./pull-shapes";
 
-export type ToolId = "brush" | "shape" | "matter" | "symmetry" | "picker" | "hand";
+export type ToolId = "brush" | "shape" | "matter" | "bridge" | "symmetry" | "picker" | "hand";
 
 export const TOOL_LABELS: Record<ToolId, string> = {
   brush: "Pincel",
   shape: "Forma",
   matter: "Materia",
+  bridge: "Puente",
   symmetry: "Simetria",
   picker: "Cuentagotas",
   hand: "Mano",

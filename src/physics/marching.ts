@@ -1,6 +1,7 @@
 import { clamp } from "../core/math";
 import type { Polygon } from "../stroke/types";
 import type { Rect } from "../scene/types";
+import type { BridgeLink } from "./bridges";
 import { sampleFieldDistance } from "./sdf";
 import type { Body } from "./world";
 
@@ -39,7 +40,8 @@ export function bodiesBounds(bodies: readonly Body[], blend: number, padding = 0
   let maxX = -Infinity;
   let maxY = -Infinity;
   for (const b of bodies) {
-    const k = (b.blend > 0 ? b.blend : blend) + b.radius + padding;
+    const bk = b.blend > 0 ? b.blend : blend;
+    const k = bk + b.radius + padding;
     if (b.pos.x - k < minX) minX = b.pos.x - k;
     if (b.pos.y - k < minY) minY = b.pos.y - k;
     if (b.pos.x + k > maxX) maxX = b.pos.x + k;
@@ -78,6 +80,8 @@ export function fieldContours(
   bodies: readonly Body[],
   blend: number,
   options: Partial<ContourOptions> = {},
+  bridges: readonly BridgeLink[] = [],
+  bridgeStyle = 0,
 ): Polygon[] {
   const opt = { ...DEFAULT_CONTOUR, ...options };
   const box = bodiesBounds(bodies, blend, opt.padding);
@@ -96,7 +100,7 @@ export function fieldContours(
   for (let j = 0; j < rows; j++) {
     const y = box.y + j * stepY;
     for (let i = 0; i < cols; i++) {
-      field[j * cols + i] = sampleFieldDistance(box.x + i * stepX, y, bodies, blend);
+      field[j * cols + i] = sampleFieldDistance(box.x + i * stepX, y, bodies, blend, bridges, bridgeStyle);
     }
   }
 

@@ -4,6 +4,7 @@ import { SHAPE_LABELS, type ShapeKind } from "../../physics/shapes";
 import { DYNAMICS_INFO, ERASE_MODE_LABELS, type BrushMode, type EraseMode, type StrokeDynamics } from "../../stroke/types";
 import { SYMMETRY_LABELS, type SymmetryMode } from "../../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../../tools/pull-shapes";
+import type { BridgeStyle } from "../../render/field-gl";
 import type { HotNode, MenuHooks } from "../hotbox/menu";
 
 /**
@@ -372,6 +373,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       { kind: "number", id: "gravity", label: "Gravedad", min: -2000, max: 2000, step: 10, get: (s) => s.world.gravity.y, set: (v) => editor.setWorld({ gravity: { x: editor.state.world.gravity.x, y: v } }) },
       { kind: "number", id: "gravity-x", label: "Gravedad lateral", min: -2000, max: 2000, step: 10, get: (s) => s.world.gravity.x, set: (v) => editor.setWorld({ gravity: { x: v, y: editor.state.world.gravity.y } }) },
       { kind: "number", id: "cohesion", label: "Cohesion", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Atraccion mutua: las formas se buscan y se funden entre si.", get: (s) => s.world.cohesion, set: (v) => editor.setWorld({ cohesion: v }) },
+      { kind: "number", id: "cohesion-distance", label: "Alcance de conexion", min: 0, max: 600, step: 5, gamma: 1.5, unit: "px", hint: "Distancia maxima de la atraccion entre cuerpos. 0 = automatico segun sus radios.", get: (s) => s.world.cohesionDistance, set: (v) => editor.setWorld({ cohesionDistance: v }) },
       { kind: "number", id: "damping", label: "Rozamiento del aire", min: 0, max: 3, step: 0.01, decimals: 2, get: (s) => s.world.damping, set: (v) => editor.setWorld({ damping: v }) },
       { kind: "number", id: "restitution", label: "Rebote", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.world.restitution, set: (v) => editor.setWorld({ restitution: v }) },
       { kind: "number", id: "friction", label: "Friccion", min: 0, max: 1.5, step: 0.01, decimals: 2, get: (s) => s.world.friction, set: (v) => editor.setWorld({ friction: v }) },
@@ -379,6 +381,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       { kind: "number", id: "time-scale", label: "Velocidad del tiempo", min: 0.05, max: 3, step: 0.05, decimals: 2, get: (s) => s.world.timeScale, set: (v) => editor.setWorld({ timeScale: v }) },
       { kind: "toggle", id: "sleeping", label: "Dormir en reposo", icon: "spark", hint: "Los cuerpos quietos dejan de calcularse hasta que algo los toca.", get: (s) => s.world.sleeping, set: (v) => editor.setWorld({ sleeping: v }) },
       { kind: "toggle", id: "colliders", label: "Ver colisionadores", icon: "grid", hint: "Dibuja la forma real con la que choca cada cuerpo.", get: (s) => s.debugColliders, set: () => editor.toggleColliders() },
+      { kind: "toggle", id: "bridge-reach-view", label: "Ver alcance de puentes", icon: "grid", hint: "Dibuja el radio hasta donde cada cuerpo tiende puentes (verde = propio, azul = global).", get: (s) => s.showBridgeReach, set: () => editor.toggleBridgeReach() },
       { kind: "action", id: "zero-g", label: "Cero G", icon: "spark", run: () => editor.setWorld({ gravity: { x: 0, y: 0 } }) },
     ],
   };
@@ -388,7 +391,13 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     label: "Acabado",
     icon: "layers",
     children: [
-      { kind: "number", id: "blend", label: "Fusion", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px", hint: "Radio de mezcla: a mas alto, las formas se funden antes de tocarse.", get: (s) => s.field.blend, set: (v) => { editor.setField({ blend: v }); editor.setWorld({ blend: v }); } },
+      { kind: "number", id: "blend", label: "Fusion", min: 0, max: 160, step: 1, gamma: 1.5, unit: "px", hint: "Radio de mezcla: a mas alto, las formas se funden antes de tocarse.", get: (s) => s.field.blend, set: (v) => editor.setField({ blend: v }) },
+      { kind: "number", id: "bridge-reach", label: "Puentes", min: 0, max: 600, step: 5, gamma: 1.5, unit: "px", hint: "Alcance global de los puentes entre formas. No atrae los cuerpos: solo tiende cuellos entre vecinos dentro de ese radio. Con la herramienta Puente (P) se ajusta cuerpo a cuerpo.", get: (s) => s.field.bridgeReach, set: (v) => editor.setField({ bridgeReach: v }) },
+      { kind: "choice", id: "bridge-style", label: "Forma del puente", chooser: "segmented", hint: "Recto: cuello limpio. Desgarrado: puente discontinuo, como roto. Organico: ondula y se mueve.", options: [
+        { value: "direct", id: "bridge-direct", label: "Recto" },
+        { value: "torn", id: "bridge-torn", label: "Desgarrado" },
+        { value: "organic", id: "bridge-organic", label: "Organico" },
+      ], visible: (s) => s.field.bridgeReach > 0, get: (s) => s.field.bridgeStyle, set: (v) => editor.setField({ bridgeStyle: v as BridgeStyle }) },
       { kind: "number", id: "outline", label: "Contorno", min: 0, max: 12, step: 0.5, decimals: 1, unit: "px", get: (s) => s.field.outline, set: (v) => editor.setField({ outline: v }) },
       { kind: "number", id: "shade", label: "Volumen", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.field.shade, set: (v) => editor.setField({ shade: v }) },
       { kind: "number", id: "gloss", label: "Brillo", min: 0, max: 1.5, step: 0.01, decimals: 2, get: (s) => s.field.gloss, set: (v) => editor.setField({ gloss: v }) },
@@ -404,6 +413,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     children: [
       { kind: "action", id: "tool-shape", label: "Crear", icon: "shape", surfaces: ["radial"], toggled: (s) => s.tool === "shape", run: () => editor.setTool("shape") },
       { kind: "action", id: "tool-matter", label: "Mover", icon: "matter", surfaces: ["radial"], toggled: (s) => s.tool === "matter", run: () => editor.setTool("matter") },
+      { kind: "action", id: "tool-bridge", label: "Puente", icon: "layers", surfaces: ["radial"], toggled: (s) => s.tool === "bridge", run: () => editor.setTool("bridge") },
       { kind: "action", id: "run", label: (s) => (s.running ? "Pausar" : "Reanudar"), icon: (s) => (s.running ? "pause" : "play"), surfaces: ["radial"], keepOpen: true, toggled: (s) => s.running, run: () => editor.setRunning(!editor.state.running) },
       { kind: "action", id: "seed", label: "Sembrar", icon: "seed", surfaces: ["radial"], run: () => editor.seedMatter(8) },
       { kind: "action", id: "bake", label: "Hornear", icon: "bake", surfaces: ["radial"], run: () => editor.bakeMatter() },

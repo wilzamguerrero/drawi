@@ -48,7 +48,7 @@ export class MatterCompositor {
   }
 
   /** Compone todas las capas de materia visibles sobre el lienzo de salida. */
-  render(doc: SceneDocument, camera: Camera, dpr: number): void {
+  render(doc: SceneDocument, camera: Camera, dpr: number, time = 0): void {
     const octx = this.output.ctx;
     this.output.clear();
 
@@ -59,7 +59,7 @@ export class MatterCompositor {
       const bodies = doc.physics.bodiesOf(layer.id);
       if (bodies.length === 0) continue;
 
-      const src = this.renderLayer(layer.id, bodies, camera, doc.field, dpr);
+      const src = this.renderLayer(layer.id, bodies, camera, doc.field, dpr, time);
       if (!src) continue;
 
       octx.setTransform(1, 0, 0, 1, 0, 0);
@@ -83,9 +83,10 @@ export class MatterCompositor {
     camera: Camera,
     style: FieldStyle,
     dpr: number,
+    time: number,
   ): HTMLCanvasElement | null {
     if (this.field.available && !this.forceCpu) {
-      this.field.render(bodies, camera, style, dpr);
+      this.field.render(bodies, camera, style, dpr, time);
       return this.field.canvas;
     }
     const scratch = this.ensureScratch();

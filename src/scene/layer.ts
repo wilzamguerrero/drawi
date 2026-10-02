@@ -13,8 +13,9 @@ import type { InkItem } from "./types";
  * encarga el compositor (`src/render/compositor.ts`).
  */
 
-/** Tipo de capa. La materia es una pseudo-capa fija (plano WebGL propio). */
-export type LayerKind = "ink" | "group" | "matter";
+/** Tipo de capa. La materia es una pseudo-capa fija (plano WebGL propio); la
+ *  imagen es una capa raster con un asset decodificado. */
+export type LayerKind = "ink" | "group" | "matter" | "image";
 
 /**
  * Modo de fusión. Los valores son los de `globalCompositeOperation` del canvas,

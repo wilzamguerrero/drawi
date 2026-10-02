@@ -1,6 +1,7 @@
 import { cssRgba, hexToRgb, mixRgb, rgbToHex, type Rgb } from "../core/color";
 import { clamp01 } from "../core/math";
 import { toSvgMatrix } from "../core/mat2d";
+import { computeBridges } from "../physics/bridges";
 import { fieldContours } from "../physics/marching";
 import { sampleField, type FieldSample } from "../physics/sdf";
 import type { Body } from "../physics/world";
@@ -10,7 +11,7 @@ import type { SceneDocument } from "../scene/document";
 import type { BlendMode, SceneLayer } from "../scene/layer";
 import { expandRect, type InkItem, type Rect } from "../scene/types";
 import { buildGradient } from "../render/ink-renderer";
-import type { FieldStyle } from "../render/field-gl";
+import { BRIDGE_STYLE_CODE, type FieldStyle } from "../render/field-gl";
 
 export interface ExportOptions {
   /** Multiplicador de resolucion para PNG. */
@@ -47,7 +48,9 @@ interface FieldLoop {
  */
 function fieldLoops(bodies: readonly Body[], style: FieldStyle, cell: number): FieldLoop[] {
   if (bodies.length === 0) return [];
-  const loops = fieldContours(bodies, style.blend, { cell, iso: 0 });
+  const bridges = computeBridges(bodies, style.bridgeReach);
+  const styleCode = BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0;
+  const loops = fieldContours(bodies, style.blend, { cell, iso: 0 }, bridges, styleCode);
   const colors = bodies.map((b) => {
     const c = hexToRgb(b.color);
     return [c.r / 255, c.g / 255, c.b / 255] as [number, number, number];
@@ -62,7 +65,7 @@ function fieldLoops(bodies: readonly Body[], style: FieldStyle, cell: number): F
     }
     cx /= poly.length;
     cy /= poly.length;
-    sampleField(cx, cy, bodies, style.blend, colors, sample);
+    sampleField(cx, cy, bodies, style.blend, colors, sample, bridges, styleCode);
     return {
       poly,
       color: {

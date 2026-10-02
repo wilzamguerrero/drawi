@@ -1,4 +1,5 @@
 import { smin, TAU } from "../core/math";
+import { linkField, type BridgeLink } from "./bridges";
 import { shapeParams, starM, type ShapeDef } from "./shapes";
 import type { Body } from "./world";
 
@@ -113,11 +114,15 @@ export function sampleField(
   blend: number,
   colors: readonly [number, number, number][],
   out: FieldSample = { d: 0, r: 0, g: 0, b: 0 },
+  bridges: readonly BridgeLink[] = [],
+  bridgeStyle = 0,
+  time = 0,
 ): FieldSample {
   let d = 1e20;
   let cr = 0;
   let cg = 0;
   let cb = 0;
+
   for (let i = 0; i < bodies.length; i++) {
     const body = bodies[i];
     const dx = x - body.pos.x;
@@ -134,6 +139,20 @@ export function sampleField(
     cg += (col[1] - cg) * h;
     cb += (col[2] - cb) * h;
   }
+
+  // Puentes dirigidos: cada enlace es un cuello capsular entre dos cuerpos.
+  for (let i = 0; i < bridges.length; i++) {
+    const link = bridges[i];
+    const seg = linkField(x, y, link, bridgeStyle, time);
+    if (seg > link.k + 2) continue;
+    const kk = Math.max(0.001, link.k);
+    const h = Math.min(1, Math.max(0, 0.5 + (0.5 * (d - seg)) / kk));
+    d = smin(d, seg, kk);
+    cr += (link.r8 / 255 - cr) * h;
+    cg += (link.g8 / 255 - cg) * h;
+    cb += (link.b8 / 255 - cb) * h;
+  }
+
   out.d = d;
   out.r = cr;
   out.g = cg;
@@ -147,8 +166,12 @@ export function sampleFieldDistance(
   y: number,
   bodies: readonly Body[],
   blend: number,
+  bridges: readonly BridgeLink[] = [],
+  bridgeStyle = 0,
+  time = 0,
 ): number {
   let d = 1e20;
+
   for (let i = 0; i < bodies.length; i++) {
     const body = bodies[i];
     const dx = x - body.pos.x;
@@ -158,6 +181,14 @@ export function sampleFieldDistance(
     if (dx * dx + dy * dy > reach * reach) continue;
     d = smin(d, sdBody(x, y, body), Math.max(0.001, k));
   }
+
+  for (let i = 0; i < bridges.length; i++) {
+    const link = bridges[i];
+    const seg = linkField(x, y, link, bridgeStyle, time);
+    if (seg > link.k + 2) continue;
+    d = smin(d, seg, Math.max(0.001, link.k));
+  }
+
   return d;
 }
 

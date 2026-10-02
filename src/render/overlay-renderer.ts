@@ -29,6 +29,10 @@ export interface OverlayState {
   walls: { x: number; y: number; w: number; h: number };
   /** Dibuja los colisionadores encima del campo (depuracion). */
   debugColliders: boolean;
+  /** Dibuja el radio de alcance de puentes de cada cuerpo. */
+  showBridgeReach: boolean;
+  /** Alcance global de puentes (para cuerpos que usan el valor global). */
+  bridgeReach: number;
   bodies: readonly Body[];
 }
 
@@ -45,6 +49,7 @@ export class OverlayRenderer {
 
     if (state.showWalls) this.drawWalls(ctx, state.walls, camera);
     if (state.debugColliders) this.drawColliders(ctx, state.bodies, camera);
+    if (state.showBridgeReach) this.drawBridgeReach(ctx, state.bodies, state.bridgeReach, camera);
     if (state.highlight) this.drawHighlight(ctx, state.highlight, camera);
     if (state.previewShape && state.cursor) {
       this.drawShapePreview(ctx, state.previewShape, state.cursor, camera);
@@ -117,6 +122,36 @@ export class OverlayRenderer {
       }
       ctx.stroke();
     }
+  }
+
+  /**
+   * Radio de alcance de puentes de cada cuerpo: un circulo discontinuo del
+   * tamano hasta donde ese cuerpo tiende puentes. Verde = alcance propio del
+   * cuerpo; azul tenue = hereda el valor global. Los cuerpos sin alcance (0) no
+   * dibujan nada.
+   */
+  private drawBridgeReach(
+    ctx: CanvasRenderingContext2D,
+    bodies: readonly Body[],
+    globalReach: number,
+    camera: Camera,
+  ): void {
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.lineWidth = 1.25;
+    for (const body of bodies) {
+      const own = body.bridgeReach >= 0;
+      const reach = own ? body.bridgeReach : globalReach;
+      if (reach <= 0) continue;
+      const p = camera.worldToScreen(body.pos);
+      const r = (body.radius + reach) * camera.zoom;
+      ctx.strokeStyle = own ? "rgba(90, 220, 150, 0.9)" : "rgba(79, 140, 255, 0.5)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, TAU);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   private drawHighlight(ctx: CanvasRenderingContext2D, body: Body, camera: Camera): void {
