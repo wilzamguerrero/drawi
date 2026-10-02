@@ -1,7 +1,7 @@
 import { clamp } from "../core/math";
 import type { Polygon } from "../stroke/types";
 import type { Rect } from "../scene/types";
-import type { BridgeLink } from "./bridges";
+import { DEFAULT_BRIDGE_OPTS, type BridgeLink, type BridgeOpts } from "./bridges";
 import { sampleFieldDistance } from "./sdf";
 import type { Body } from "./world";
 
@@ -81,7 +81,7 @@ export function fieldContours(
   blend: number,
   options: Partial<ContourOptions> = {},
   bridges: readonly BridgeLink[] = [],
-  bridgeStyle = 0,
+  bridgeOpts: BridgeOpts = DEFAULT_BRIDGE_OPTS,
 ): Polygon[] {
   const opt = { ...DEFAULT_CONTOUR, ...options };
   const box = bodiesBounds(bodies, blend, opt.padding);
@@ -100,7 +100,7 @@ export function fieldContours(
   for (let j = 0; j < rows; j++) {
     const y = box.y + j * stepY;
     for (let i = 0; i < cols; i++) {
-      field[j * cols + i] = sampleFieldDistance(box.x + i * stepX, y, bodies, blend, bridges, bridgeStyle);
+      field[j * cols + i] = sampleFieldDistance(box.x + i * stepX, y, bodies, blend, bridges, bridgeOpts);
     }
   }
 

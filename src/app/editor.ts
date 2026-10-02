@@ -570,7 +570,13 @@ export class Editor {
     const bodies = this.doc.bodies;
     if (bodies.length === 0) return;
     const bridges = computeBridges(bodies, this.doc.field.bridgeReach);
-    const loops = fieldContours(bodies, this.doc.field.blend, { cell: 2.5 }, bridges, BRIDGE_STYLE_CODE[this.doc.field.bridgeStyle] ?? 0);
+    const bridgeOpts = {
+      style: BRIDGE_STYLE_CODE[this.doc.field.bridgeStyle] ?? 0,
+      threads: Math.max(1, Math.round(this.doc.field.bridgeThreads)),
+      flare: Math.max(0, this.doc.field.bridgeFlare),
+      time: 0,
+    };
+    const loops = fieldContours(bodies, this.doc.field.blend, { cell: 2.5 }, bridges, bridgeOpts);
     if (loops.length === 0) return;
 
     const before = this.doc.snapshot();

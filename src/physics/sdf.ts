@@ -1,5 +1,5 @@
 import { smin, TAU } from "../core/math";
-import { linkField, type BridgeLink } from "./bridges";
+import { linkField, DEFAULT_BRIDGE_OPTS, type BridgeLink, type BridgeOpts } from "./bridges";
 import { shapeParams, starM, type ShapeDef } from "./shapes";
 import type { Body } from "./world";
 
@@ -115,8 +115,7 @@ export function sampleField(
   colors: readonly [number, number, number][],
   out: FieldSample = { d: 0, r: 0, g: 0, b: 0 },
   bridges: readonly BridgeLink[] = [],
-  bridgeStyle = 0,
-  time = 0,
+  bridgeOpts: BridgeOpts = DEFAULT_BRIDGE_OPTS,
 ): FieldSample {
   let d = 1e20;
   let cr = 0;
@@ -144,7 +143,7 @@ export function sampleField(
   for (let i = 0; i < bridges.length; i++) {
     const link = bridges[i];
     if (x < link.minx || x > link.maxx || y < link.miny || y > link.maxy) continue;
-    const seg = linkField(x, y, link, bridgeStyle, time);
+    const seg = linkField(x, y, link, bridgeOpts);
     if (seg > link.k + 2) continue;
     const kk = Math.max(0.001, link.k);
     const h = Math.min(1, Math.max(0, 0.5 + (0.5 * (d - seg)) / kk));
@@ -168,8 +167,7 @@ export function sampleFieldDistance(
   bodies: readonly Body[],
   blend: number,
   bridges: readonly BridgeLink[] = [],
-  bridgeStyle = 0,
-  time = 0,
+  bridgeOpts: BridgeOpts = DEFAULT_BRIDGE_OPTS,
 ): number {
   let d = 1e20;
 
@@ -186,7 +184,7 @@ export function sampleFieldDistance(
   for (let i = 0; i < bridges.length; i++) {
     const link = bridges[i];
     if (x < link.minx || x > link.maxx || y < link.miny || y > link.maxy) continue;
-    const seg = linkField(x, y, link, bridgeStyle, time);
+    const seg = linkField(x, y, link, bridgeOpts);
     if (seg > link.k + 2) continue;
     d = smin(d, seg, Math.max(0.001, link.k));
   }

@@ -23,6 +23,10 @@ export interface FieldStyle {
   bridgeReach: number;
   /** Forma del puente: recto, desgarrado (discontinuo) u organico (ondula). */
   bridgeStyle: BridgeStyle;
+  /** Nº de hilos/tejidos por puente (1 = cuello unico, >1 = haz tipo vena). */
+  bridgeThreads: number;
+  /** Ensanche del cuello en los puntos de conexion con los cuerpos (0..1). */
+  bridgeFlare: number;
   /** Grosor del contorno en px de pantalla (0 = sin contorno). */
   outline: number;
   outlineColor: string;
@@ -40,6 +44,8 @@ export const DEFAULT_FIELD_STYLE: FieldStyle = {
   blend: 26,
   bridgeReach: 0,
   bridgeStyle: "direct",
+  bridgeThreads: 1,
+  bridgeFlare: 0,
   outline: 2,
   outlineColor: "#0d0f14",
   shade: 0.75,
@@ -79,6 +85,8 @@ uniform float uDepth;
 uniform float uBridgeReach;
 uniform int   uLinkCount;
 uniform int   uBridgeStyle;
+uniform int   uBridgeThreads;
+uniform float uBridgeFlare;
 uniform float uTime;
 uniform sampler2D uData;
 uniform sampler2D uLinks;
@@ -96,9 +104,10 @@ float sdSegment(vec2 p, vec2 a, vec2 b) {
 }
 
 /**
- * Distancia con signo de un puente segun su estilo.
- *  0 = recto (capsula), 1 = desgarrado (grosor que se pellizca a 0 en cuentas),
- *  2 = organico (la linea central ondula y se mueve con el tiempo).
+ * Distancia con signo de un puente segun su estilo y sus conectores.
+ *  style: 0 recto, 1 desgarrado (agujeros), 2 organico (ondula con el tiempo).
+ *  uBridgeThreads: nº de hilos del haz (venas/tejidos).
+ *  uBridgeFlare: ensancha el cuello en los extremos (conexion mas gruesa).
  */
 float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
   vec2 ba = b - a;
@@ -108,15 +117,33 @@ float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
   vec2 pa = p - a;
   float along = dot(pa, dir);
   float h = clamp(along / len, 0.0, 1.0);
+  float perp = dot(pa, nrm);
+
+  // Perfil de radio: ensanchado en los extremos (conexion con los cuerpos).
+  float ends = pow(abs(2.0 * h - 1.0), 2.0); // 1 en los extremos, 0 en medio
+  float rLocal = r * (1.0 + uBridgeFlare * 1.6 * ends);
+
+  int n = uBridgeThreads < 1 ? 1 : uBridgeThreads;
+  float threadR = rLocal / sqrt(float(n));
+  float spread = r * 1.35;
+  float best = 1e9;
+  for (int i = 0; i < 6; i++) {
+    if (i >= n) break;
+    float frac = n > 1 ? (float(i) / float(n - 1) - 0.5) : 0.0;
+    float off = spread * frac;
+    // Los hilos se trenzan a lo largo del puente.
+    if (n > 1) off *= cos(h * PI * 2.0 + phase + float(i) * 1.7);
+    // Modo organico: la linea tambien ondula con el tiempo.
+    if (style == 2) {
+      off += r * 1.1 * sin(h * (6.2831 * (len / 220.0 + 0.5)) + uTime * 1.6 + phase + float(i));
+    }
+    float dline = abs(perp - off);
+    float d = along < 0.0 ? length(pa) : (along > len ? length(p - b) : dline);
+    best = min(best, d - threadR);
+  }
 
   if (style == 1) {
-    // Desgarrado: cuello recto SOLIDO con agujeros irregulares perforados
-    // dentro (uno por celda a lo largo del cuello), para que se vea erosionado
-    // sin partirse en trozos.
-    float proj = clamp(along, 0.0, len);
-    float base = length(p - (a + dir * proj));
-    float cap = base - r;
-    float perp = dot(pa, nrm);
+    // Desgarrado: perfora agujeros irregulares en el haz (sin partirlo).
     float cell = max(6.0, r * 2.2);
     float idx = floor(along / cell);
     float localc = along - (idx + 0.5) * cell;
@@ -125,21 +152,9 @@ float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
     float holeR = r * (0.3 + 0.45 * rnd);
     float perpOff = (rnd2 - 0.5) * r * 0.9;
     float dh = length(vec2(localc, perp - perpOff)) - holeR;
-    return max(cap, -dh);
+    best = max(best, -dh);
   }
-  if (style == 2) {
-    // Organico: la linea central ondula con el tiempo.
-    float perp = dot(pa, nrm);
-    float amp = r * 1.1;
-    float freq = 6.2831 * (len / 220.0 + 0.5);
-    float wob = amp * sin(h * freq + uTime * 1.6 + phase);
-    float dLine = abs(perp - wob);
-    float d = along < 0.0 ? length(pa) : (along > len ? length(p - b) : dLine);
-    return d - r;
-  }
-  // Recto.
-  float proj = clamp(along, 0.0, len);
-  return length(p - (a + dir * proj)) - r;
+  return best;
 }
 
 float sdRoundBox(vec2 p, vec2 b, float r) {
@@ -227,8 +242,8 @@ void main() {
     vec4 l0 = texelFetch(uLinks, ivec2(0, li), 0); // ax, ay, bx, by
     vec4 l1 = texelFetch(uLinks, ivec2(1, li), 0); // r, k, colorPacked, phase
     // Descarte barato por distancia al segmento recto antes del calculo del
-    // estilo (con margen para la ondulacion del modo organico).
-    if (sdSegment(w, l0.xy, l0.zw) > l1.x * 2.2 + l1.y + 4.0) continue;
+    // estilo (margen amplio para hilos, ondulacion organica y ensanche).
+    if (sdSegment(w, l0.xy, l0.zw) > l1.x * 4.0 + l1.y + 4.0) continue;
     float seg = linkField(w, l0.xy, l0.zw, l1.x, uBridgeStyle, l1.w);
     float kL = max(l1.y, 0.001);
     if (seg > kL + 2.0) continue;
@@ -415,6 +430,8 @@ export class FieldRenderer {
       "uBridgeReach",
       "uLinkCount",
       "uBridgeStyle",
+      "uBridgeThreads",
+      "uBridgeFlare",
       "uTime",
       "uData",
       "uLinks",
@@ -475,6 +492,8 @@ export class FieldRenderer {
     gl.uniform1f(u.uBridgeReach!, Math.max(0, style.bridgeReach));
     gl.uniform1i(u.uLinkCount!, linkCount);
     gl.uniform1i(u.uBridgeStyle!, BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0);
+    gl.uniform1i(u.uBridgeThreads!, Math.max(1, Math.round(style.bridgeThreads)));
+    gl.uniform1f(u.uBridgeFlare!, Math.max(0, style.bridgeFlare));
     gl.uniform1f(u.uTime!, time);
     gl.uniform1i(u.uData!, 0);
     gl.uniform1i(u.uLinks!, 1);

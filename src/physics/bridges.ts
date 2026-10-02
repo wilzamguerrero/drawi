@@ -65,14 +65,20 @@ export function computeBridges(bodies: readonly Body[], globalReach: number): Br
       const reach = Math.max(ra, rb);
       if (gap <= 0 || gap >= reach) continue; // ya se tocan, o demasiado lejos
 
-      // Cuello: grueso cuando casi se tocan, se afina al alejarse (t^2).
+      // Cuello: grueso cuando casi se tocan, se afina al alejarse (taper lineal).
+      // Se corta por debajo de ~4px en vez de dejar un hilo subpixel: un cuello
+      // mas fino que una celda de marching squares (o que un pixel en GPU) se
+      // rompe en guiones; mejor cortar limpio y que reaparezca al acercar.
       const t = 1 - gap / reach;
-      const neck = Math.min(a.radius, b.radius) * 0.55 * t * t;
-      if (neck < 1) continue;
+      const neck = Math.min(a.radius, b.radius) * 0.6 * t;
+      if (neck < 4) continue;
 
       const cb = hexToRgb(b.color);
       const k = Math.max(4, neck);
-      const pad = neck * 1.2 + k + 2;
+      // Margen amplio: hilos, ondulacion organica y ensanche extienden el relleno
+      // bastante mas alla del cuello recto; si la caja queda corta, el puente se
+      // recorta en CPU. Mejor sobrar que cortar.
+      const pad = neck * 4 + k + 4;
       links.push({
         ax: a.pos.x,
         ay: a.pos.y,
@@ -117,17 +123,28 @@ export function sdSegment(
   return Math.hypot(dx, dy);
 }
 
+/** Opciones de render de los puentes (espejo de los uniforms del shader). */
+export interface BridgeOpts {
+  style: number;
+  threads: number;
+  flare: number;
+  time: number;
+}
+
+export const DEFAULT_BRIDGE_OPTS: BridgeOpts = { style: 0, threads: 1, flare: 0, time: 0 };
+
 /**
- * Distancia con signo de un puente segun su estilo (espejo CPU del shader).
- *  0 = recto, 1 = desgarrado, 2 = organico (ondula; con `time` se mueve).
+ * Distancia con signo de un puente segun su estilo y conectores (espejo CPU
+ * del shader). style: 0 recto, 1 desgarrado (agujeros), 2 organico (ondula).
+ * `threads` divide el puente en hilos; `flare` lo ensancha en los extremos.
  */
 export function linkField(
   px: number,
   py: number,
   link: BridgeLink,
-  style: number,
-  time: number,
+  opts: BridgeOpts,
 ): number {
+  const { style, time } = opts;
   const bax = link.bx - link.ax;
   const bay = link.by - link.ay;
   const len = Math.max(1e-4, Math.hypot(bax, bay));
@@ -137,16 +154,27 @@ export function linkField(
   const pay = py - link.ay;
   const along = pax * dirx + pay * diry;
   const h = Math.min(1, Math.max(0, along / len));
+  const perp = pax * -diry + pay * dirx;
+
+  const ends = Math.pow(Math.abs(2 * h - 1), 2);
+  const rLocal = link.r * (1 + opts.flare * 1.6 * ends);
+  const n = opts.threads < 1 ? 1 : opts.threads;
+  const threadR = rLocal / Math.sqrt(n);
+  const spread = link.r * 1.35;
+  let best = 1e9;
+  for (let i = 0; i < n; i++) {
+    const frac = n > 1 ? i / (n - 1) - 0.5 : 0;
+    let off = spread * frac;
+    if (n > 1) off *= Math.cos(h * Math.PI * 2 + link.phase + i * 1.7);
+    if (style === 2) {
+      off += link.r * 1.1 * Math.sin(h * (6.2831 * (len / 220 + 0.5)) + time * 1.6 + link.phase + i);
+    }
+    const dline = Math.abs(perp - off);
+    const d = along < 0 ? Math.hypot(pax, pay) : along > len ? Math.hypot(px - link.bx, py - link.by) : dline;
+    best = Math.min(best, d - threadR);
+  }
 
   if (style === 1) {
-    // Desgarrado: cuello recto SOLIDO con agujeros irregulares perforados
-    // dentro, para que se vea erosionado sin partirse en trozos. Se parte de
-    // la capsula y se le restan circulos (uno por celda a lo largo del cuello),
-    // mas pequenos que el radio y desplazados, asi el puente sigue conectado.
-    const proj = Math.min(len, Math.max(0, along));
-    const base = Math.hypot(px - (link.ax + dirx * proj), py - (link.ay + diry * proj));
-    const cap = base - link.r;
-    const perp = pax * -diry + pay * dirx;
     const cell = Math.max(6, link.r * 2.2);
     const idx = Math.floor(along / cell);
     const localc = along - (idx + 0.5) * cell;
@@ -155,23 +183,7 @@ export function linkField(
     const holeR = link.r * (0.3 + 0.45 * rnd);
     const perpOff = (rnd2 - 0.5) * link.r * 0.9;
     const dh = Math.hypot(localc, perp - perpOff) - holeR;
-    // Restar el agujero del cuello (resta dura = max con el negado).
-    return Math.max(cap, -dh);
+    best = Math.max(best, -dh);
   }
-  if (style === 2) {
-    const perp = pax * -diry + pay * dirx;
-    const amp = link.r * 1.1;
-    const freq = 6.2831 * (len / 220 + 0.5);
-    const wob = amp * Math.sin(h * freq + time * 1.6 + link.phase);
-    const dLine = Math.abs(perp - wob);
-    const d =
-      along < 0
-        ? Math.hypot(pax, pay)
-        : along > len
-          ? Math.hypot(px - link.bx, py - link.by)
-          : dLine;
-    return d - link.r;
-  }
-  const proj = Math.min(len, Math.max(0, along));
-  return Math.hypot(px - (link.ax + dirx * proj), py - (link.ay + diry * proj)) - link.r;
+  return best;
 }

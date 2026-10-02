@@ -94,8 +94,13 @@ export class FieldFallbackRenderer {
     // esos huecos pequeños, a cambio de algo más de ruido de rejilla.
     const cell = clamp01(1 / Math.max(camera.zoom, 0.05)) * 2 + 1.5;
     const bridges = computeBridges(bodies, style.bridgeReach);
-    const styleCode = BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0;
-    const loops = fieldContours(bodies, style.blend, { cell, iso: 0, minArea: 3 }, bridges, styleCode);
+    const bridgeOpts = {
+      style: BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0,
+      threads: Math.max(1, Math.round(style.bridgeThreads)),
+      flare: Math.max(0, style.bridgeFlare),
+      time: 0,
+    };
+    const loops = fieldContours(bodies, style.blend, { cell, iso: 0, minArea: 3 }, bridges, bridgeOpts);
     const colors = bodies.map((b) => {
       const c = hexToRgb(b.color);
       return [c.r / 255, c.g / 255, c.b / 255] as [number, number, number];
@@ -111,7 +116,7 @@ export class FieldFallbackRenderer {
       }
       cx /= poly.length;
       cy /= poly.length;
-      sampleField(cx, cy, bodies, style.blend, colors, sample, bridges, styleCode);
+      sampleField(cx, cy, bodies, style.blend, colors, sample, bridges, bridgeOpts);
       return {
         poly,
         color: {
@@ -130,7 +135,7 @@ export class FieldFallbackRenderer {
 
 /** Huella barata del estado: si no cambia, el contorno cacheado sirve. */
 function stateKey(bodies: readonly Body[], style: FieldStyle, zoom: number): string {
-  let s = `${bodies.length}|${style.blend.toFixed(2)}|${style.bridgeReach.toFixed(2)}|${style.bridgeStyle}|${zoom.toFixed(2)}`;
+  let s = `${bodies.length}|${style.blend.toFixed(2)}|${style.bridgeReach.toFixed(2)}|${style.bridgeStyle}|${style.bridgeThreads}|${style.bridgeFlare.toFixed(2)}|${zoom.toFixed(2)}`;
   for (const b of bodies) {
     s += `|${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)},${b.angle.toFixed(2)},${b.shape.size.toFixed(1)},${b.bridgeReach.toFixed(0)}`;
   }
