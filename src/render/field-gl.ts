@@ -106,7 +106,8 @@ float sdSegment(vec2 p, vec2 a, vec2 b) {
 /**
  * Distancia con signo de un puente segun su estilo y sus conectores.
  *  style: 0 recto, 1 desgarrado (agujeros), 2 organico (ondula con el tiempo).
- *  uBridgeThreads: nº de hilos del haz (venas/tejidos).
+ *  uBridgeThreads: el cuello UNICO del centro se divide en hilos SOLO en la
+ *    zona de conexion con cada cuerpo (como fibras que se separan al unirse).
  *  uBridgeFlare: ensancha el cuello en los extremos (conexion mas gruesa).
  */
 float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
@@ -119,23 +120,29 @@ float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
   float h = clamp(along / len, 0.0, 1.0);
   float perp = dot(pa, nrm);
 
-  // Perfil de radio: ensanchado en los extremos (conexion con los cuerpos).
-  float ends = pow(abs(2.0 * h - 1.0), 2.0); // 1 en los extremos, 0 en medio
+  // Perfil hacia los extremos: 1 en los cuerpos, 0 en el centro del puente.
+  float ends = pow(abs(2.0 * h - 1.0), 2.0);
   float rLocal = r * (1.0 + uBridgeFlare * 1.6 * ends);
 
+  // Separacion de hilos: maxima en los extremos (zona de conexion), nula en el
+  // centro. Asi el puente es un cuello unico en medio y se abre en fibras al
+  // llegar a cada cuerpo. El grosor de cada hilo crece hacia el centro para que
+  // alli vuelvan a formar un solo cuello lleno.
+  float fan = pow(abs(2.0 * h - 1.0), 1.6);
+  float merge = 1.0 - fan;
   int n = uBridgeThreads < 1 ? 1 : uBridgeThreads;
-  float threadR = rLocal / sqrt(float(n));
-  float spread = r * 1.35;
+  float threadR = rLocal * mix(1.0 / sqrt(float(n)), 1.0, merge);
+  float spread = rLocal * 1.5;
+  // Ondulacion organica, atenuada en los extremos para no dejar puntas en las
+  // tapas (ahi la onda se anula y el hilo entra limpio al cuerpo).
+  float env = 1.0 - ends;
   float best = 1e9;
   for (int i = 0; i < 6; i++) {
     if (i >= n) break;
     float frac = n > 1 ? (float(i) / float(n - 1) - 0.5) : 0.0;
-    float off = spread * frac;
-    // Los hilos se trenzan a lo largo del puente.
-    if (n > 1) off *= cos(h * PI * 2.0 + phase + float(i) * 1.7);
-    // Modo organico: la linea tambien ondula con el tiempo.
+    float off = spread * frac * fan;
     if (style == 2) {
-      off += r * 1.1 * sin(h * (6.2831 * (len / 220.0 + 0.5)) + uTime * 1.6 + phase + float(i));
+      off += r * 1.1 * env * sin(h * (6.2831 * (len / 220.0 + 0.5)) + uTime * 1.6 + phase + float(i) * 0.6);
     }
     float dline = abs(perp - off);
     float d = along < 0.0 ? length(pa) : (along > len ? length(p - b) : dline);

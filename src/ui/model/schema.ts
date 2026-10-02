@@ -398,7 +398,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
         { value: "torn", id: "bridge-torn", label: "Desgarrado" },
         { value: "organic", id: "bridge-organic", label: "Organico" },
       ], visible: (s) => s.field.bridgeReach > 0, get: (s) => s.field.bridgeStyle, set: (v) => editor.setField({ bridgeStyle: v as BridgeStyle }) },
-      { kind: "number", id: "bridge-threads", label: "Hilos", min: 1, max: 6, step: 1, hint: "Divide cada puente en varios hilos que se trenzan, como venas o tejidos.", visible: (s) => s.field.bridgeReach > 0, get: (s) => s.field.bridgeThreads, set: (v) => editor.setField({ bridgeThreads: Math.round(v) }) },
+      { kind: "number", id: "bridge-threads", label: "Hilos", min: 1, max: 6, step: 1, hint: "Divide el puente en fibras SOLO en la zona de conexion con cada cuerpo: un cuello unico en el centro que se abre en hilos al unirse, como fibras partiendose.", visible: (s) => s.field.bridgeReach > 0, get: (s) => s.field.bridgeThreads, set: (v) => editor.setField({ bridgeThreads: Math.round(v) }) },
       { kind: "number", id: "bridge-flare", label: "Conexion", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Ensancha el puente donde se conecta con los cuerpos (entradas y salidas mas gruesas que el centro).", visible: (s) => s.field.bridgeReach > 0, get: (s) => s.field.bridgeFlare, set: (v) => editor.setField({ bridgeFlare: v }) },
       { kind: "number", id: "outline", label: "Contorno", min: 0, max: 12, step: 0.5, decimals: 1, unit: "px", get: (s) => s.field.outline, set: (v) => editor.setField({ outline: v }) },
       { kind: "number", id: "shade", label: "Volumen", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.field.shade, set: (v) => editor.setField({ shade: v }) },

@@ -158,16 +158,18 @@ export function linkField(
 
   const ends = Math.pow(Math.abs(2 * h - 1), 2);
   const rLocal = link.r * (1 + opts.flare * 1.6 * ends);
+  const fan = Math.pow(Math.abs(2 * h - 1), 1.6);
+  const merge = 1 - fan;
   const n = opts.threads < 1 ? 1 : opts.threads;
-  const threadR = rLocal / Math.sqrt(n);
-  const spread = link.r * 1.35;
+  const threadR = rLocal * (1 / Math.sqrt(n) + (1 - 1 / Math.sqrt(n)) * merge);
+  const spread = link.r * 1.5;
+  const env = 1 - ends;
   let best = 1e9;
   for (let i = 0; i < n; i++) {
     const frac = n > 1 ? i / (n - 1) - 0.5 : 0;
-    let off = spread * frac;
-    if (n > 1) off *= Math.cos(h * Math.PI * 2 + link.phase + i * 1.7);
+    let off = spread * frac * fan;
     if (style === 2) {
-      off += link.r * 1.1 * Math.sin(h * (6.2831 * (len / 220 + 0.5)) + time * 1.6 + link.phase + i);
+      off += link.r * 1.1 * env * Math.sin(h * (6.2831 * (len / 220 + 0.5)) + time * 1.6 + link.phase + i * 0.6);
     }
     const dline = Math.abs(perp - off);
     const d = along < 0 ? Math.hypot(pax, pay) : along > len ? Math.hypot(px - link.bx, py - link.by) : dline;
