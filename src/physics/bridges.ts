@@ -190,14 +190,17 @@ export function linkField(
   if (n > 1) {
     const e = Math.abs(2 * h - 1);
     const span = Math.min(1, Math.max(0.05, opts.threadReach));
-    const cutProfile = smoothstep01(1 - span, 1 - span * 0.4, e);
+    const band = 0.15;
+    const hi = Math.min(1, 1 - span + band);
+    const lo = hi - band;
+    const cutProfile = smoothstep01(lo, hi, e);
     const cutW = rLocal * 0.14;
     const spread = rLocal * 1.6;
     for (let i = 0; i < n - 1; i++) {
-      let o = spread * ((i + 1) / n - 0.5);
-      if (style === 2) o += link.r * 0.5 * cutProfile * Math.sin(h * freq + time * 1.6 + link.phase + i);
-      const groove = Math.abs(perp - neckOff - o) - cutW * cutProfile;
-      best = Math.max(best, -groove);
+      const o = spread * ((i + 1) / n - 0.5) + (style === 2 ? link.r * 0.5 * Math.sin(h * freq + time * 1.6 + link.phase + i) : 0);
+      const groove = Math.abs(perp - neckOff - o) - cutW;
+      const carved = Math.max(best, -groove);
+      best = best + (carved - best) * cutProfile;
     }
   }
 

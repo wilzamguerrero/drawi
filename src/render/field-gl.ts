@@ -162,16 +162,22 @@ float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
   if (n > 1) {
     float e = abs(2.0 * h - 1.0); // 1 en los extremos, 0 en el centro
     float span = clamp(uBridgeThreadReach, 0.05, 1.0);
-    // Perfil del corte: solo cerca de la conexion; se funde a 0 pasado el alcance.
-    float cutProfile = smoothstep(1.0 - span, 1.0 - span * 0.4, e);
+    // Banda del corte: siempre pleno en los extremos (e~1); el borde interior
+    // sube con el alcance hasta llegar al centro (e~0) cuando span = 1.
+    float band = 0.15;
+    float hi = min(1.0, (1.0 - span) + band);
+    float lo = hi - band;
+    float cutProfile = smoothstep(lo, hi, e);
     float cutW = rLocal * 0.14;
     float spread = rLocal * 1.6;
     for (int i = 0; i < 5; i++) {
       if (i >= n - 1) break;
       float o = spread * (float(i + 1) / float(n) - 0.5);
-      if (style == 2) o += r * 0.5 * cutProfile * sin(h * freq + uTime * 1.6 + phase + float(i));
-      float groove = abs(perp - neckOff - o) - cutW * cutProfile;
-      best = max(best, -groove);
+      if (style == 2) o += r * 0.5 * sin(h * freq + uTime * 1.6 + phase + float(i));
+      float groove = abs(perp - neckOff - o) - cutW;
+      // mix por cutProfile: en 0 NO toca el campo (si no, dejaria una linea fina
+      // en toda la longitud del corte aunque el alcance sea minimo).
+      best = mix(best, max(best, -groove), cutProfile);
     }
   }
 
