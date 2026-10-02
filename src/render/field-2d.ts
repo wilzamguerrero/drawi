@@ -99,6 +99,7 @@ export class FieldFallbackRenderer {
     const bridgeOpts = {
       style: BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0,
       threads: Math.max(1, Math.round(style.bridgeThreads)),
+      threadReach: style.bridgeThreadReach,
       flare: Math.max(0, style.bridgeFlare),
       time: 0,
     };

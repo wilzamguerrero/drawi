@@ -114,6 +114,13 @@ export function computeBridges(bodies: readonly Body[], globalReach: number, fad
 /** Parte fraccionaria (espejo de fract() de GLSL). */
 const fract = (x: number): number => x - Math.floor(x);
 
+/** smoothstep de GLSL. */
+const smoothstep01 = (e0: number, e1: number, x: number): number => {
+  if (e0 === e1) return x < e0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
 /** Distancia con signo a un segmento (para el cuello capsular del puente). */
 export function sdSegment(
   px: number,
@@ -138,11 +145,12 @@ export function sdSegment(
 export interface BridgeOpts {
   style: number;
   threads: number;
+  threadReach: number;
   flare: number;
   time: number;
 }
 
-export const DEFAULT_BRIDGE_OPTS: BridgeOpts = { style: 0, threads: 1, flare: 0, time: 0 };
+export const DEFAULT_BRIDGE_OPTS: BridgeOpts = { style: 0, threads: 1, threadReach: 0.5, flare: 0, time: 0 };
 
 /**
  * Distancia con signo de un puente segun su estilo y conectores (espejo CPU
@@ -180,13 +188,15 @@ export function linkField(
   // Hilos = CORTES tallados en el cuello cerca de la conexion (resta).
   const n = opts.threads < 1 ? 1 : opts.threads;
   if (n > 1) {
-    const fan = Math.pow(Math.abs(2 * h - 1), 1.3);
+    const e = Math.abs(2 * h - 1);
+    const span = Math.min(1, Math.max(0.05, opts.threadReach));
+    const cutProfile = smoothstep01(1 - span, 1 - span * 0.4, e);
     const cutW = rLocal * 0.14;
     const spread = rLocal * 1.6;
     for (let i = 0; i < n - 1; i++) {
       let o = spread * ((i + 1) / n - 0.5);
-      if (style === 2) o += link.r * 0.5 * fan * Math.sin(h * freq + time * 1.6 + link.phase + i);
-      const groove = Math.abs(perp - neckOff - o) - cutW * fan;
+      if (style === 2) o += link.r * 0.5 * cutProfile * Math.sin(h * freq + time * 1.6 + link.phase + i);
+      const groove = Math.abs(perp - neckOff - o) - cutW * cutProfile;
       best = Math.max(best, -groove);
     }
   }

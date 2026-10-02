@@ -573,6 +573,7 @@ export class Editor {
     const bridgeOpts = {
       style: BRIDGE_STYLE_CODE[this.doc.field.bridgeStyle] ?? 0,
       threads: Math.max(1, Math.round(this.doc.field.bridgeThreads)),
+      threadReach: this.doc.field.bridgeThreadReach,
       flare: Math.max(0, this.doc.field.bridgeFlare),
       time: 0,
     };
@@ -1168,9 +1169,11 @@ export class Editor {
 
     // Puentes organicos: ondulan con el tiempo, asi que hay que repintar el
     // campo cada frame (solo en GPU; el shader lee uTime). En CPU quedan
-    // estaticos para no re-extraer contornos cada frame.
+    // estaticos para no re-extraer contornos cada frame. El toggle bridgeAnimate
+    // permite congelar la ondulacion.
     if (
       this.doc.field.bridgeStyle === "organic" &&
+      this.doc.field.bridgeAnimate &&
       this.fieldRenderer.available &&
       !this.matter.forceCpu &&
       (this.doc.field.bridgeReach > 0 || this.doc.bodies.some((b) => b.bridgeReach > 0))
@@ -1181,7 +1184,8 @@ export class Editor {
     if (this.matter.dirty) {
       // Cada capa de materia se rinde y compone con su opacidad/fusión sobre un
       // único lienzo que se muestra encima de la tinta.
-      this.matter.render(this.doc, this.camera, this.dpr, now / 1000);
+      const t = this.doc.field.bridgeAnimate ? now / 1000 : 0;
+      this.matter.render(this.doc, this.camera, this.dpr, t);
     }
 
     if (this.wetLayer.dirty) {

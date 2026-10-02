@@ -25,11 +25,16 @@ export interface FieldStyle {
   bridgeStyle: BridgeStyle;
   /** Nº de hilos/tejidos por puente (1 = cuello unico, >1 = haz tipo vena). */
   bridgeThreads: number;
+  /** Hasta donde llegan los cortes de los hilos desde la conexion (0..1):
+   *  bajo = solo al principio/final y se funden pronto; alto = casi todo. */
+  bridgeThreadReach: number;
   /** Ensanche del cuello en los puntos de conexion con los cuerpos (0..1). */
   bridgeFlare: number;
   /** Difuminar la opacidad de los puentes segun el area de alcance (toggle).
    *  Off = puentes solidos y completos como antes. */
   bridgeFade: boolean;
+  /** Anima la ondulacion del modo organico (solo GPU). Off = congelada. */
+  bridgeAnimate: boolean;
   /** Grosor del contorno en px de pantalla (0 = sin contorno). */
   outline: number;
   outlineColor: string;
@@ -48,8 +53,10 @@ export const DEFAULT_FIELD_STYLE: FieldStyle = {
   bridgeReach: 0,
   bridgeStyle: "direct",
   bridgeThreads: 1,
+  bridgeThreadReach: 0.5,
   bridgeFlare: 0,
   bridgeFade: true,
+  bridgeAnimate: true,
   outline: 2,
   outlineColor: "#0d0f14",
   shade: 0.75,
@@ -90,6 +97,7 @@ uniform float uBridgeReach;
 uniform int   uLinkCount;
 uniform int   uBridgeStyle;
 uniform int   uBridgeThreads;
+uniform float uBridgeThreadReach;
 uniform float uBridgeFlare;
 uniform int   uBridgeFade;
 uniform float uTime;
@@ -152,14 +160,17 @@ float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
   // partido en hebras justo donde se une a cada cuerpo. Es resta (max con -g).
   int n = uBridgeThreads < 1 ? 1 : uBridgeThreads;
   if (n > 1) {
-    float fan = pow(abs(2.0 * h - 1.0), 1.3); // 0 centro, 1 extremos
+    float e = abs(2.0 * h - 1.0); // 1 en los extremos, 0 en el centro
+    float span = clamp(uBridgeThreadReach, 0.05, 1.0);
+    // Perfil del corte: solo cerca de la conexion; se funde a 0 pasado el alcance.
+    float cutProfile = smoothstep(1.0 - span, 1.0 - span * 0.4, e);
     float cutW = rLocal * 0.14;
     float spread = rLocal * 1.6;
     for (int i = 0; i < 5; i++) {
       if (i >= n - 1) break;
       float o = spread * (float(i + 1) / float(n) - 0.5);
-      if (style == 2) o += r * 0.5 * fan * sin(h * freq + uTime * 1.6 + phase + float(i));
-      float groove = abs(perp - neckOff - o) - cutW * fan;
+      if (style == 2) o += r * 0.5 * cutProfile * sin(h * freq + uTime * 1.6 + phase + float(i));
+      float groove = abs(perp - neckOff - o) - cutW * cutProfile;
       best = max(best, -groove);
     }
   }
@@ -472,6 +483,7 @@ export class FieldRenderer {
       "uLinkCount",
       "uBridgeStyle",
       "uBridgeThreads",
+      "uBridgeThreadReach",
       "uBridgeFlare",
       "uBridgeFade",
       "uTime",
@@ -535,6 +547,7 @@ export class FieldRenderer {
     gl.uniform1i(u.uLinkCount!, linkCount);
     gl.uniform1i(u.uBridgeStyle!, BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0);
     gl.uniform1i(u.uBridgeThreads!, Math.max(1, Math.round(style.bridgeThreads)));
+    gl.uniform1f(u.uBridgeThreadReach!, clamp(style.bridgeThreadReach, 0.05, 1));
     gl.uniform1f(u.uBridgeFlare!, Math.max(0, style.bridgeFlare));
     gl.uniform1i(u.uBridgeFade!, style.bridgeFade ? 1 : 0);
     gl.uniform1f(u.uTime!, time);
