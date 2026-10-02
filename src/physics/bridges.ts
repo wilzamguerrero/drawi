@@ -27,6 +27,13 @@ export interface BridgeLink {
   r8: number;
   g8: number;
   b8: number;
+  /** Opacidad del puente por distancia radial a cada cuerpo: llena dentro del
+   *  cuerpo (inner), se desvanece a 0 en el borde de su area de alcance (outer).
+   *  Asi el difuminado llega EXACTAMENTE hasta el circulo de alcance dibujado. */
+  innerA: number;
+  outerA: number;
+  innerB: number;
+  outerB: number;
   /** Caja envolvente (ya expandida) para descarte rapido por pixel en CPU. */
   minx: number;
   miny: number;
@@ -43,7 +50,7 @@ export function bodyReach(body: Body, globalReach: number): number {
  * Calcula los puentes activos. O(n^2) una sola vez por frame (barato para
  * cientos de cuerpos); el resultado se reutiliza en todos los pixeles.
  */
-export function computeBridges(bodies: readonly Body[], globalReach: number): BridgeLink[] {
+export function computeBridges(bodies: readonly Body[], globalReach: number, fade = false): BridgeLink[] {
   const links: BridgeLink[] = [];
   const n = bodies.length;
   for (let i = 0; i < n; i++) {
@@ -62,16 +69,16 @@ export function computeBridges(bodies: readonly Body[], globalReach: number): Br
       const dy = b.pos.y - a.pos.y;
       const dist = Math.hypot(dx, dy);
       const gap = dist - a.radius - b.radius; // separacion borde a borde
-      const reach = Math.max(ra, rb);
-      if (gap <= 0 || gap >= reach) continue; // ya se tocan, o demasiado lejos
+      const reachSum = ra + rb;
+      // Con difuminado, el puente nace un poco antes de que los alcances se
+      // toquen (hasta 1.5x) y la GPU lo atenua con la distancia (tenue de lejos).
+      // Sin difuminado, solo cuando los alcances cubren el hueco (puente solido).
+      const limit = fade ? reachSum * 1.5 : reachSum;
+      if (gap <= 0 || gap >= limit) continue;
 
-      // Cuello: grueso cuando casi se tocan, se afina al alejarse (taper lineal).
-      // Se corta por debajo de ~4px en vez de dejar un hilo subpixel: un cuello
-      // mas fino que una celda de marching squares (o que un pixel en GPU) se
-      // rompe en guiones; mejor cortar limpio y que reaparezca al acercar.
-      const t = 1 - gap / reach;
-      const neck = Math.min(a.radius, b.radius) * 0.6 * t;
-      if (neck < 4) continue;
+      const cover = Math.max(0, Math.min(1, 1 - gap / reachSum));
+      const neck = Math.min(a.radius, b.radius) * 0.6 * (0.4 + 0.6 * cover);
+      if (neck < 3) continue;
 
       const cb = hexToRgb(b.color);
       const k = Math.max(4, neck);
@@ -90,6 +97,10 @@ export function computeBridges(bodies: readonly Body[], globalReach: number): Br
         r8: Math.round((ca.r + cb.r) * 0.5),
         g8: Math.round((ca.g + cb.g) * 0.5),
         b8: Math.round((ca.b + cb.b) * 0.5),
+        innerA: a.radius,
+        outerA: a.radius + ra,
+        innerB: b.radius,
+        outerB: b.radius + rb,
         minx: Math.min(a.pos.x, b.pos.x) - pad,
         miny: Math.min(a.pos.y, b.pos.y) - pad,
         maxx: Math.max(a.pos.x, b.pos.x) + pad,
@@ -158,22 +169,26 @@ export function linkField(
 
   const ends = Math.pow(Math.abs(2 * h - 1), 2);
   const rLocal = link.r * (1 + opts.flare * 1.6 * ends);
-  const fan = Math.pow(Math.abs(2 * h - 1), 1.6);
-  const merge = 1 - fan;
-  const n = opts.threads < 1 ? 1 : opts.threads;
-  const threadR = rLocal * (1 / Math.sqrt(n) + (1 - 1 / Math.sqrt(n)) * merge);
-  const spread = link.r * 1.5;
   const env = 1 - ends;
-  let best = 1e9;
-  for (let i = 0; i < n; i++) {
-    const frac = n > 1 ? i / (n - 1) - 0.5 : 0;
-    let off = spread * frac * fan;
-    if (style === 2) {
-      off += link.r * 1.1 * env * Math.sin(h * (6.2831 * (len / 220 + 0.5)) + time * 1.6 + link.phase + i * 0.6);
+  const freq = 6.2831 * (len / 220 + 0.5);
+
+  // Cuello principal unico (ondulacion organica en el centro).
+  const neckOff = style === 2 ? link.r * 1.1 * env * Math.sin(h * freq + time * 1.6 + link.phase) : 0;
+  const neckD = along < 0 ? Math.hypot(pax, pay) : along > len ? Math.hypot(px - link.bx, py - link.by) : Math.abs(perp - neckOff);
+  let best = neckD - rLocal;
+
+  // Hilos = CORTES tallados en el cuello cerca de la conexion (resta).
+  const n = opts.threads < 1 ? 1 : opts.threads;
+  if (n > 1) {
+    const fan = Math.pow(Math.abs(2 * h - 1), 1.3);
+    const cutW = rLocal * 0.14;
+    const spread = rLocal * 1.6;
+    for (let i = 0; i < n - 1; i++) {
+      let o = spread * ((i + 1) / n - 0.5);
+      if (style === 2) o += link.r * 0.5 * fan * Math.sin(h * freq + time * 1.6 + link.phase + i);
+      const groove = Math.abs(perp - neckOff - o) - cutW * fan;
+      best = Math.max(best, -groove);
     }
-    const dline = Math.abs(perp - off);
-    const d = along < 0 ? Math.hypot(pax, pay) : along > len ? Math.hypot(px - link.bx, py - link.by) : dline;
-    best = Math.min(best, d - threadR);
   }
 
   if (style === 1) {

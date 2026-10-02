@@ -93,7 +93,9 @@ export class FieldFallbackRenderer {
     // no los muestrea, no hay hueco que restar). minArea bajo para no descartar
     // esos huecos pequeños, a cambio de algo más de ruido de rejilla.
     const cell = clamp01(1 / Math.max(camera.zoom, 0.05)) * 2 + 1.5;
-    const bridges = computeBridges(bodies, style.bridgeReach);
+    // El respaldo CPU no difumina por pixel; usa el rango estricto (puentes
+    // solidos). El difuminado por alcance es exclusivo de la GPU.
+    const bridges = computeBridges(bodies, style.bridgeReach, false);
     const bridgeOpts = {
       style: BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0,
       threads: Math.max(1, Math.round(style.bridgeThreads)),

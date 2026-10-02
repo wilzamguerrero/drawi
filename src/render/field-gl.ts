@@ -27,6 +27,9 @@ export interface FieldStyle {
   bridgeThreads: number;
   /** Ensanche del cuello en los puntos de conexion con los cuerpos (0..1). */
   bridgeFlare: number;
+  /** Difuminar la opacidad de los puentes segun el area de alcance (toggle).
+   *  Off = puentes solidos y completos como antes. */
+  bridgeFade: boolean;
   /** Grosor del contorno en px de pantalla (0 = sin contorno). */
   outline: number;
   outlineColor: string;
@@ -46,6 +49,7 @@ export const DEFAULT_FIELD_STYLE: FieldStyle = {
   bridgeStyle: "direct",
   bridgeThreads: 1,
   bridgeFlare: 0,
+  bridgeFade: true,
   outline: 2,
   outlineColor: "#0d0f14",
   shade: 0.75,
@@ -57,7 +61,7 @@ export const DEFAULT_FIELD_STYLE: FieldStyle = {
 const MAX_BODIES = 512;
 const TEXELS = 4;
 const MAX_LINKS = 1024;
-const LINK_TEXELS = 2;
+const LINK_TEXELS = 3;
 
 const VERT = `#version 300 es
 in vec2 aPos;
@@ -87,6 +91,7 @@ uniform int   uLinkCount;
 uniform int   uBridgeStyle;
 uniform int   uBridgeThreads;
 uniform float uBridgeFlare;
+uniform int   uBridgeFade;
 uniform float uTime;
 uniform sampler2D uData;
 uniform sampler2D uLinks;
@@ -104,10 +109,22 @@ float sdSegment(vec2 p, vec2 a, vec2 b) {
 }
 
 /**
+ * Opacidad de un puente por distancia radial a cada cuerpo: llena dentro del
+ * cuerpo, se desvanece a 0 justo en el borde de su area de alcance. Asi el
+ * difuminado llega EXACTAMENTE hasta el circulo de alcance, no mas alla.
+ * s = (innerA, outerA, innerB, outerB).
+ */
+float linkSupport(float distA, float distB, vec4 s) {
+  float supA = 1.0 - smoothstep(s.x, s.y, distA);
+  float supB = 1.0 - smoothstep(s.z, s.w, distB);
+  return clamp(max(supA, supB), 0.0, 1.0);
+}
+
+/**
  * Distancia con signo de un puente segun su estilo y sus conectores.
  *  style: 0 recto, 1 desgarrado (agujeros), 2 organico (ondula con el tiempo).
- *  uBridgeThreads: el cuello UNICO del centro se divide en hilos SOLO en la
- *    zona de conexion con cada cuerpo (como fibras que se separan al unirse).
+ *  uBridgeThreads: talla CORTES finos en el cuello cerca de la conexion, de
+ *    modo que la union se vea separada en hebras (no son fibras anadidas).
  *  uBridgeFlare: ensancha el cuello en los extremos (conexion mas gruesa).
  */
 float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
@@ -120,37 +137,35 @@ float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
   float h = clamp(along / len, 0.0, 1.0);
   float perp = dot(pa, nrm);
 
-  // Perfil hacia los extremos: 1 en los cuerpos, 0 en el centro del puente.
   float ends = pow(abs(2.0 * h - 1.0), 2.0);
   float rLocal = r * (1.0 + uBridgeFlare * 1.6 * ends);
+  float env = 1.0 - ends; // 0 en los extremos, 1 en el centro
+  float freq = 6.2831 * (len / 220.0 + 0.5);
 
-  // Separacion de hilos: maxima en los extremos (zona de conexion), nula en el
-  // centro. Asi el puente es un cuello unico en medio y se abre en fibras al
-  // llegar a cada cuerpo. El grosor de cada hilo crece hacia el centro para que
-  // alli vuelvan a formar un solo cuello lleno.
-  float fan = pow(abs(2.0 * h - 1.0), 1.6);
-  float merge = 1.0 - fan;
+  // Cuello principal: capsula unica (opcional ondulacion organica en el centro).
+  float neckOff = style == 2 ? r * 1.1 * env * sin(h * freq + uTime * 1.6 + phase) : 0.0;
+  float neckD = along < 0.0 ? length(pa) : (along > len ? length(p - b) : abs(perp - neckOff));
+  float best = neckD - rLocal;
+
+  // Hilos = CORTES: se tallan ranuras finas paralelas al eje, concentradas en
+  // la zona de conexion (fan) y nulas en el centro, para que el cuello se vea
+  // partido en hebras justo donde se une a cada cuerpo. Es resta (max con -g).
   int n = uBridgeThreads < 1 ? 1 : uBridgeThreads;
-  float threadR = rLocal * mix(1.0 / sqrt(float(n)), 1.0, merge);
-  float spread = rLocal * 1.5;
-  // Ondulacion organica, atenuada en los extremos para no dejar puntas en las
-  // tapas (ahi la onda se anula y el hilo entra limpio al cuerpo).
-  float env = 1.0 - ends;
-  float best = 1e9;
-  for (int i = 0; i < 6; i++) {
-    if (i >= n) break;
-    float frac = n > 1 ? (float(i) / float(n - 1) - 0.5) : 0.0;
-    float off = spread * frac * fan;
-    if (style == 2) {
-      off += r * 1.1 * env * sin(h * (6.2831 * (len / 220.0 + 0.5)) + uTime * 1.6 + phase + float(i) * 0.6);
+  if (n > 1) {
+    float fan = pow(abs(2.0 * h - 1.0), 1.3); // 0 centro, 1 extremos
+    float cutW = rLocal * 0.14;
+    float spread = rLocal * 1.6;
+    for (int i = 0; i < 5; i++) {
+      if (i >= n - 1) break;
+      float o = spread * (float(i + 1) / float(n) - 0.5);
+      if (style == 2) o += r * 0.5 * fan * sin(h * freq + uTime * 1.6 + phase + float(i));
+      float groove = abs(perp - neckOff - o) - cutW * fan;
+      best = max(best, -groove);
     }
-    float dline = abs(perp - off);
-    float d = along < 0.0 ? length(pa) : (along > len ? length(p - b) : dline);
-    best = min(best, d - threadR);
   }
 
   if (style == 1) {
-    // Desgarrado: perfora agujeros irregulares en el haz (sin partirlo).
+    // Desgarrado: perfora agujeros irregulares (sin partir el cuello).
     float cell = max(6.0, r * 2.2);
     float idx = floor(along / cell);
     float localc = along - (idx + 0.5) * cell;
@@ -219,6 +234,7 @@ void main() {
   float d = 1e20;
   vec3 col = vec3(0.0);
   float k = max(uBlend, 0.001);
+  float supp = 0.0; // soporte de alfa: 1 solido, 0 difuminado (puentes lejanos)
 
   // --- Campo base: union suave de cada cuerpo con su propio radio de fusion ---
   for (int i = 0; i < ${MAX_BODIES}; i++) {
@@ -238,6 +254,7 @@ void main() {
     float h = clamp(0.5 + 0.5 * (d - di) / kk, 0.0, 1.0);
     d = mix(di, d, 1.0 - h) - kk * h * (1.0 - h);
     col = mix(col, ci, h);
+    supp = mix(supp, 1.0, h); // la materia siempre es solida
   }
 
   // --- Puentes dirigidos: cuellos capsulares precalculados en CPU ---
@@ -260,9 +277,23 @@ void main() {
     float gg = floor(mod(p, 65536.0) / 256.0);
     float bb = mod(p, 256.0);
     vec3 lc = vec3(rr, gg, bb) / 255.0;
+    // Opacidad del puente. uBridgeFade: si esta activo, difumina hasta el borde
+    // del area de alcance de cada cuerpo (distancia radial) y ademas atenua el
+    // puente entero segun lo cerca que esten los alcances (tenue de lejos, mas
+    // opaco al acercarse; sin salto brusco). Si no, el puente es solido.
+    vec4 l2 = texelFetch(uLinks, ivec2(2, li), 0); // innerA, outerA, innerB, outerB
+    float ls = 1.0;
+    if (uBridgeFade == 1) {
+      float radial = linkSupport(length(w - l0.xy), length(w - l0.zw), l2);
+      float gap = length(l0.zw - l0.xy) - l2.x - l2.z;
+      float reachSum = (l2.y - l2.x) + (l2.w - l2.z);
+      float prox = clamp(1.0 - smoothstep(0.0, reachSum * 1.5, gap), 0.0, 1.0);
+      ls = radial * prox;
+    }
     float h = clamp(0.5 + 0.5 * (d - seg) / kL, 0.0, 1.0);
     d = mix(seg, d, 1.0 - h) - kL * h * (1.0 - h);
     col = mix(col, lc, h);
+    supp = mix(supp, ls, h);
   }
 
   if (uCount == 0) { fragColor = vec4(0.0); return; }
@@ -294,6 +325,9 @@ void main() {
     shaded = mix(shaded, uOutlineColor, edge);
     alpha = max(alpha, edge * uAlpha);
   }
+
+  // El soporte difumina los puentes incompletos (la materia tiene soporte 1).
+  alpha *= clamp(supp, 0.0, 1.0);
 
   fragColor = vec4(shaded * alpha, alpha);
 }
@@ -439,6 +473,7 @@ export class FieldRenderer {
       "uBridgeStyle",
       "uBridgeThreads",
       "uBridgeFlare",
+      "uBridgeFade",
       "uTime",
       "uData",
       "uLinks",
@@ -501,6 +536,7 @@ export class FieldRenderer {
     gl.uniform1i(u.uBridgeStyle!, BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0);
     gl.uniform1i(u.uBridgeThreads!, Math.max(1, Math.round(style.bridgeThreads)));
     gl.uniform1f(u.uBridgeFlare!, Math.max(0, style.bridgeFlare));
+    gl.uniform1i(u.uBridgeFade!, style.bridgeFade ? 1 : 0);
     gl.uniform1f(u.uTime!, time);
     gl.uniform1i(u.uData!, 0);
     gl.uniform1i(u.uLinks!, 1);
@@ -526,7 +562,11 @@ export class FieldRenderer {
       d[o + 4] = l.r;
       d[o + 5] = l.k;
       d[o + 6] = l.r8 * 65536 + l.g8 * 256 + l.b8;
-      d[o + 7] = 0;
+      d[o + 7] = l.phase;
+      d[o + 8] = l.innerA;
+      d[o + 9] = l.outerA;
+      d[o + 10] = l.innerB;
+      d[o + 11] = l.outerB;
     }
 
     gl.bindTexture(gl.TEXTURE_2D, this.linkTex);
