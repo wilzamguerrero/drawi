@@ -88,8 +88,10 @@ export function fieldContours(
   if (!box) return [];
 
   const cell = Math.max(0.5, opt.cell);
-  const cols = Math.min(2048, Math.ceil(box.w / cell) + 1);
-  const rows = Math.min(2048, Math.ceil(box.h / cell) + 1);
+  // Tope de resolucion de la rejilla: en campos grandes evita cuadricular
+  // millones de celdas (lento). Si el campo es mayor, la celda crece sola.
+  const cols = Math.min(768, Math.ceil(box.w / cell) + 1);
+  const rows = Math.min(768, Math.ceil(box.h / cell) + 1);
   if (cols < 2 || rows < 2) return [];
 
   const stepX = box.w / (cols - 1);

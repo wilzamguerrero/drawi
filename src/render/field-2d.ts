@@ -19,6 +19,7 @@ import type { Layer } from "./layer";
 export class FieldFallbackRenderer {
   private cachedKey = "";
   private cached: Array<{ poly: Array<{ x: number; y: number }>; color: Rgb }> = [];
+  private mask: HTMLCanvasElement | null = null;
 
   render(layer: Layer, bodies: readonly Body[], camera: Camera, style: FieldStyle): void {
     if (bodies.length === 0) {
@@ -80,7 +81,58 @@ export class FieldFallbackRenderer {
     }
 
     ctx.globalAlpha = 1;
+
+    // Difuminado por alcance en CPU: se recorta la opacidad con una mascara que
+    // es opaca dentro del area de alcance de cada cuerpo y se desvanece hasta su
+    // borde (destination-in). Replica el difuminado radial de la GPU.
+    if (style.bridgeFade) this.applyReachMask(layer, bodies, camera, style);
+
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  /** Mascara radial de alcance aplicada con destination-in (difuminado CPU). */
+  private applyReachMask(layer: Layer, bodies: readonly Body[], camera: Camera, style: FieldStyle): void {
+    const gr = Math.max(0, style.bridgeReach);
+    let any = gr > 0;
+    if (!any) {
+      for (const b of bodies) {
+        if ((b.bridgeReach >= 0 ? b.bridgeReach : gr) > 0) { any = true; break; }
+      }
+    }
+    if (!any) return;
+
+    const w = layer.canvas.width;
+    const h = layer.canvas.height;
+    if (!this.mask) this.mask = document.createElement("canvas");
+    if (this.mask.width !== w || this.mask.height !== h) {
+      this.mask.width = w;
+      this.mask.height = h;
+    }
+    const mctx = this.mask.getContext("2d");
+    if (!mctx) return;
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    mctx.clearRect(0, 0, w, h);
+    camera.applyTo(mctx, layer.dpr);
+    mctx.globalCompositeOperation = "lighter";
+    for (const b of bodies) {
+      const reach = b.bridgeReach >= 0 ? b.bridgeReach : gr;
+      const inner = b.radius;
+      const outer = b.radius + Math.max(0, reach);
+      const r1 = Math.max(outer, inner + 0.5);
+      const g = mctx.createRadialGradient(b.pos.x, b.pos.y, Math.min(inner, r1), b.pos.x, b.pos.y, r1);
+      g.addColorStop(0, "rgba(255,255,255,1)");
+      g.addColorStop(1, "rgba(255,255,255,0)");
+      mctx.fillStyle = g;
+      mctx.beginPath();
+      mctx.arc(b.pos.x, b.pos.y, r1, 0, Math.PI * 2);
+      mctx.fill();
+    }
+
+    const ctx = layer.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(this.mask, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
   }
 
   private build(
@@ -93,9 +145,10 @@ export class FieldFallbackRenderer {
     // no los muestrea, no hay hueco que restar). minArea bajo para no descartar
     // esos huecos pequeños, a cambio de algo más de ruido de rejilla.
     const cell = clamp01(1 / Math.max(camera.zoom, 0.05)) * 2 + 1.5;
-    // El respaldo CPU no difumina por pixel; usa el rango estricto (puentes
-    // solidos). El difuminado por alcance es exclusivo de la GPU.
-    const bridges = computeBridges(bodies, style.bridgeReach, false);
+    // La forma de los puentes es solida; el difuminado por alcance se aplica
+    // despues como mascara (applyReachMask). Con difuminado on se extiende el
+    // rango para que aparezcan los puentes tenues antes de tocarse.
+    const bridges = computeBridges(bodies, style.bridgeReach, style.bridgeFade);
     const bridgeOpts = {
       style: BRIDGE_STYLE_CODE[style.bridgeStyle] ?? 0,
       threads: Math.max(1, Math.round(style.bridgeThreads)),
@@ -138,7 +191,7 @@ export class FieldFallbackRenderer {
 
 /** Huella barata del estado: si no cambia, el contorno cacheado sirve. */
 function stateKey(bodies: readonly Body[], style: FieldStyle, zoom: number): string {
-  let s = `${bodies.length}|${style.blend.toFixed(2)}|${style.bridgeReach.toFixed(2)}|${style.bridgeStyle}|${style.bridgeThreads}|${style.bridgeFlare.toFixed(2)}|${zoom.toFixed(2)}`;
+  let s = `${bodies.length}|${style.blend.toFixed(2)}|${style.bridgeReach.toFixed(2)}|${style.bridgeStyle}|${style.bridgeThreads}|${style.bridgeThreadReach.toFixed(2)}|${style.bridgeFlare.toFixed(2)}|${style.bridgeFade ? 1 : 0}|${zoom.toFixed(2)}`;
   for (const b of bodies) {
     s += `|${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)},${b.angle.toFixed(2)},${b.shape.size.toFixed(1)},${b.bridgeReach.toFixed(0)}`;
   }

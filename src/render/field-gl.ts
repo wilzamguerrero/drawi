@@ -298,14 +298,17 @@ void main() {
     // del area de alcance de cada cuerpo (distancia radial) y ademas atenua el
     // puente entero segun lo cerca que esten los alcances (tenue de lejos, mas
     // opaco al acercarse; sin salto brusco). Si no, el puente es solido.
-    vec4 l2 = texelFetch(uLinks, ivec2(2, li), 0); // innerA, outerA, innerB, outerB
     float ls = 1.0;
     if (uBridgeFade == 1) {
+      vec4 l2 = texelFetch(uLinks, ivec2(2, li), 0); // innerA, outerA, innerB, outerB
       float radial = linkSupport(length(w - l0.xy), length(w - l0.zw), l2);
       float gap = length(l0.zw - l0.xy) - l2.x - l2.z;
       float reachSum = (l2.y - l2.x) + (l2.w - l2.z);
       float prox = clamp(1.0 - smoothstep(0.0, reachSum * 1.5, gap), 0.0, 1.0);
-      ls = radial * prox;
+      // Ease-out: el puente conectado se mantiene opaco y solo se desvanece
+      // limpio cerca del borde del alcance (en vez de verse gris lavado).
+      float x = radial * prox;
+      ls = 1.0 - (1.0 - x) * (1.0 - x);
     }
     float h = clamp(0.5 + 0.5 * (d - seg) / kL, 0.0, 1.0);
     d = mix(seg, d, 1.0 - h) - kL * h * (1.0 - h);
@@ -526,7 +529,7 @@ export class FieldRenderer {
     if (count === 0) return;
 
     this.uploadBodies(gl, bodies, count);
-    const linkCount = this.uploadLinks(gl, bodies, style.bridgeReach);
+    const linkCount = this.uploadLinks(gl, bodies, style.bridgeReach, style.bridgeFade);
 
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vao);
@@ -560,15 +563,68 @@ export class FieldRenderer {
     gl.uniform1i(u.uData!, 0);
     gl.uniform1i(u.uLinks!, 1);
 
+    // Tijera: solo sombrear la caja que ocupa la materia (cuerpos + alcance),
+    // no toda la pantalla. En escenas dispersas evita evaluar millones de
+    // pixeles vacios -> mucho mas liviano, sobre todo con la ondulacion animada.
+    const box = this.contentScissor(bodies, camera, style, dpr);
+    if (box) {
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(box.x, box.y, box.w, box.h);
+    }
+
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.SCISSOR_TEST);
     gl.bindVertexArray(null);
   }
 
+  /** Caja (en pixeles de dispositivo, origen abajo-izq) que cubre la materia. */
+  private contentScissor(
+    bodies: readonly Body[],
+    camera: Camera,
+    style: FieldStyle,
+    dpr: number,
+  ): { x: number; y: number; w: number; h: number } | null {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const gr = Math.max(0, style.bridgeReach);
+    const corner = { x: 0, y: 0 };
+    for (const b of bodies) {
+      const bk = b.blend > 0 ? b.blend : style.blend;
+      const br = b.bridgeReach >= 0 ? b.bridgeReach : gr;
+      // Margen: radio + fusion + alcance de puente + holgura para hilos/ensanche.
+      const ext = b.radius + bk + br + 8;
+      // Las 4 esquinas de la caja mundial de este cuerpo, proyectadas a pantalla
+      // (la rotacion de camara mezcla x/y, por eso hay que transformar esquinas).
+      for (let i = 0; i < 4; i++) {
+        corner.x = b.pos.x + (i & 1 ? ext : -ext);
+        corner.y = b.pos.y + (i & 2 ? ext : -ext);
+        const s = camera.worldToScreen(corner);
+        if (s.x < minX) minX = s.x;
+        if (s.y < minY) minY = s.y;
+        if (s.x > maxX) maxX = s.x;
+        if (s.y > maxY) maxY = s.y;
+      }
+    }
+    if (minX > maxX) return null;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    // CSS px -> dispositivo, y recorte a la pantalla.
+    let x0 = Math.max(0, Math.floor(minX * dpr));
+    let x1 = Math.min(W, Math.ceil(maxX * dpr));
+    // El eje Y del scissor va de abajo hacia arriba.
+    let y0 = Math.max(0, Math.floor(H - maxY * dpr));
+    let y1 = Math.min(H, Math.ceil(H - minY * dpr));
+    if (x1 <= x0 || y1 <= y0) return null;
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+
   /** Precalcula los puentes y los sube a la textura de enlaces. */
-  private uploadLinks(gl: WebGL2RenderingContext, bodies: readonly Body[], globalReach: number): number {
-    const links = computeBridges(bodies, globalReach);
+  private uploadLinks(gl: WebGL2RenderingContext, bodies: readonly Body[], globalReach: number, fade: boolean): number {
+    const links = computeBridges(bodies, globalReach, fade);
     const count = Math.min(links.length, MAX_LINKS);
     const d = this.linkData;
     for (let i = 0; i < count; i++) {
