@@ -143,6 +143,7 @@ export function sampleField(
   // Puentes dirigidos: cada enlace es un cuello capsular entre dos cuerpos.
   for (let i = 0; i < bridges.length; i++) {
     const link = bridges[i];
+    if (x < link.minx || x > link.maxx || y < link.miny || y > link.maxy) continue;
     const seg = linkField(x, y, link, bridgeStyle, time);
     if (seg > link.k + 2) continue;
     const kk = Math.max(0.001, link.k);
@@ -184,6 +185,7 @@ export function sampleFieldDistance(
 
   for (let i = 0; i < bridges.length; i++) {
     const link = bridges[i];
+    if (x < link.minx || x > link.maxx || y < link.miny || y > link.maxy) continue;
     const seg = linkField(x, y, link, bridgeStyle, time);
     if (seg > link.k + 2) continue;
     d = smin(d, seg, Math.max(0.001, link.k));

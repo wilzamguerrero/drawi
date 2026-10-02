@@ -27,6 +27,11 @@ export interface BridgeLink {
   r8: number;
   g8: number;
   b8: number;
+  /** Caja envolvente (ya expandida) para descarte rapido por pixel en CPU. */
+  minx: number;
+  miny: number;
+  maxx: number;
+  maxy: number;
 }
 
 /** Alcance efectivo de un cuerpo: propio si >= 0, si no el global. */
@@ -66,22 +71,31 @@ export function computeBridges(bodies: readonly Body[], globalReach: number): Br
       if (neck < 1) continue;
 
       const cb = hexToRgb(b.color);
+      const k = Math.max(4, neck);
+      const pad = neck * 1.2 + k + 2;
       links.push({
         ax: a.pos.x,
         ay: a.pos.y,
         bx: b.pos.x,
         by: b.pos.y,
         r: neck,
-        k: Math.max(4, neck),
+        k,
         phase: ((i * 73856093) ^ (j * 19349663)) % 628 / 100,
         r8: Math.round((ca.r + cb.r) * 0.5),
         g8: Math.round((ca.g + cb.g) * 0.5),
         b8: Math.round((ca.b + cb.b) * 0.5),
+        minx: Math.min(a.pos.x, b.pos.x) - pad,
+        miny: Math.min(a.pos.y, b.pos.y) - pad,
+        maxx: Math.max(a.pos.x, b.pos.x) + pad,
+        maxy: Math.max(a.pos.y, b.pos.y) + pad,
       });
     }
   }
   return links;
 }
+
+/** Parte fraccionaria (espejo de fract() de GLSL). */
+const fract = (x: number): number => x - Math.floor(x);
 
 /** Distancia con signo a un segmento (para el cuello capsular del puente). */
 export function sdSegment(
@@ -125,11 +139,24 @@ export function linkField(
   const h = Math.min(1, Math.max(0, along / len));
 
   if (style === 1) {
+    // Desgarrado: cuello recto SOLIDO con agujeros irregulares perforados
+    // dentro, para que se vea erosionado sin partirse en trozos. Se parte de
+    // la capsula y se le restan circulos (uno por celda a lo largo del cuello),
+    // mas pequenos que el radio y desplazados, asi el puente sigue conectado.
     const proj = Math.min(len, Math.max(0, along));
     const base = Math.hypot(px - (link.ax + dirx * proj), py - (link.ay + diry * proj));
-    const beads = 0.5 + 0.5 * Math.cos(h * len * 0.09 + link.phase);
-    const rr = link.r * (beads * beads * 1.35 - 0.18);
-    return base - rr;
+    const cap = base - link.r;
+    const perp = pax * -diry + pay * dirx;
+    const cell = Math.max(6, link.r * 2.2);
+    const idx = Math.floor(along / cell);
+    const localc = along - (idx + 0.5) * cell;
+    const rnd = fract(Math.sin(idx * 12.9898 + link.phase * 7) * 43758.5453);
+    const rnd2 = fract(Math.sin(idx * 78.233 + link.phase * 3) * 24634.6345);
+    const holeR = link.r * (0.3 + 0.45 * rnd);
+    const perpOff = (rnd2 - 0.5) * link.r * 0.9;
+    const dh = Math.hypot(localc, perp - perpOff) - holeR;
+    // Restar el agujero del cuello (resta dura = max con el negado).
+    return Math.max(cap, -dh);
   }
   if (style === 2) {
     const perp = pax * -diry + pay * dirx;

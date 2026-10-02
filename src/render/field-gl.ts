@@ -110,12 +110,22 @@ float linkField(vec2 p, vec2 a, vec2 b, float r, int style, float phase) {
   float h = clamp(along / len, 0.0, 1.0);
 
   if (style == 1) {
-    // Desgarrado: cuentas separadas por pellizcos a radio ~0.
+    // Desgarrado: cuello recto SOLIDO con agujeros irregulares perforados
+    // dentro (uno por celda a lo largo del cuello), para que se vea erosionado
+    // sin partirse en trozos.
     float proj = clamp(along, 0.0, len);
     float base = length(p - (a + dir * proj));
-    float beads = 0.5 + 0.5 * cos(h * len * 0.09 + phase);
-    float rr = r * (beads * beads * 1.35 - 0.18);
-    return base - rr;
+    float cap = base - r;
+    float perp = dot(pa, nrm);
+    float cell = max(6.0, r * 2.2);
+    float idx = floor(along / cell);
+    float localc = along - (idx + 0.5) * cell;
+    float rnd = fract(sin(idx * 12.9898 + phase * 7.0) * 43758.5453);
+    float rnd2 = fract(sin(idx * 78.233 + phase * 3.0) * 24634.6345);
+    float holeR = r * (0.3 + 0.45 * rnd);
+    float perpOff = (rnd2 - 0.5) * r * 0.9;
+    float dh = length(vec2(localc, perp - perpOff)) - holeR;
+    return max(cap, -dh);
   }
   if (style == 2) {
     // Organico: la linea central ondula con el tiempo.
@@ -216,6 +226,9 @@ void main() {
     if (li >= uLinkCount) break;
     vec4 l0 = texelFetch(uLinks, ivec2(0, li), 0); // ax, ay, bx, by
     vec4 l1 = texelFetch(uLinks, ivec2(1, li), 0); // r, k, colorPacked, phase
+    // Descarte barato por distancia al segmento recto antes del calculo del
+    // estilo (con margen para la ondulacion del modo organico).
+    if (sdSegment(w, l0.xy, l0.zw) > l1.x * 2.2 + l1.y + 4.0) continue;
     float seg = linkField(w, l0.xy, l0.zw, l1.x, uBridgeStyle, l1.w);
     float kL = max(l1.y, 0.001);
     if (seg > kL + 2.0) continue;

@@ -20,7 +20,10 @@ export class BridgeTool implements Tool {
   private target: Body | null = null;
   private moved = false;
   private startReach = 0;
-  private startDist = 0;
+  private startX = 0;
+  private startY = 0;
+  private dirX = 0;
+  private dirY = 0;
 
   onDown(ctx: ToolContext, s: InputSample): void {
     const w = ctx.toWorld(s);
@@ -32,13 +35,25 @@ export class BridgeTool implements Tool {
     ctx.history.begin();
     this.target = body;
     this.moved = false;
-    // Punto de partida: el alcance efectivo actual (propio o el global) y la
-    // distancia inicial del puntero al centro, para arrastrar de forma relativa.
     const global = ctx.doc.field.bridgeReach;
     this.startReach = body.bridgeReach >= 0 ? body.bridgeReach : Math.max(0, global);
-    const dx = w.x - body.pos.x;
-    const dy = w.y - body.pos.y;
-    this.startDist = Math.hypot(dx, dy);
+    this.startX = w.x;
+    this.startY = w.y;
+    // Direccion radial desde el centro hacia donde se pulso: arrastrar en esa
+    // direccion agranda, en sentido contrario encoge. Es un delta sobre el valor
+    // actual (no un valor absoluto), asi se refina en ambos sentidos sin tope.
+    let dx = w.x - body.pos.x;
+    let dy = w.y - body.pos.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-3) {
+      dx = 0;
+      dy = -1;
+    } else {
+      dx /= len;
+      dy /= len;
+    }
+    this.dirX = dx;
+    this.dirY = dy;
     ctx.setHighlight(body);
   }
 
@@ -49,10 +64,9 @@ export class BridgeTool implements Tool {
       return;
     }
     const w = ctx.toWorld(samples[samples.length - 1]);
-    const dx = w.x - this.target.pos.x;
-    const dy = w.y - this.target.pos.y;
-    const dist = Math.hypot(dx, dy);
-    const reach = Math.max(0, this.startReach + (dist - this.startDist));
+    // Proyeccion del desplazamiento sobre la direccion radial inicial.
+    const delta = (w.x - this.startX) * this.dirX + (w.y - this.startY) * this.dirY;
+    const reach = Math.max(0, this.startReach + delta);
     this.target.bridgeReach = reach;
     this.moved = true;
     ctx.invalidateField();
