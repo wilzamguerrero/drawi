@@ -10,9 +10,10 @@ import type { Body } from "../physics/world";
 import type { MatterOp } from "../app/editor";
 import type { PullFamily } from "./pull-shapes";
 
-export type ToolId = "brush" | "shape" | "matter" | "bridge" | "symmetry" | "picker" | "hand";
+export type ToolId = "select" | "brush" | "shape" | "matter" | "bridge" | "symmetry" | "picker" | "hand";
 
 export const TOOL_LABELS: Record<ToolId, string> = {
+  select: "Selección",
   brush: "Pincel",
   shape: "Forma",
   matter: "Materia",
@@ -55,6 +56,9 @@ export interface ToolContext {
   pullFamily: PullFamily | "random";
   /** Operacion activa de la herramienta Materia (mover/rotar/escalar). */
   matterOp: MatterOp;
+  selectOp: import("../app/editor").SelectOp;
+  keepAspect: boolean;
+  selection: import("../app/selection").Selection;
 
   toWorld(s: InputSample, out?: Vec2): Vec2;
   setColor(hex: string): void;

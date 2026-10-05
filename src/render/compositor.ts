@@ -251,13 +251,18 @@ export class Compositor {
         const y = layer.imageY ?? 0;
         const w = layer.imageW ?? img.naturalWidth;
         const h = layer.imageH ?? img.naturalHeight;
-        // Skip culling for images: cheap, but could add rectIntersects with world rect.
-        ctx.drawImage(img, x, y, w, h);
-      } else if (img) {
-        // Still loading: draw placeholder checker or nothing; schedule repaint
-        // via image onload will trigger via next inkRevision or explicit invalidate.
+        const ang = layer.imageAngle ?? 0;
+        if (Math.abs(ang) < 1e-6) {
+          ctx.drawImage(img, x, y, w, h);
+        } else {
+          const cx = x + w / 2, cy = y + h / 2;
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(ang);
+          ctx.drawImage(img, -w / 2, -h / 2, w, h);
+          ctx.restore();
+        }
       }
-      // Image layers do not support wet painting; masks still apply.
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       this.applyMask(buf, layer, camera, dpr, opts, depth, isActive);
       return true;

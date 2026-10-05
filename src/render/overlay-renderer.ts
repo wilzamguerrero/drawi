@@ -36,6 +36,11 @@ export interface OverlayState {
   /** Alcance global de puentes (para cuerpos que usan el valor global). */
   bridgeReach: number;
   bodies: readonly Body[];
+  /** Selección universal (flecha). */
+  selectBounds?: import("../scene/types").Rect | null;
+  selectPivot?: Vec2 | null;
+  selectOp?: import("../app/editor").SelectOp;
+  isSelectTool?: boolean;
 }
 
 /**
@@ -52,8 +57,13 @@ export class OverlayRenderer {
     if (state.showWalls) this.drawWalls(ctx, state.walls, camera);
     if (state.debugColliders) this.drawColliders(ctx, state.bodies, camera);
     if (state.showBridgeReach) this.drawBridgeReach(ctx, state.bodies, state.bridgeReach, camera);
+    // Select tool uses its own box+pivot; don't double-draw the generic transform pivot then.
+    if (state.isSelectTool && state.selectBounds) this.drawSelectBox(ctx, state.selectBounds, state.selectPivot ?? null, state.selectOp ?? "move", camera);
+    else if (state.transformPivot) this.drawPivot(ctx, state.transformPivot, camera);
     if (state.highlight) this.drawHighlight(ctx, state.highlight, camera);
-    if (state.transformPivot) this.drawPivot(ctx, state.transformPivot, camera);
+    else if (state.selectBounds && state.selectOp !== undefined) {
+      // Even when not on select tool, show faint box if something selected (optional, muted)
+    }
     if (state.previewShape && state.cursor) {
       this.drawShapePreview(ctx, state.previewShape, state.cursor, camera);
     }
@@ -176,6 +186,42 @@ export class OverlayRenderer {
     ctx.arc(s.x, s.y, 2.5, 0, TAU);
     ctx.fillStyle = HOT;
     ctx.fill();
+    ctx.restore();
+  }
+
+  private drawSelectBox(ctx: CanvasRenderingContext2D, b: { x: number; y: number; w: number; h: number }, pivot: Vec2 | null, op: import("../app/editor").SelectOp, camera: Camera): void {
+    const a = camera.worldToScreen({ x: b.x, y: b.y });
+    const c = camera.worldToScreen({ x: b.x + b.w, y: b.y + b.h });
+    const w = c.x - a.x, h = c.y - a.y;
+    ctx.save();
+    ctx.strokeStyle = op === "rotate" ? "rgba(180,220,255,0.95)" : op === "scale" ? "rgba(120,255,180,0.95)" : op === "pivot" ? "rgba(255,195,80,0.95)" : "rgba(100,150,255,0.95)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash(op === "move" ? [6, 4] : []);
+    ctx.strokeRect(a.x, a.y, w, h);
+    ctx.setLineDash([]);
+    // Handles for scale
+    if (op === "scale") {
+      const hs = 6;
+      const pts = [
+        [a.x, a.y], [a.x + w / 2, a.y], [a.x + w, a.y],
+        [a.x + w, a.y + h / 2], [a.x + w, a.y + h], [a.x + w / 2, a.y + h],
+        [a.x, a.y + h], [a.x, a.y + h / 2],
+      ] as const;
+      ctx.fillStyle = "#fff"; ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      for (const [x, y] of pts) { ctx.fillRect(x - hs / 2, y - hs / 2, hs, hs); ctx.strokeRect(x - hs / 2, y - hs / 2, hs, hs); }
+    }
+    if (op === "rotate") {
+      // small rotation handle above top-center
+      const rx = a.x + w / 2, ry = a.y - 18;
+      ctx.beginPath(); ctx.moveTo(a.x + w / 2, a.y); ctx.lineTo(rx, ry); ctx.stroke();
+      ctx.beginPath(); ctx.arc(rx, ry, 6, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill(); ctx.stroke();
+    }
+    if (pivot) {
+      const s = camera.worldToScreen(pivot);
+      ctx.fillStyle = "rgba(255,195,80,1)"; ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x - 8, s.y); ctx.lineTo(s.x + 8, s.y); ctx.moveTo(s.x, s.y - 8); ctx.lineTo(s.x, s.y + 8); ctx.stroke();
+    }
     ctx.restore();
   }
 

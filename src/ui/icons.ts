@@ -99,6 +99,12 @@ export const ICONS: Record<string, string> = {
   merge: svg(`<path d="M12 3v8"/><path d="m8 8 4 3 4-3"/><path d="M5 15h14"/><path d="M5 19h14"/>`),
   flatten: svg(`<path d="M4 8h16M4 12h16M4 16h16"/>`),
   lock: svg(`<rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>`),
+  // Flecha de selección (estilo Illustrator cursor: negra con borde blanco)
+  select: svg(`<path d="M5 3.5 19 12 12.5 13.7 9.5 19Z" fill="currentColor" stroke="white" stroke-width="1.1" stroke-linejoin="round"/>`),
+  selectOutline: svg(`<path d="M5 3.5 19 12 12.5 13.7 9.5 19Z"/>`),
+  alignLeft: svg(`<path d="M4 4v16"/><rect x="8" y="6" width="10" height="4"/><rect x="8" y="11" width="7" height="4"/><rect x="8" y="16" width="12" height="2"/>`),
+  alignCenter: svg(`<path d="M12 4v16"/><rect x="6" y="7" width="12" height="3"/><rect x="8" y="11.5" width="8" height="3"/><rect x="5" y="16" width="14" height="2"/>`),
+  alignRight: svg(`<path d="M20 4v16"/><rect x="6" y="6" width="10" height="4"/><rect x="9" y="11" width="7" height="4"/><rect x="4" y="16" width="12" height="2"/>`),
 };
 
 export function icon(name: keyof typeof ICONS | string): string {

@@ -513,6 +513,35 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     ],
   };
 
+  // ---------------------------------------------------------- Seleccion (Flecha universal · V)
+  const select: Domain = {
+    id: "select",
+    label: "Seleccion",
+    icon: "select",
+    children: [
+      { kind: "action", id: "tool-select", label: "Flecha (V)", icon: "select", toggled: (s) => s.tool === "select", run: () => editor.setTool("select") },
+      {
+        kind: "choice", id: "select-op", label: "Transformar", icon: "move", chooser: "segmented",
+        hint: "Mover / Escalar / Rotar / Pivote: el pivote por defecto es el centro; Pivote lo desplaza. Respeta capas bloqueadas.",
+        visible: (s) => s.tool === "select",
+        options: [
+          { value: "move", id: "select-op-move", label: "Mover" },
+          { value: "scale", id: "select-op-scale", label: "Escalar" },
+          { value: "rotate", id: "select-op-rotate", label: "Rotar" },
+          { value: "pivot", id: "select-op-pivot", label: "Pivote" },
+        ],
+        get: (s) => s.selectOp, set: (v) => editor.setSelectOp(v as import("../../app/editor").SelectOp),
+      },
+      { kind: "toggle", id: "keep-aspect", label: "Mantener proporcion", icon: "lock", visible: (s) => s.tool === "select" && s.selectOp === "scale", get: (s) => s.keepAspect, set: (v) => editor.setKeepAspect(v) },
+      { kind: "action", id: "select-all", label: "Seleccionar todo", icon: "select", run: () => editor.selectAll() },
+      { kind: "action", id: "select-none", label: "Deseleccionar", icon: "close", disabled: (s) => s.selectCount === 0, run: () => editor.clearSelection() },
+      { kind: "action", id: "select-duplicate", label: "Duplicar", icon: "duplicate", disabled: (s) => s.selectCount === 0, run: () => editor.duplicateSelection() },
+      { kind: "action", id: "select-delete", label: "Borrar seleccion", icon: "trash", danger: true, disabled: (s) => s.selectCount === 0, run: () => editor.deleteSelection() },
+      { kind: "custom", id: "select-align", label: "Alinear", surfaces: ["dock"] },
+      { kind: "custom", id: "select-info", label: "Seleccion", surfaces: ["dock"] },
+    ],
+  };
+
   // ------------------------------------------------------------- Capas
   // Panel de capas estilo Photoshop: solo dock. Es un único campo `custom` cuyo
   // adaptador (que monta `LayersPanel`) se cablea en `buildCustoms` del dock;
@@ -527,7 +556,6 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     ],
   };
 
-  // Orden de la raíz = orden del radial (Archivo arriba, luego en el sentido del
-  // reloj). El dock elige su subconjunto y disposición desde estos mismos datos.
-  return [file, brush, color, layers, matter, symmetry, view];
+  // Orden: Flecha primero (antes de Pincel), luego el resto. El dock lo refleja.
+  return [file, select, brush, color, layers, matter, symmetry, view];
 }

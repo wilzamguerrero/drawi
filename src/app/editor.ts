@@ -5,7 +5,7 @@ import { globalRng, Rng } from "../core/rng";
 import type { Vec2 } from "../core/vec2";
 import { PointerInput, type GestureState, type InputSample } from "../input/pointer";
 import { DEFAULT_SHAPE, randomShape, type ShapeDef } from "../physics/shapes";
-import { createBody, setBodyStatic, type WorldSettings } from "../physics/world";
+import { createBody, setBodyStatic, syncTransform, type WorldSettings } from "../physics/world";
 import type { Body } from "../physics/world";
 import { computeBridges } from "../physics/bridges";
 import { fieldContours } from "../physics/marching";
@@ -23,6 +23,10 @@ import type { DiagSnapshot } from "./diagnostics";
 import { History } from "./history";
 import { DEFAULT_BRUSH, type BrushSettings } from "../stroke/types";
 import { symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
+export type SelectOp = "move" | "scale" | "rotate" | "pivot";
+export type SelectPivotMode = "center" | "custom";
+import { Selection } from "./selection";
+import { SelectTool } from "../tools/select-tool";
 import { BrushTool } from "../tools/brush-tool";
 import { BridgeTool } from "../tools/bridge-tool";
 import { MatterTool } from "../tools/matter-tool";
@@ -82,6 +86,14 @@ export interface EditorState {
   showBridgeReach: boolean;
   /** Operacion de la herramienta Materia: mover, rotar o escalar. */
   matterOp: MatterOp;
+  selectOp: SelectOp;
+  keepAspect: boolean;
+  snapEnabled: boolean;
+  selectSnap: number;
+  selectBounds: import("../scene/types").Rect | null;
+  selectPivot: import("../core/vec2").Vec2 | null;
+  selectCount: number;
+  selection: import("./selection").Selection;
   /** Capas del documento (abajo→arriba) para el panel. */
   layers: SceneLayer[];
   activeLayerId: string;
@@ -116,6 +128,11 @@ export class Editor {
   readonly rng = new Rng(globalRng.int(0, 1 << 30));
 
   brush: BrushSettings = { ...DEFAULT_BRUSH };
+  selection = new Selection();
+  selectOp: SelectOp = "move";
+  keepAspect = true;
+  snapEnabled = true;
+  selectSnap = 12;
   color = "#16181d";
   /** Color secundario (estilo Photoshop): se intercambia con el activo con la
       tecla X y desde el círculo sobrepuesto de la rueda de color. */
@@ -175,6 +192,7 @@ export class Editor {
   private pickCtx: CanvasRenderingContext2D;
 
   constructor(host: HTMLElement) {
+    (globalThis as unknown as { __drawiEditor?: unknown }).__drawiEditor = this as unknown as never;
     this.host = host;
     this.history = new History(this.doc);
 
@@ -207,6 +225,7 @@ export class Editor {
     this.color = DEFAULT_PALETTES[0].colors[0];
 
     this.tools = {
+      select: new SelectTool(),
       brush: new BrushTool(),
       shape: new ShapeTool(),
       matter: new MatterTool(),
@@ -244,6 +263,7 @@ export class Editor {
   }
 
   get state(): EditorState {
+    const sb = this.selection.bounds(this.doc);
     return {
       name: this.doc.meta.name,
       tool: this.toolId,
@@ -272,6 +292,14 @@ export class Editor {
       debugColliders: this.debugColliders,
       showBridgeReach: this.showBridgeReach,
       matterOp: this.matterOp,
+      selectOp: this.selectOp,
+      keepAspect: this.keepAspect,
+      snapEnabled: this.snapEnabled,
+      selectSnap: this.selectSnap,
+      selectBounds: sb,
+      selectPivot: this.selection.pivot(this.doc),
+      selectCount: this.selection.count,
+      selection: this.selection,
       layers: this.doc.layers,
       activeLayerId: this.doc.activeLayerId,
       soloLayerId: this.soloLayerId,
@@ -508,6 +536,80 @@ export class Editor {
 
   setMatterOp(op: MatterOp): void {
     this.matterOp = op;
+    this.emitState();
+  }
+
+  // ------------------- Seleccion universal (Flecha · V)
+  setSelectOp(op: SelectOp): void { this.selectOp = op; this.overlayLayer.invalidate(); this.emitState(); }
+  setKeepAspect(on: boolean): void { this.keepAspect = on; this.emitState(); }
+  setSnap(on: boolean): void { this.snapEnabled = on; this.emitState(); }
+  clearSelection(): void { this.selection.clear(); this.overlayLayer.invalidate(); this.emitState(); }
+  selectAll(): void {
+    const sel = this.selection;
+    sel.clear();
+    for (const it of this.doc.items) if (!this.doc.layerById(it.layerId)?.locked) sel.inkIds.add(it.id);
+    for (const l of this.doc.layers) if (l.kind === "image" && !l.locked) sel.imageIds.add(l.id);
+    for (const b of this.doc.bodies) if (!this.doc.layerById(b.layerId)?.locked) sel.bodyIds.add(b.id);
+    this.overlayLayer.invalidate(); this.emitState();
+  }
+  deleteSelection(): void {
+    const sel = this.selection;
+    if (sel.empty || sel.isLocked(this.doc)) { this.status("Capa bloqueada"); return; }
+    const before = this.doc.snapshot();
+    const inkIds = new Set(sel.inkIds);
+    this.doc.items = this.doc.items.filter((it) => !inkIds.has(it.id));
+    for (const id of sel.imageIds) this.doc.removeLayer(id);
+    for (const id of sel.bodyIds) this.doc.physics.remove(id);
+    sel.clear();
+    this.history.record("Borrar selección", before);
+    this.afterHistory("Selección borrada");
+  }
+  duplicateSelection(): void {
+    const sel = this.selection;
+    if (sel.empty || sel.isLocked(this.doc)) { this.status("Capa bloqueada"); return; }
+    const before = this.doc.snapshot();
+    const off = 18;
+    for (const id of [...sel.inkIds]) {
+      const it = this.doc.items.find((i) => i.id === id);
+      if (!it) continue;
+      const copy = { ...it, id: Math.random().toString(36).slice(2), polys: it.polys.map((p) => p.map((q) => ({ ...q }))), transforms: it.transforms.map((m) => ({ ...m, e: m.e + off, f: m.f + off })), bounds: { x: it.bounds.x + off, y: it.bounds.y + off, w: it.bounds.w, h: it.bounds.h }, gy0: it.gy0 + off, gy1: it.gy1 + off } as import("../scene/types").InkItem;
+      this.doc.items.push(copy);
+    }
+    for (const id of [...sel.imageIds]) {
+      const dup = this.doc.duplicateLayer(id); if (dup) { dup.imageX = (dup.imageX ?? 0) + off; dup.imageY = (dup.imageY ?? 0) + off; }
+    }
+    for (const id of [...sel.bodyIds]) {
+      const b = this.doc.physics.bodies.find((bb) => bb.id === id); if (!b) continue;
+      const nb = createBody({ ...b.shape }, { x: b.pos.x + off, y: b.pos.y + off }, { color: b.color, group: b.group, blend: b.blend, bridgeReach: b.bridgeReach, isStatic: b.isStatic, density: b.density, restitution: b.restitution, friction: b.friction, layerId: b.layerId });
+      nb.angle = b.angle; this.doc.physics.add(nb);
+    }
+    this.history.record("Duplicar selección", before);
+    this.afterHistory("Selección duplicada");
+  }
+  alignSelection(dir: "left" | "center" | "right" | "top" | "middle" | "bottom"): void {
+    const b = this.selection.bounds(this.doc);
+    if (!b || this.selection.isLocked(this.doc)) return;
+    const before = this.doc.snapshot();
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    let dx = 0, dy = 0;
+    if (dir === "left") dx = b.x - cx;
+    else if (dir === "right") dx = (b.x + b.w) - cx;
+    else if (dir === "center") dx = 0;
+    if (dir === "top") dy = b.y - cy;
+    else if (dir === "bottom") dy = (b.y + b.h) - cy;
+    else if (dir === "middle") dy = 0;
+    if (dx !== 0) {
+      for (const id of this.selection.inkIds) { const it = this.doc.items.find((i) => i.id === id); if (it) { for (const m of it.transforms) m.e += -dx; it.bounds.x += -dx; } }
+      for (const id of this.selection.imageIds) { const l = this.doc.layerById(id); if (l) l.imageX = (l.imageX ?? 0) - dx; }
+      for (const id of this.selection.bodyIds) { const bb = this.doc.physics.bodies.find((b_) => b_.id === id); if (bb) { bb.pos.x -= dx; syncTransform(bb); } }
+    }
+    if (dy !== 0) {
+      for (const id of this.selection.inkIds) { const it = this.doc.items.find((i) => i.id === id); if (it) { for (const m of it.transforms) m.f += -dy; it.bounds.y += -dy; } }
+      for (const id of this.selection.imageIds) { const l = this.doc.layerById(id); if (l) l.imageY = (l.imageY ?? 0) - dy; }
+      for (const id of this.selection.bodyIds) { const bb = this.doc.physics.bodies.find((b_) => b_.id === id); if (bb) { bb.pos.y -= dy; syncTransform(bb); } }
+    }
+    this.doc.inkRevision++; this.matter.invalidate(); this.overlayLayer.invalidate();
+    this.history.record("Alinear selección", before);
     this.emitState();
   }
 
@@ -753,6 +855,9 @@ export class Editor {
       this.toolCtx.color = this.color;
       this.toolCtx.pullFamily = this.pullFamily;
       this.toolCtx.matterOp = this.matterOp;
+      (this.toolCtx as unknown as { selectOp: SelectOp }).selectOp = this.selectOp;
+      (this.toolCtx as unknown as { keepAspect: boolean }).keepAspect = this.keepAspect;
+      (this.toolCtx as unknown as { selection: Selection }).selection = this.selection;
       return this.toolCtx;
     }
     const editor = this;
@@ -765,6 +870,9 @@ export class Editor {
       color: this.color,
       pullFamily: this.pullFamily,
       matterOp: this.matterOp,
+      selectOp: this.selectOp,
+      keepAspect: this.keepAspect,
+      selection: this.selection,
       toWorld(s: InputSample, out?: Vec2): Vec2 {
         return editor.camera.screenToWorld(s.x, s.y, out);
       },
@@ -990,6 +1098,7 @@ export class Editor {
 
   private bindKeyboard(): void {
     const keys: Record<string, ToolId> = {
+      v: "select",
       b: "brush",
       f: "shape",
       m: "matter",
@@ -1104,7 +1213,7 @@ export class Editor {
           this.resetView();
           break;
         case "escape":
-          // En modo máscara, Esc sale de él antes que cancelar el gesto en curso.
+          if (this.toolId === "select" && !this.selection.empty) { this.clearSelection(); break; }
           if (this.maskMode) this.setMaskMode(false);
           else this.onCancel();
           break;
@@ -1294,13 +1403,17 @@ export class Editor {
       cursorRadius: (this.brush.size / 2) * this.camera.zoom,
       previewShape: this.previewShape && this.toolId === "shape" ? this.doc.shape : null,
       highlight: this.highlight,
-      transformPivot: this.transformPivot,
+      transformPivot: this.transformPivot ?? this.selection.pivot(this.doc) ?? null,
       showWalls: this.showWalls,
       walls: this.doc.physics.bounds,
       debugColliders: this.debugColliders,
       showBridgeReach: this.showBridgeReach || this.toolId === "bridge",
       bridgeReach: this.doc.field.bridgeReach,
       bodies: this.doc.bodies,
+      selectBounds: this.selection.bounds(this.doc),
+      selectPivot: this.selection.pivot(this.doc),
+      selectOp: this.selectOp,
+      isSelectTool: this.toolId === "select",
     };
   }
 

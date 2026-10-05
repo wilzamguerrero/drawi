@@ -26,6 +26,7 @@ interface TabDef {
 }
 
 const DOCK_TABS: TabDef[] = [
+  { domain: "select" },
   { domain: "brush" },
   { domain: "layers" },
   { domain: "matter-cfg", icon: "shape" },
@@ -45,6 +46,7 @@ export const DOCK_TAB_DOMAINS: string[] = DOCK_TABS.map((t) => t.domain);
  * herramientas sin ajustes propios —cuentagotas y mano— no resaltan ninguna.
  */
 const TOOL_TO_CAT: Partial<Record<ToolId, string>> = {
+  select: "select",
   brush: "brush",
   shape: "matter-cfg",
   matter: "matter-cfg",
@@ -257,6 +259,15 @@ export class SideDock {
     // Hornear a tinta (el radial trae su propia acción `bake`).
     const bake = button({ label: "Hornear a tinta", iconName: "bake", title: "Convierte el contorno fundido en trazos editables", onClick: () => editor.bakeMatter() });
     this.customs.set("bake-dock", { el: bake.el });
+
+    const selInfo = fieldLabel("Nada seleccionado");
+    this.customs.set("select-info", { el: selInfo, sync: (s) => { selInfo.textContent = s.selectCount === 0 ? "Nada seleccionado — clic o arrastra para elegir tinta, materia o imagen. Shift añade." : `${s.selectCount} elemento(s) — ${s.selectBounds ? `${Math.round(s.selectBounds.w)}×${Math.round(s.selectBounds.h)}` : ""}`; } });
+    const alignRow = el("div", { class: "select-align-row" }, [
+      button({ iconName: "alignLeft", title: "Alinear izquierda", onClick: () => editor.alignSelection("left") }).el,
+      button({ iconName: "alignCenter", title: "Alinear centro", onClick: () => editor.alignSelection("center") }).el,
+      button({ iconName: "alignRight", title: "Alinear derecha", onClick: () => editor.alignSelection("right") }).el,
+    ]);
+    this.customs.set("select-align", { el: alignRow });
 
     // Panel de capas (estilo Photoshop): monta LayersPanel y lo sincroniza cada
     // fotograma. Toda la interacción (filas, arrastre, menú) vive en la clase.

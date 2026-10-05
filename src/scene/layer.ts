@@ -163,6 +163,8 @@ export interface SceneLayer {
   imageY?: number;
   imageW?: number;
   imageH?: number;
+  /** Rotación en radianes (solo image). */
+  imageAngle?: number;
 }
 
 export const makeMask = (): LayerMask => ({ enabled: true, inverted: false, items: [] });
