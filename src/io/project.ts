@@ -14,7 +14,7 @@ import type { ShapeDef } from "../physics/shapes";
  * deja de ser una pseudo-capa única: cada cuerpo lleva `layerId` y puede haber
  * varias capas de materia (o ninguna). v4: alcance de cohesion configurable.
  */
-export const PROJECT_VERSION = 4;
+export const PROJECT_VERSION = 5;
 
 export interface ProjectFile {
   format: "drawi";

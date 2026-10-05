@@ -16,7 +16,12 @@ export interface ButtonOptions {
   onClick: () => void;
 }
 
-export function button(options: ButtonOptions): Control<boolean> & { setActive(on: boolean): void } {
+export function button(options: ButtonOptions): Control<boolean> & { setActive(on: boolean): void; setLabel(label: string): void; setIcon(name?: string): void } {
+  let glyphEl: HTMLElement | null = options.iconName ? el("span", { class: "btn-glyph", html: icon(options.iconName) }) : null;
+  let labelEl: HTMLElement | null = options.label ? el("span", { class: "btn-label", text: options.label }) : null;
+  const kids: (HTMLElement | null)[] = [];
+  if (glyphEl) kids.push(glyphEl);
+  if (labelEl) kids.push(labelEl);
   const node = el(
     "button",
     {
@@ -30,10 +35,7 @@ export function button(options: ButtonOptions): Control<boolean> & { setActive(o
         },
       },
     },
-    [
-      options.iconName ? el("span", { class: "btn-glyph", html: icon(options.iconName) }) : null,
-      options.label ? el("span", { class: "btn-label", text: options.label }) : null,
-    ],
+    kids,
   );
   return {
     el: node,
@@ -42,6 +44,29 @@ export function button(options: ButtonOptions): Control<boolean> & { setActive(o
     },
     setActive(on: boolean) {
       setClass(node, "is-active", on);
+    },
+    setLabel(label: string) {
+      if (!labelEl) {
+        labelEl = el("span", { class: "btn-label", text: label });
+        node.appendChild(labelEl);
+        node.classList.remove("btn-icon");
+      } else {
+        labelEl.textContent = label;
+      }
+      if (!options.title) node.title = label;
+    },
+    setIcon(name?: string) {
+      if (!name) {
+        if (glyphEl) { glyphEl.remove(); glyphEl = null; }
+        return;
+      }
+      const html = icon(name);
+      if (!glyphEl) {
+        glyphEl = el("span", { class: "btn-glyph", html });
+        node.insertBefore(glyphEl, node.firstChild);
+      } else {
+        glyphEl.innerHTML = html;
+      }
     },
   };
 }

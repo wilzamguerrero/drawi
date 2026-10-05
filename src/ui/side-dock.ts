@@ -61,6 +61,7 @@ const NO_HOOKS: MenuHooks = {
   help() {},
   newDoc() {},
   openFile() {},
+  importImage() {},
   save() {},
   exportPng() {},
   exportSvg() {},

@@ -47,65 +47,119 @@ export function bodyReach(body: Body, globalReach: number): number {
 }
 
 /**
- * Calcula los puentes activos. O(n^2) una sola vez por frame (barato para
- * cientos de cuerpos); el resultado se reutiliza en todos los pixeles.
+ * Calcula los puentes activos. O(n log n) con hash espacial cuando estan
+ * dispersos; fallback a O(n^2) cuando estan agrupados. El resultado se
+ * reutiliza en todos los pixeles.
  */
 export function computeBridges(bodies: readonly Body[], globalReach: number, fade = false): BridgeLink[] {
   const links: BridgeLink[] = [];
   const n = bodies.length;
+  if (n < 2) return links;
+
+  // Celda = max(alcance*2, 280) para que alcance grande cubra vecinos lejanos.
+  let maxR = globalReach;
   for (let i = 0; i < n; i++) {
+    const br = bodies[i].bridgeReach;
+    if (br >= 0 && br > maxR) maxR = br;
+  }
+  const cell = Math.max(maxR * 2 + 60, 280);
+  const invCell = 1 / cell;
+
+  const grid = new Map<string, number[]>();
+  const keyFor = (x: number, y: number): string =>
+    `${Math.floor(x * invCell)},${Math.floor(y * invCell)}`;
+
+  for (let i = 0; i < n; i++) {
+    const b = bodies[i];
+    if (bodyReach(b, globalReach) <= 0) continue;
+    const k = keyFor(b.pos.x, b.pos.y);
+    const arr = grid.get(k);
+    if (arr) arr.push(i);
+    else grid.set(k, [i]);
+  }
+
+  let maxCellCount = 0;
+  for (const arr of grid.values()) if (arr.length > maxCellCount) maxCellCount = arr.length;
+  let activeCount = 0;
+  for (let i = 0; i < n; i++) if (bodyReach(bodies[i], globalReach) > 0) activeCount++;
+  const useGrid = activeCount === 0 || maxCellCount / activeCount < 0.6;
+
+  const tryPair = (i: number, j: number): void => {
     const a = bodies[i];
+    const b = bodies[j];
     const ra = bodyReach(a, globalReach);
-    if (ra <= 0) continue;
+    const rb = bodyReach(b, globalReach);
+    if (ra <= 0 || rb <= 0) return;
+    if (a.group !== 0 && b.group !== 0 && a.group !== b.group) return;
+    const dx = b.pos.x - a.pos.x;
+    const dy = b.pos.y - a.pos.y;
+    const dist = Math.hypot(dx, dy);
+    const gap = dist - a.radius - b.radius;
+    const reachSum = ra + rb;
+    const limit = fade ? reachSum * 1.5 : reachSum;
+    if (gap <= 0 || gap >= limit) return;
+    const cover = Math.max(0, Math.min(1, 1 - gap / reachSum));
+    const neck = Math.min(a.radius, b.radius) * 0.6 * (0.4 + 0.6 * cover);
+    if (neck < 3) return;
     const ca = hexToRgb(a.color);
-    for (let j = i + 1; j < n; j++) {
-      const b = bodies[j];
-      const rb = bodyReach(b, globalReach);
-      if (rb <= 0) continue;
-      // Solo se funden cuerpos del mismo grupo (0 = cualquiera), igual que el campo.
-      if (a.group !== 0 && b.group !== 0 && a.group !== b.group) continue;
+    const cb = hexToRgb(b.color);
+    const k = Math.max(4, neck);
+    const pad = neck * 4 + k + 4;
+    links.push({
+      ax: a.pos.x,
+      ay: a.pos.y,
+      bx: b.pos.x,
+      by: b.pos.y,
+      r: neck,
+      k,
+      phase: ((i * 73856093) ^ (j * 19349663)) % 628 / 100,
+      r8: Math.round((ca.r + cb.r) * 0.5),
+      g8: Math.round((ca.g + cb.g) * 0.5),
+      b8: Math.round((ca.b + cb.b) * 0.5),
+      innerA: a.radius,
+      outerA: a.radius + ra,
+      innerB: b.radius,
+      outerB: b.radius + rb,
+      minx: Math.min(a.pos.x, b.pos.x) - pad,
+      miny: Math.min(a.pos.y, b.pos.y) - pad,
+      maxx: Math.max(a.pos.x, b.pos.x) + pad,
+      maxy: Math.max(a.pos.y, b.pos.y) + pad,
+    });
+  };
 
-      const dx = b.pos.x - a.pos.x;
-      const dy = b.pos.y - a.pos.y;
-      const dist = Math.hypot(dx, dy);
-      const gap = dist - a.radius - b.radius; // separacion borde a borde
-      const reachSum = ra + rb;
-      // Con difuminado, el puente nace un poco antes de que los alcances se
-      // toquen (hasta 1.5x) y la GPU lo atenua con la distancia (tenue de lejos).
-      // Sin difuminado, solo cuando los alcances cubren el hueco (puente solido).
-      const limit = fade ? reachSum * 1.5 : reachSum;
-      if (gap <= 0 || gap >= limit) continue;
+  if (!useGrid) {
+    for (let i = 0; i < n; i++) {
+      if (bodyReach(bodies[i], globalReach) <= 0) continue;
+      for (let j = i + 1; j < n; j++) tryPair(i, j);
+    }
+    return links;
+  }
 
-      const cover = Math.max(0, Math.min(1, 1 - gap / reachSum));
-      const neck = Math.min(a.radius, b.radius) * 0.6 * (0.4 + 0.6 * cover);
-      if (neck < 3) continue;
-
-      const cb = hexToRgb(b.color);
-      const k = Math.max(4, neck);
-      // Margen amplio: hilos, ondulacion organica y ensanche extienden el relleno
-      // bastante mas alla del cuello recto; si la caja queda corta, el puente se
-      // recorta en CPU. Mejor sobrar que cortar.
-      const pad = neck * 4 + k + 4;
-      links.push({
-        ax: a.pos.x,
-        ay: a.pos.y,
-        bx: b.pos.x,
-        by: b.pos.y,
-        r: neck,
-        k,
-        phase: ((i * 73856093) ^ (j * 19349663)) % 628 / 100,
-        r8: Math.round((ca.r + cb.r) * 0.5),
-        g8: Math.round((ca.g + cb.g) * 0.5),
-        b8: Math.round((ca.b + cb.b) * 0.5),
-        innerA: a.radius,
-        outerA: a.radius + ra,
-        innerB: b.radius,
-        outerB: b.radius + rb,
-        minx: Math.min(a.pos.x, b.pos.x) - pad,
-        miny: Math.min(a.pos.y, b.pos.y) - pad,
-        maxx: Math.max(a.pos.x, b.pos.x) + pad,
-        maxy: Math.max(a.pos.y, b.pos.y) + pad,
-      });
+  const visited = new Set<string>();
+  for (const [key, arr] of grid) {
+    const [cxStr, cyStr] = key.split(",");
+    const cx = parseInt(cxStr, 10);
+    const cy = parseInt(cyStr, 10);
+    for (let a = 0; a < arr.length; a++) {
+      for (let b = a + 1; b < arr.length; b++) tryPair(arr[a], arr[b]);
+    }
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (dx === 0 && dy === 0) continue;
+        if (dx < 0) continue;
+        if (dx === 0 && dy < 0) continue;
+        const nk = `${cx + dx},${cy + dy}`;
+        const pairKey = `${key}|${nk}`;
+        if (visited.has(pairKey)) continue;
+        const other = grid.get(nk);
+        if (!other) continue;
+        visited.add(pairKey);
+        visited.add(`${nk}|${key}`);
+        for (const ia of arr) for (const ib of other) {
+          if (ia < ib) tryPair(ia, ib);
+          else tryPair(ib, ia);
+        }
+      }
     }
   }
   return links;

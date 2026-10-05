@@ -32,6 +32,11 @@ export class BridgeTool implements Tool {
       this.target = null;
       return;
     }
+    if (ctx.doc.layerById(body.layerId)?.locked) {
+      ctx.status("Capa bloqueada");
+      this.target = null;
+      return;
+    }
     ctx.history.begin();
     this.target = body;
     this.moved = false;
@@ -63,6 +68,7 @@ export class BridgeTool implements Tool {
       ctx.setHighlight(ctx.doc.physics.pick(w.x, w.y, 6));
       return;
     }
+    if (ctx.doc.layerById(this.target.layerId)?.locked) return;
     const w = ctx.toWorld(samples[samples.length - 1]);
     // Proyeccion del desplazamiento sobre la direccion radial inicial.
     const delta = (w.x - this.startX) * this.dirX + (w.y - this.startY) * this.dirY;

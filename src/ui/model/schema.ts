@@ -371,6 +371,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     label: "Física",
     icon: "tune",
     children: [
+      { kind: "action", id: "sim-toggle", label: (s) => (s.running ? "Pausar" : "Reanudar"), icon: (s) => (s.running ? "pause" : "play"), hint: (s) => (s.running ? "Pausar toda la simulación (física y puentes orgánicos)" : "Reanudar la simulación"), run: () => editor.setRunning(!editor.state.running), toggled: (s) => s.running },
       { kind: "number", id: "gravity", label: "Gravedad", min: -2000, max: 2000, step: 10, get: (s) => s.world.gravity.y, set: (v) => editor.setWorld({ gravity: { x: editor.state.world.gravity.x, y: v } }) },
       { kind: "number", id: "gravity-x", label: "Gravedad lateral", min: -2000, max: 2000, step: 10, get: (s) => s.world.gravity.x, set: (v) => editor.setWorld({ gravity: { x: v, y: editor.state.world.gravity.y } }) },
       { kind: "number", id: "cohesion", label: "Cohesion", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Atraccion mutua: las formas se buscan y se funden entre si.", get: (s) => s.world.cohesion, set: (v) => editor.setWorld({ cohesion: v }) },
@@ -403,7 +404,6 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       { kind: "number", id: "bridge-thread-reach", label: "Alcance hilos", min: 0.05, max: 1, step: 0.01, decimals: 2, hint: "Hasta donde llegan los cortes desde la conexion: bajo = solo al principio y se funden pronto hacia el centro; alto = casi todo el puente.", visible: (s) => s.field.bridgeReach > 0 && s.field.bridgeThreads > 1, get: (s) => s.field.bridgeThreadReach, set: (v) => editor.setField({ bridgeThreadReach: v }) },
       { kind: "number", id: "bridge-flare", label: "Conexion", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Ensancha el puente donde se conecta con los cuerpos (entradas y salidas mas gruesas que el centro).", visible: (s) => s.field.bridgeReach > 0, get: (s) => s.field.bridgeFlare, set: (v) => editor.setField({ bridgeFlare: v }) },
       { kind: "toggle", id: "bridge-fade", label: "Difuminar por alcance", icon: "layers", hint: "Atenua la opacidad del puente hasta el borde del area de alcance: tenue de lejos, mas opaco al acercarse. Apagado = puentes solidos y completos.", visible: (s) => s.field.bridgeReach > 0, get: (s) => s.field.bridgeFade, set: () => editor.setField({ bridgeFade: !editor.state.field.bridgeFade }) },
-      { kind: "toggle", id: "bridge-animate", label: "Mover puentes", icon: "spark", hint: "Anima la ondulacion del modo Organico (solo GPU). Apagalo para congelar el movimiento.", visible: (s) => s.field.bridgeReach > 0 && s.field.bridgeStyle === "organic", get: (s) => s.field.bridgeAnimate, set: () => editor.setField({ bridgeAnimate: !editor.state.field.bridgeAnimate }) },
       { kind: "number", id: "outline", label: "Contorno", min: 0, max: 12, step: 0.5, decimals: 1, unit: "px", get: (s) => s.field.outline, set: (v) => editor.setField({ outline: v }) },
       { kind: "number", id: "shade", label: "Volumen", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.field.shade, set: (v) => editor.setField({ shade: v }) },
       { kind: "number", id: "gloss", label: "Brillo", min: 0, max: 1.5, step: 0.01, decimals: 2, get: (s) => s.field.gloss, set: (v) => editor.setField({ gloss: v }) },
@@ -463,6 +463,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       { kind: "action", id: "redo", label: "Rehacer", icon: "redo", disabled: (s) => !s.history.canRedo, run: () => editor.redo() },
       { kind: "action", id: "new", label: "Nuevo", icon: "trash", run: () => hooks.newDoc() },
       { kind: "action", id: "open", label: "Abrir", icon: "folder", run: () => hooks.openFile() },
+      { kind: "action", id: "import", label: "Importar imagen", icon: "image", hint: "Importa JPG, PNG, WebP o PSD por capas. También puedes arrastrar o pegar (Ctrl+V).", run: () => hooks.importImage() },
       { kind: "action", id: "save", label: "Guardar", icon: "save", run: () => hooks.save() },
       { kind: "action", id: "png", label: "PNG", icon: "download", run: () => hooks.exportPng() },
       { kind: "action", id: "svg", label: "SVG", icon: "download", run: () => hooks.exportSvg() },

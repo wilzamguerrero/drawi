@@ -240,6 +240,29 @@ export class Compositor {
       return true;
     }
 
+    if (layer.kind === "image") {
+      const src = layer.imageSrc ?? "";
+      const img = this.getImage(src);
+      const ctx = buf.ctx;
+      const isActive = layer.id === opts.activeLayerId;
+      camera.applyTo(ctx, dpr);
+      if (img && img.complete && img.naturalWidth > 0) {
+        const x = layer.imageX ?? 0;
+        const y = layer.imageY ?? 0;
+        const w = layer.imageW ?? img.naturalWidth;
+        const h = layer.imageH ?? img.naturalHeight;
+        // Skip culling for images: cheap, but could add rectIntersects with world rect.
+        ctx.drawImage(img, x, y, w, h);
+      } else if (img) {
+        // Still loading: draw placeholder checker or nothing; schedule repaint
+        // via image onload will trigger via next inkRevision or explicit invalidate.
+      }
+      // Image layers do not support wet painting; masks still apply.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.applyMask(buf, layer, camera, dpr, opts, depth, isActive);
+      return true;
+    }
+
     const ctx = buf.ctx;
     const items = doc.layerItems(layer.id);
     const isActive = layer.id === opts.activeLayerId;
@@ -255,6 +278,21 @@ export class Compositor {
 
     this.applyMask(buf, layer, camera, dpr, opts, depth, isActive);
     return true;
+  }
+
+    private imageCache = new Map<string, HTMLImageElement>();
+
+  private getImage(src: string): HTMLImageElement | null {
+    if (!src) return null;
+    let img = this.imageCache.get(src);
+    if (img) return img.complete && img.naturalWidth > 0 ? img : img;
+    img = new Image();
+    img.decoding = "async";
+    img.src = src;
+    this.imageCache.set(src, img);
+    // Trigger repaint when loaded (next composite will see it complete).
+    img.onload = () => { /* invalidated externally via inkRevision */ };
+    return img;
   }
 
   /** Pinta los items secos de una capa; los de alfa bloqueado con source-atop. */

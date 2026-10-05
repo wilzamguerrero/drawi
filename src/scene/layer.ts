@@ -157,6 +157,12 @@ export interface SceneLayer {
   /** Id del grupo contenedor, o null si está en la raíz. */
   parentId: string | null;
   mask?: LayerMask;
+  /** Capa de imagen raster (kind === "image"): fuente en dataURL y geometría en mundo. */
+  imageSrc?: string;
+  imageX?: number;
+  imageY?: number;
+  imageW?: number;
+  imageH?: number;
 }
 
 export const makeMask = (): LayerMask => ({ enabled: true, inverted: false, items: [] });

@@ -27,6 +27,11 @@ export class ShapeTool implements Tool {
 
   onDown(ctx: ToolContext, s: InputSample): void {
     const w = ctx.toWorld(s);
+    const target = ctx.doc.matterTarget();
+    if (target.locked) {
+      ctx.status("Capa bloqueada");
+      return;
+    }
     ctx.history.begin();
     this.cx = w.x;
     this.cy = w.y;
@@ -36,7 +41,7 @@ export class ShapeTool implements Tool {
     const transforms = symmetryTransforms(ctx.doc.symmetry);
     // La materia nueva cae en la capa de materia activa; si no hay ninguna, se
     // crea una (dentro del historial del gesto, asi deshacer tambien la quita).
-    const target = ctx.doc.matterTarget();
+    // `target` ya resuelto arriba para el chequeo de bloqueo.
     for (let i = 0; i < transforms.length; i++) {
       const p = apply(transforms[i], { x: w.x, y: w.y });
       const body = createBody({ ...ctx.doc.shape }, { x: p.x, y: p.y }, {

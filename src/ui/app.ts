@@ -96,6 +96,7 @@ export class App {
       help: () => this.help.toggle(),
       newDoc: () => this.editor.status(newDocument(this.editor)),
       openFile: () => this.openFile(),
+      importImage: () => void this.importImageViaPicker().then(() => this.wake()),
       save: () => this.editor.status(saveProject(this.editor)),
       exportPng: () => void exportImage(this.editor).then((m) => this.editor.status(m)),
       exportSvg: () => this.editor.status(exportVector(this.editor)),
@@ -218,6 +219,7 @@ export class App {
     window.addEventListener("keydown", this.keyHandler);
     window.addEventListener("beforeunload", () => autosave(this.editor));
 
+    this.bindImageDropAndPaste();
     if (restoreAutosave(this.editor)) {
       this.editor.status("Sesion anterior recuperada");
     } else {
@@ -248,6 +250,101 @@ export class App {
   private async openFile(): Promise<void> {
     this.editor.status(await openProject(this.editor));
     this.wake();
+  }
+
+  private async importImageViaPicker(): Promise<void> {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/jpg,image/webp,image/gif,image/bmp,.psd,.jpc,.jp2";
+    input.multiple = true;
+    const picked: File[] | null = await new Promise((resolve) => {
+      input.addEventListener("change", () => {
+        if (!input.files || input.files.length === 0) resolve(null);
+        else resolve([...input.files]);
+        setTimeout(() => input.remove(), 0);
+      });
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.click();
+    });
+    if (!picked) return;
+    await this.handleImageFiles(picked);
+  }
+
+  private async handleImageFiles(files: File[]): Promise<void> {
+    const { importImageFile, isImageFile } = await import("../io/image-import");
+    const before = this.editor.doc.snapshot();
+    const viewCenter = { x: this.editor.camera.x, y: this.editor.camera.y };
+    let ok = 0;
+    for (const f of files) {
+      if (!isImageFile(f)) continue;
+      try {
+        const n = await importImageFile(f, this.editor.doc, viewCenter);
+        if (n > 0) ok += n;
+      } catch (e) {
+        console.warn("[import]", e);
+      }
+    }
+    if (ok > 0) {
+      this.editor.history.record(ok > 1 ? `Importar ${ok} imágenes` : "Importar imagen", before);
+      this.editor.invalidateAll();
+      this.editor.emitState();
+      this.editor.events.emit("dirty", undefined);
+      this.editor.status(ok > 1 ? `${ok} imágenes importadas` : "Imagen importada");
+      this.wake();
+    } else {
+      this.editor.status("Nada que importar");
+    }
+  }
+
+  private bindImageDropAndPaste(): void {
+    const host = this.stage as HTMLElement;
+    const onDragOver = (e: DragEvent): void => {
+      if (!e.dataTransfer) return;
+      const hasImage = [...e.dataTransfer.items].some((it) => it.kind === "file" && it.type.startsWith("image/")) || [...(e.dataTransfer.files ?? [])].some((f) => f.name.match(/\.(png|jpe?g|webp|gif|bmp|psd|jpc|jp2)$/i));
+      if (hasImage) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        host.classList.add("is-drop-target");
+      }
+    };
+    const onDragLeave = (): void => host.classList.remove("is-drop-target");
+    const onDrop = async (e: DragEvent): Promise<void> => {
+      host.classList.remove("is-drop-target");
+      const files = [...(e.dataTransfer?.files ?? [])] as File[];
+      if (files.length === 0) return;
+      e.preventDefault();
+      await this.handleImageFiles(files);
+    };
+    host.addEventListener("dragover", onDragOver);
+    host.addEventListener("dragleave", onDragLeave);
+    host.addEventListener("drop", onDrop as unknown as EventListener);
+
+    // Paste: intercept images from clipboard (Ctrl+V) — create unlocked image layer(s).
+    window.addEventListener("paste", async (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      const items = [...(e.clipboardData?.items ?? [])];
+      const imageItems = items.filter((it) => it.type.startsWith("image/"));
+      if (imageItems.length === 0) {
+        // Also check files
+        const files = [...(e.clipboardData?.files ?? [])] as File[];
+        if (files.length === 0) return;
+        const imageFiles = files.filter((f) => f.type.startsWith("image/") || f.name.match(/\.(png|jpe?g|webp|gif|bmp|psd)$/i));
+        if (imageFiles.length === 0) return;
+        e.preventDefault();
+        await this.handleImageFiles(imageFiles);
+        return;
+      }
+      e.preventDefault();
+      const files: File[] = [];
+      for (const it of imageItems) {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+      if (files.length > 0) await this.handleImageFiles(files);
+    });
   }
 
   /** Despierta la interfaz translucida; se esconde de nuevo tras la inactividad. */

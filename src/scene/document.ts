@@ -200,6 +200,40 @@ export class SceneDocument {
     };
   }
 
+  makeImageLayer(name: string, src: string, x: number, y: number, w: number, h: number): SceneLayer {
+    this.layerCounter++;
+    return {
+      id: uid(),
+      kind: "image",
+      name: name || `Imagen ${this.layerCounter}`,
+      visible: true,
+      opacity: 1,
+      fill: 1,
+      blend: "source-over",
+      locked: false,
+      alphaLock: false,
+      clip: false,
+      color: "none",
+      collapsed: false,
+      parentId: null,
+      imageSrc: src,
+      imageX: x,
+      imageY: y,
+      imageW: w,
+      imageH: h,
+    };
+  }
+
+  addImageLayer(name: string, src: string, x: number, y: number, w: number, h: number): SceneLayer {
+    const layer = this.makeImageLayer(name, src, x, y, w, h);
+    const active = this.activeLayer;
+    const at = active ? this.layerIndex(active.id) + 1 : this.layers.length;
+    this.layers.splice(at, 0, layer);
+    this.activeLayerId = layer.id;
+    this.inkRevision++;
+    return layer;
+  }
+
   /** Envuelve items planos (proyectos v1) en una capa de tinta por defecto. */
   migrateFlatItems(): void {
     this.resetLayers();
@@ -365,10 +399,20 @@ export class SceneDocument {
     this.inkRevision++;
   }
 
-  /** Duplica una capa de tinta con todos sus items (ids nuevos). */
+  /** Duplica una capa de tinta o imagen. Imagen: clona la capa raster. */
   duplicateLayer(id: string): SceneLayer | null {
     const layer = this.layerById(id);
-    if (!layer || layer.kind !== "ink") return null;
+    if (!layer || (layer.kind !== "ink" && layer.kind !== "image")) return null;
+    if (layer.kind === "image") {
+      const copy = cloneLayer(layer);
+      copy.id = uid();
+      copy.name = `${layer.name} copia`;
+      const at = this.layerIndex(id) + 1;
+      this.layers.splice(at, 0, copy);
+      this.activeLayerId = copy.id;
+      this.inkRevision++;
+      return copy;
+    }
     const copy = cloneLayer(layer);
     copy.id = uid();
     copy.name = `${layer.name} copia`;
@@ -396,10 +440,15 @@ export class SceneDocument {
     return copy;
   }
 
-  /** Combina una capa con la de tinta inmediatamente inferior (misma carpeta). */
+  /** Combina una capa con la de tinta o imagen inmediatamente inferior. Para imagen, la rasteriza sobre la inferior si es ink/image. */
   mergeDown(id: string): void {
     const layer = this.layerById(id);
-    if (!layer || layer.kind !== "ink") return;
+    if (!layer || (layer.kind !== "ink" && layer.kind !== "image")) return;
+    if (layer.kind === "image") {
+      // No-op seguro por ahora: evita romper tinta; el usuario puede aplanar luego.
+      // TODO: rasterizar imagen sobre la inferior si se requiere mezcla real.
+      return;
+    }
     const idx = this.layerIndex(id);
     let below: SceneLayer | undefined;
     for (let i = idx - 1; i >= 0; i--) {
@@ -611,13 +660,22 @@ export class SceneDocument {
     };
   }
 
-  /** Caja de todo lo dibujado, tinta y materia. */
+  /** Caja de todo lo dibujado, tinta, materia e imágenes. */
   contentBounds(): Rect {
     let r: Rect | null = null;
     for (const item of this.items) r = unionRect(r, item.bounds);
     for (const b of this.physics.bodies) {
       const rad = boundingRadius(b.shape) + b.blend;
       r = unionRect(r, { x: b.pos.x - rad, y: b.pos.y - rad, w: rad * 2, h: rad * 2 });
+    }
+    for (const l of this.layers) {
+      if (l.kind === "image" && l.imageSrc) {
+        const w = l.imageW ?? 0;
+        const h = l.imageH ?? 0;
+        if (w > 0 && h > 0) {
+          r = unionRect(r, { x: l.imageX ?? 0, y: l.imageY ?? 0, w, h });
+        }
+      }
     }
     return r ?? { ...EMPTY_RECT };
   }

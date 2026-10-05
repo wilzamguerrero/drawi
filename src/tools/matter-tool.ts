@@ -34,10 +34,20 @@ export class MatterTool implements Tool {
   private erasing = false;
   private dragging = false;
 
+  private isLayerLocked(ctx: ToolContext, body: { layerId: string }): boolean {
+    const layer = ctx.doc.layerById(body.layerId);
+    return !!layer?.locked;
+  }
+
   onDown(ctx: ToolContext, s: InputSample): void {
     const w = ctx.toWorld(s);
     const body = ctx.doc.physics.pick(w.x, w.y, 6);
     if (!body) {
+      this.selected = [];
+      return;
+    }
+    if (this.isLayerLocked(ctx, body)) {
+      ctx.status("Capa bloqueada");
       this.selected = [];
       return;
     }
@@ -76,9 +86,11 @@ export class MatterTool implements Tool {
 
     if (this.erasing) {
       const body = ctx.doc.physics.pick(w.x, w.y, 6);
-      if (body) {
+      if (body && !this.isLayerLocked(ctx, body)) {
         ctx.doc.physics.remove(body.id);
         ctx.invalidateField();
+      } else if (body) {
+        ctx.status("Capa bloqueada");
       }
       return;
     }
@@ -88,6 +100,11 @@ export class MatterTool implements Tool {
       return;
     }
 
+    // Si alguno de los seleccionados está en capa bloqueada, no transformar.
+    if (this.selected.some((b) => this.isLayerLocked(ctx, b))) {
+      ctx.status("Capa bloqueada");
+      return;
+    }
     this.moved = true;
     const op = ctx.matterOp;
     if (op === "pivot") {
@@ -160,21 +177,44 @@ export class MatterTool implements Tool {
     return ctx.doc.bodies.filter((b) => b.strokeId === body.strokeId);
   }
 
-  /** Pivote del grupo en mundo: el local de la primera pieza, girado con ella. */
+  /** Pivote del grupo en mundo: por defecto el centro geometrico del grupo,
+   *  y si el usuario lo movio a mano (strokePivot no-cero) se respeta ese punto. */
   private groupPivot(bodies: Body[]): Vec2 {
     if (bodies.length === 0) return { x: 0, y: 0 };
+    // Centro geometrico (promedio de centros) = mitad de la geometria del grupo.
+    let cx = 0, cy = 0;
+    for (const b of bodies) { cx += b.pos.x; cy += b.pos.y; }
+    cx /= bodies.length;
+    cy /= bodies.length;
+
     const first = bodies[0];
-    if (first.strokePivotX !== undefined && first.strokePivotY !== undefined) {
-      const c = Math.cos(first.angle);
-      const s = Math.sin(first.angle);
-      return {
-        x: first.pos.x + first.strokePivotX * c - first.strokePivotY * s,
-        y: first.pos.y + first.strokePivotX * s + first.strokePivotY * c,
-      };
+    const hasStoredPivot =
+      first.strokePivotX !== undefined && first.strokePivotY !== undefined;
+    if (!hasStoredPivot) return { x: cx, y: cy };
+
+    const EPS = 1e-6;
+    let hasCustom = false;
+    for (const b of bodies) {
+      if (
+        b.strokePivotX !== undefined &&
+        b.strokePivotY !== undefined &&
+        (Math.abs(b.strokePivotX) > EPS || Math.abs(b.strokePivotY) > EPS)
+      ) {
+        hasCustom = true;
+        break;
+      }
     }
-    let x = 0, y = 0;
-    for (const b of bodies) { x += b.pos.x; y += b.pos.y; }
-    return { x: x / bodies.length, y: y / bodies.length };
+    // Sin pivote personalizado -> mitad de la geometria por defecto.
+    if (!hasCustom) return { x: cx, y: cy };
+
+    const c = Math.cos(first.angle);
+    const s = Math.sin(first.angle);
+    const spx = first.strokePivotX ?? 0;
+    const spy = first.strokePivotY ?? 0;
+    return {
+      x: first.pos.x + spx * c - spy * s,
+      y: first.pos.y + spx * s + spy * c,
+    };
   }
 
   /**

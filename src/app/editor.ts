@@ -1216,13 +1216,13 @@ export class Editor {
       this.inkLayer.dirty = false;
     }
 
-    // Puentes organicos: ondulan con el tiempo, asi que hay que repintar el
-    // campo cada frame (solo en GPU; el shader lee uTime). En CPU quedan
-    // estaticos para no re-extraer contornos cada frame. El toggle bridgeAnimate
-    // permite congelar la ondulacion.
+    // Puentes organicos: ondulan con el tiempo (solo en GPU; el shader lee
+    // uTime). En CPU quedan estaticos para no re-extraer contornos cada frame.
+    // La animacion va ligada al boton Pausar/Reanudar del menu Materia: si la
+    // simulacion esta pausada, los puentes tambien se congelan.
     if (
+      this.running &&
       this.doc.field.bridgeStyle === "organic" &&
-      this.doc.field.bridgeAnimate &&
       this.fieldRenderer.available &&
       !this.matter.forceCpu &&
       (this.doc.field.bridgeReach > 0 || this.doc.bodies.some((b) => b.bridgeReach > 0))
@@ -1233,7 +1233,7 @@ export class Editor {
     if (this.matter.dirty) {
       // Cada capa de materia se rinde y compone con su opacidad/fusión sobre un
       // único lienzo que se muestra encima de la tinta.
-      const t = this.doc.field.bridgeAnimate ? now / 1000 : 0;
+      const t = this.running ? now / 1000 : 0;
       this.matter.render(this.doc, this.camera, this.dpr, t);
     }
 

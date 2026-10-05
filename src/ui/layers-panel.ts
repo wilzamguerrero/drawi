@@ -308,9 +308,48 @@ export class LayersPanel {
   }
 
   // --------------------------------------------------------- miniaturas
+  private imageThumbCache = new Map<string, HTMLImageElement>();
+
   private paintThumb(layer: SceneLayer): void {
     const row = this.rows.get(layer.id);
-    if (!row || layer.kind !== "ink") {
+    if (!row) return;
+    if (layer.kind === "image") {
+      const ctx = row.thumb.getContext("2d");
+      if (!ctx) return;
+      const W = row.thumb.width, H = row.thumb.height;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = "#222";
+      ctx.fillRect(0, 0, W, H);
+      const src = layer.imageSrc ?? "";
+      if (src) {
+        let img = this.imageThumbCache.get(src);
+        if (!img) {
+          img = new Image();
+          img.src = src;
+          this.imageThumbCache.set(src, img);
+          img.onload = () => this.paintThumb(layer);
+        }
+        if (img.complete && img.naturalWidth > 0) {
+          const b = this.editor.doc.contentBounds();
+          const pad = 4;
+          const scale = b.w > 0 ? Math.min((W - pad) / b.w, (H - pad) / b.h) : 1;
+          const ox = (W - (layer.imageW ?? img.naturalWidth) * scale) / 2 - (layer.imageX ?? 0 - (b.x ?? 0)) * scale;
+          // Simple cover: center image in thumb (not world-accurate but gives preview)
+          const iw = layer.imageW ?? img.naturalWidth;
+          const ih = layer.imageH ?? img.naturalHeight;
+          const s2 = Math.min(W / iw, H / ih) * 0.9;
+          const dx = (W - iw * s2) / 2;
+          const dy = (H - ih * s2) / 2;
+          // Use world composition bounds for positioning would require camera; quick center.
+          ctx.drawImage(img, dx, dy, iw * s2, ih * s2);
+          void ox;
+        }
+      }
+      if (layer.mask) this.paintMask(layer, row);
+      return;
+    }
+    if (layer.kind !== "ink") {
       if (row && layer.mask) this.paintMask(layer, row);
       return;
     }

@@ -56,8 +56,25 @@ export class BrushTool implements Tool {
   private erasedAny = false;
   private eraseRef = "";
 
+  private isTargetLocked(ctx: ToolContext): boolean {
+    const layer = ctx.doc.activeLayer;
+    // Si la activa es imagen bloqueada o ink bloqueada, bloquear pintura.
+    if (!layer) return false;
+    if (layer.locked) return true;
+    // Si inkTarget difiere (activa es matter/group), chequa el ink destino también.
+    if (layer.kind !== "ink") {
+      const target = ctx.doc.inkTarget();
+      return !!target?.locked;
+    }
+    return false;
+  }
+
   onDown(ctx: ToolContext, s: InputSample): void {
     const w = ctx.toWorld(s);
+    if (this.isTargetLocked(ctx)) {
+      ctx.status("Capa bloqueada");
+      return;
+    }
     ctx.history.begin();
     this.active = true;
     this.eraser = s.eraser;

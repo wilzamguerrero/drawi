@@ -99,6 +99,7 @@ const shapeDials = (): string[] => {
     help: () => {},
     newDoc: () => {},
     openFile: () => {},
+    importImage: () => {},
     save: () => {},
     exportPng: () => {},
     exportSvg: () => {},

@@ -56,7 +56,26 @@ export class DockRenderer {
       if (field.kind === "number") (ctrl as unknown as Control<number>).set(field.get(state));
       else if (field.kind === "toggle") (ctrl as unknown as Control<boolean>).set(field.get(state));
       else if (field.kind === "choice") (ctrl as unknown as Control<string>).set(field.get(state));
-      else if (field.kind === "action" && field.disabled) (ctrl as unknown as Control<boolean>).set(!field.disabled(state));
+      else if (field.kind === "action") {
+        const c = ctrl as unknown as Control<boolean> & { setActive?(on: boolean): void; setLabel?(l: string): void; setIcon?(n?: string): void };
+        if (field.id === "sim-toggle") {
+          const dynLabel = val(field.label, state) as string;
+          if (c.setLabel) c.setLabel(dynLabel);
+          const dynIcon = field.icon ? (val(field.icon, state) as string) : undefined;
+          if (dynIcon && c.setIcon) c.setIcon(dynIcon);
+          if (field.toggled && c.setActive) c.setActive(field.toggled(state));
+          if (field.hint) {
+            const hint = val(field.hint, state) as string;
+            (ctrl as unknown as { el: HTMLElement }).el.title = hint;
+          }
+        } else {
+          if (field.disabled) c.set(!field.disabled(state));
+          if (field.toggled) {
+            const cc = c as { setActive?: (on: boolean) => void };
+            if (cc.setActive) cc.setActive(field.toggled(state));
+          }
+        }
+      }
 
       if (field.visible) {
         const vis = field.visible(state);
