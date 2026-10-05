@@ -23,6 +23,10 @@ import type { DiagSnapshot } from "./diagnostics";
 import { History } from "./history";
 import { DEFAULT_BRUSH, type BrushSettings } from "../stroke/types";
 import { symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
+import { rotationAround, reflectionAbout, multiply, invert, apply as applyMat, applyDir as applyDirMat, type Mat2d } from "../core/mat2d";
+import { polygonBounds } from "../stroke/outline";
+import { transformRect } from "../scene/document";
+import { unionRect } from "../scene/types";
 export type SelectOp = "move" | "scale" | "rotate" | "pivot";
 export type SelectPivotMode = "center" | "custom";
 import { Selection } from "./selection";
@@ -370,17 +374,41 @@ export class Editor {
 
   setSymmetry(patch: Partial<SymmetryState>): void {
     const before = this.doc.snapshot();
-    Object.assign(this.doc.symmetry, patch);
+    const s = this.doc.symmetry;
+    // Mantener lastMode coherente: cada vez que se fija un modo activo,
+    // ese pasa a ser el recordado para el proximo toggle.
+    if (patch.mode !== undefined && patch.mode !== "none") {
+      s.lastMode = patch.mode;
+    }
+    Object.assign(s, patch);
+    // Compat: proyectos viejos sin lastMode → derivarlo del mode cargado.
+    if (!(s as unknown as { lastMode: unknown }).lastMode) {
+      (s as unknown as { lastMode: string }).lastMode = s.mode !== "none" ? s.mode : "mirror";
+    }
     if (patch.mode !== undefined && patch.mode !== "none") {
       // Al activarla por primera vez se coloca en el centro de la vista.
-      if (this.doc.symmetry.x === 0 && this.doc.symmetry.y === 0) {
-        this.doc.symmetry.x = this.camera.x;
-        this.doc.symmetry.y = this.camera.y;
+      if (s.x === 0 && s.y === 0) {
+        s.x = this.camera.x;
+        s.y = this.camera.y;
       }
     }
     this.history.record("Simetria", before);
     this.overlayLayer.invalidate();
     this.emitState();
+  }
+
+  /** S (tecla dedicada): activa/desactiva recordando el ultimo tipo usado. */
+  toggleSymmetry(): void {
+    const s = this.doc.symmetry;
+    // Asegurar lastMode valido si viene de documento viejo
+    const last = (s.lastMode as unknown as string) && (s.lastMode as string) !== "none" ? s.lastMode : "mirror";
+    if (s.mode === "none") {
+      this.setSymmetry({ mode: last as typeof s.mode });
+    } else {
+      // Recuerda el que apaga para poder volver a el
+      s.lastMode = s.mode as typeof s.lastMode;
+      this.setSymmetry({ mode: "none" });
+    }
   }
 
   setShape(patch: Partial<ShapeDef>): void {
@@ -778,6 +806,122 @@ export class Editor {
     this.emitState();
   }
 
+  // ---------------------------------------------------------- rotacion / volteo de lienzo
+  // Vista (solo gira la camara) y contenido (transforma documento con matriz).
+
+  /** Gira solo la vista (camera) — no toca el documento. */
+  setCanvasRotation(deg: number): void {
+    // Normaliza a [-180,180] para que el slider sea estable
+    let d = ((deg + 180) % 360) - 180;
+    if (d <= -180) d += 360;
+    this.camera.rotation = (d * Math.PI) / 180;
+    this.invalidateAll();
+    this.emitState();
+  }
+
+  rotateViewBy(deltaDeg: number): void {
+    this.setCanvasRotation((this.camera.rotation * 180) / Math.PI + deltaDeg);
+  }
+
+  resetCanvasRotation(): void {
+    this.setCanvasRotation(0);
+  }
+
+  /** Rota el CONTENIDO 90°/180° alrededor del centro de la vista. */
+  rotateContent(deg: 90 | 180 | -90 | number): void {
+    const a = deg === 90 || deg === -90 || deg === 180 ? deg : Math.round(Number(deg) || 0);
+    if (a === 0) return;
+    const before = this.doc.snapshot();
+    const cx = this.camera.x;
+    const cy = this.camera.y;
+    // Construir G como rotacion pura alrededor de cx,cy
+    const rad = (a * Math.PI) / 180;
+    const G = rotationAround(rad, cx, cy);
+    this.applyGlobalMat(G, a === 180 ? "Rotar 180" : a === 90 ? "Rotar 90 horario" : a === -90 ? "Rotar 90 antihorario" : `Rotar ${a}°`, before);
+  }
+
+  flipContentHorizontal(): void {
+    const before = this.doc.snapshot();
+    const cx = this.camera.x;
+    const cy = this.camera.y;
+    // Reflejar segun eje de vista: horizontal = espejo izquierda/derecha → reflejo respecto a eje vertical de pantalla
+    const ang = this.camera.rotation + Math.PI / 2;
+    const G = reflectionAbout(ang, cx, cy);
+    this.applyGlobalMat(G, "Voltear horizontal", before);
+  }
+
+  flipContentVertical(): void {
+    const before = this.doc.snapshot();
+    const cx = this.camera.x;
+    const cy = this.camera.y;
+    const ang = this.camera.rotation;
+    const G = reflectionAbout(ang, cx, cy);
+    this.applyGlobalMat(G, "Voltear vertical", before);
+  }
+
+  private applyGlobalMat(G: Mat2d, label: string, before: import("../scene/document").SceneSnapshot): void {
+    const Ginv = invert(G);
+    if (!Ginv) return;
+    // Tinta: polys + transforms conjugados
+    for (const item of this.doc.items) {
+      for (const poly of item.polys) {
+        for (const v of poly) {
+          const p = applyMat(G, v);
+          v.x = p.x; v.y = p.y;
+        }
+      }
+      for (let i = 0; i < item.transforms.length; i++) {
+        const m = item.transforms[i];
+        // G * m * Ginv
+        item.transforms[i] = multiply(multiply(G, m), Ginv);
+      }
+      // Recalcular bounds desde poligonos + transforms
+      let nb: import("../scene/types").Rect | null = null;
+      for (const poly of item.polys) {
+        if (poly.length < 3) continue;
+        const pb = polygonBounds(poly);
+        for (const m of item.transforms) nb = unionRect(nb, transformRect(pb, m));
+      }
+      if (nb) {
+        item.bounds = nb;
+        item.gy0 = nb.y;
+        item.gy1 = nb.y + nb.h;
+      }
+    }
+    // Materia
+    for (const body of this.doc.physics.bodies) {
+      const np = applyMat(G, body.pos);
+      body.pos.x = np.x; body.pos.y = np.y;
+      const dir = { x: Math.cos(body.angle), y: Math.sin(body.angle) };
+      const nd = applyDirMat(G, dir);
+      body.angle = Math.atan2(nd.y, nd.x);
+      syncTransform(body);
+    }
+    // Simetria
+    {
+      const np = applyMat(G, { x: this.doc.symmetry.x, y: this.doc.symmetry.y });
+      this.doc.symmetry.x = np.x; this.doc.symmetry.y = np.y;
+      const dir = { x: Math.cos(this.doc.symmetry.angle), y: Math.sin(this.doc.symmetry.angle) };
+      const nd = applyDirMat(G, dir);
+      this.doc.symmetry.angle = Math.atan2(nd.y, nd.x);
+    }
+    // Imagenes
+    for (const layer of this.doc.layers) {
+      if (layer.kind === "image" && layer.imageX !== undefined) {
+        const np = applyMat(G, { x: layer.imageX, y: layer.imageY ?? 0 });
+        layer.imageX = np.x; layer.imageY = np.y;
+        const a = layer.imageAngle ?? 0;
+        const dir = { x: Math.cos(a), y: Math.sin(a) };
+        const nd = applyDirMat(G, dir);
+        layer.imageAngle = Math.atan2(nd.y, nd.x);
+      }
+    }
+    this.doc.inkRevision++;
+    this.history.record(label, before);
+    this.invalidateAll();
+    this.emitState();
+  }
+
   invalidateAll(): void {
     this.inkLayer.invalidate();
     this.matter.invalidate();
@@ -1103,7 +1247,6 @@ export class Editor {
       f: "shape",
       m: "matter",
       p: "bridge",
-      s: "symmetry",
       i: "picker",
       h: "hand",
     };
@@ -1177,6 +1320,19 @@ export class Editor {
         return;
       }
       const key = e.key.toLowerCase();
+      // S: toggle de simetria (activa/desactiva recordando el ultimo tipo).
+      // Shift+S abre la herramienta para arrastrar el eje (compat con flujo anterior).
+      if (key === "s") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          this.setTool("symmetry");
+        } else {
+          this.toggleSymmetry();
+          // Si acaba de activarse, llevar al usuario a la herramienta de eje
+          if (this.doc.symmetry.mode !== "none") this.setTool("symmetry");
+        }
+        return;
+      }
       if (keys[key]) {
         this.setTool(keys[key]);
         return;

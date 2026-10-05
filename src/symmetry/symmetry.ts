@@ -3,8 +3,12 @@ import { clamp, TAU } from "../core/math";
 
 export type SymmetryMode = "none" | "mirror" | "radial" | "kaleido";
 
+export type ActiveSymmetryMode = Exclude<SymmetryMode, "none">;
+
 export interface SymmetryState {
   mode: SymmetryMode;
+  /** Ultimo modo activo (sin "none"): al reactivar, vuelve a este. */
+  lastMode: ActiveSymmetryMode;
   /** Origen del eje, en coordenadas de mundo: se puede arrastrar a cualquier sitio. */
   x: number;
   y: number;
@@ -19,9 +23,11 @@ export interface SymmetryState {
 }
 
 export const DEFAULT_SYMMETRY: SymmetryState = {
-  // Al iniciar: espejo activo, eje vertical (90° → reflejo izquierda/derecha) y la
-  // guia (gizmo) oculta. El origen (0,0) es el centro de la vista al arrancar.
-  mode: "mirror",
+  // Al iniciar: simetria desactivada, recuerda Espejo como ultimo activo.
+  // S la reactiva (espejo vertical 90° → reflejo izquierda/derecha) sin perder
+  // el tipo que el usuario habia elegido. El origen (0,0) se centra al activar.
+  mode: "none",
+  lastMode: "mirror",
   x: 0,
   y: 0,
   angle: Math.PI / 2,
@@ -36,6 +42,24 @@ export const SYMMETRY_LABELS: Record<SymmetryMode, string> = {
   radial: "Radial",
   kaleido: "Caleidoscopio",
 };
+
+/** Normaliza un estado que puede venir de disco/historial viejo sin `lastMode`. */
+export function normalizeSymmetry(raw: Partial<SymmetryState> | undefined): SymmetryState {
+  const base = { ...DEFAULT_SYMMETRY };
+  if (!raw) return base;
+  const s = { ...base, ...raw } as SymmetryState;
+  if (!s.lastMode || s.lastMode === "none" as unknown as string) {
+    const m = (raw as { mode?: SymmetryMode }).mode;
+    s.lastMode = m && m !== "none" ? (m as ActiveSymmetryMode) : "mirror";
+  }
+  if (!["mirror", "radial", "kaleido"].includes(s.lastMode)) s.lastMode = "mirror";
+  if (!["none", "mirror", "radial", "kaleido"].includes(s.mode)) s.mode = "none";
+  s.count = Math.round(Number(s.count) || 6);
+  if (s.count < 2) s.count = 2;
+  if (s.count > 64) s.count = 64;
+  s.angle = Number(s.angle) || 0;
+  return s;
+}
 
 /**
  * Lista de transformaciones que genera la simetria activa.

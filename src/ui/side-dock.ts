@@ -249,12 +249,44 @@ export class SideDock {
     const dynHint = fieldLabel(DYNAMICS_INFO[editor.brush.dynamics].hint);
     this.customs.set("brush-dyn-hint", { el: dynHint, sync: (s) => { dynHint.textContent = DYNAMICS_INFO[s.brush.dynamics].hint; } });
 
+    // Presets de angulo 0 / 45 / 90 para simetria (captura)
+    const presetRow = el("div", { class: "angle-presets", role: "group", title: "Angulos rapidos" });
+    const presetBtns = [0, 45, 90].map((deg) => {
+      const b = el("button", { class: "angle-preset", type: "button", text: `${deg} deg` });
+      b.addEventListener("click", () => editor.setSymmetry({ angle: (deg * Math.PI) / 180 }));
+      return { deg, el: b };
+    });
+    for (const { el: b } of presetBtns) presetRow.appendChild(b);
+    this.customs.set("sym-angle-presets", {
+      el: presetRow,
+      sync: (s) => {
+        const cur = Math.round((s.symmetry.angle * 180) / Math.PI);
+        for (const { deg, el: b } of presetBtns) setClass(b, "is-active", cur === deg);
+      },
+    });
+
     // Conteo vivo de copias de simetría.
     const copies = fieldLabel("1 copia");
     this.customs.set("sym-copies", {
       el: copies,
       sync: (s) => { const n = symmetryCopies(s.symmetry); copies.textContent = n === 1 ? "1 copia" : `${n} copias por trazo`; },
     });
+
+    // Rotacion de lienzo — presets de contenido (como Photoshop: girar todo)
+    const rotRow = el("div", { class: "angle-presets rot-presets", role: "group", title: "Rotar / voltear contenido alrededor del centro de la vista" });
+    const r90 = el("button", { class: "angle-preset", type: "button", text: "Rotate 90° ↻", title: "Rotar 90 horario" });
+    const r90ccw = el("button", { class: "angle-preset", type: "button", text: "Rotate 90° ↺", title: "Rotar 90 antihorario" });
+    const r180 = el("button", { class: "angle-preset", type: "button", text: "Rotate 180°", title: "Rotar 180" });
+    const flipH = el("button", { class: "angle-preset", type: "button", text: "Flip H", title: "Voltear horizontal" });
+    const flipV = el("button", { class: "angle-preset", type: "button", text: "Flip V", title: "Voltear vertical" });
+    r90.addEventListener("click", () => editor.rotateContent(90));
+    r90ccw.addEventListener("click", () => editor.rotateContent(-90));
+    r180.addEventListener("click", () => editor.rotateContent(180));
+    flipH.addEventListener("click", () => editor.flipContentHorizontal());
+    flipV.addEventListener("click", () => editor.flipContentVertical());
+    rotRow.append(r90, r90ccw, r180, flipH, flipV);
+    const rotBlock = el("div", { class: "dock-stack" }, [rotRow, fieldLabel("Gira tinta, materia, imagenes y eje. La vista no se mueve.")]);
+    this.customs.set("rot-presets", { el: rotBlock });
 
     // Hornear a tinta (el radial trae su propia acción `bake`).
     const bake = button({ label: "Hornear a tinta", iconName: "bake", title: "Convierte el contorno fundido en trazos editables", onClick: () => editor.bakeMatter() });

@@ -5,7 +5,7 @@ import type { Polygon } from "../stroke/types";
 import { boundingRadius, DEFAULT_SHAPE, type ShapeDef } from "../physics/shapes";
 import { bodiesForInkItem } from "../physics/stroke-matter";
 import { createBody, PhysicsWorld, type Body, type WorldSettings } from "../physics/world";
-import { DEFAULT_SYMMETRY, symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
+import { DEFAULT_SYMMETRY, normalizeSymmetry, symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
 import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
 import { EMPTY_RECT, unionRect, type InkItem, type Rect } from "./types";
 import { cloneLayer, makeMask, type LayerColor, type SceneLayer } from "./layer";
@@ -128,7 +128,7 @@ export class SceneDocument {
   private layerCounter = 0;
 
   readonly physics = new PhysicsWorld();
-  symmetry: SymmetryState = cloneSymmetry(DEFAULT_SYMMETRY);
+  symmetry: SymmetryState = normalizeSymmetry(DEFAULT_SYMMETRY);
   field: FieldStyle = { ...DEFAULT_FIELD_STYLE };
   shape: ShapeDef = { ...DEFAULT_SHAPE };
 
@@ -686,7 +686,7 @@ export class SceneDocument {
       layers: this.layers.map(cloneLayer),
       activeLayerId: this.activeLayerId,
       bodies: this.physics.bodies.map(snapshotBody),
-      symmetry: cloneSymmetry(this.symmetry),
+      symmetry: normalizeSymmetry(cloneSymmetry(this.symmetry)),
       world: cloneWorld(this.physics.settings),
       field: { ...this.field },
       background: this.meta.background,
@@ -697,7 +697,7 @@ export class SceneDocument {
     this.items = snap.items.slice();
     this.layers = snap.layers.map(cloneLayer);
     this.activeLayerId = snap.activeLayerId;
-    this.symmetry = cloneSymmetry(snap.symmetry);
+    this.symmetry = normalizeSymmetry(cloneSymmetry(snap.symmetry));
     this.physics.settings = cloneWorld(snap.world);
     this.field = { ...snap.field };
     this.meta.background = snap.background;

@@ -779,6 +779,47 @@
   border-color: #ffffff;
 }
 
+/* Presets de angulo (Simetria: 0 / 45 / 90) — radios grandes, como en la captura */
+.angle-presets {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 4px 0 2px;
+}
+
+.angle-preset {
+  height: 28px;
+  border: 1px solid #2c2c34;
+  border-radius: 9px;
+  background: #1b1b1f;
+  color: #cdd0d6;
+  font: 500 11px/1 var(--font);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.angle-preset:hover {
+  background: #23232a;
+  border-color: #3a3a42;
+  color: #ffffff;
+}
+
+.angle-preset.is-active {
+  background: #35618c;
+  border-color: #5a9fd4;
+  color: #ffffff;
+}
+
+/* Rotacion de lienzo: 5 acciones en una tira */
+.rot-presets {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.rot-presets .angle-preset {
+  font-size: 10.5px;
+  padding: 0 4px;
+}
+
 /* "Sin color": aro hueco con una diagonal. */
 .layers-menu-color.is-none {
   border-color: #4a4a52;

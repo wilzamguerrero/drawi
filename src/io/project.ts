@@ -2,7 +2,7 @@ import type { SceneDocument } from "../scene/document";
 import { snapshotBody, restoreBody, type BodySnapshot } from "../scene/document";
 import type { InkItem } from "../scene/types";
 import type { SceneLayer } from "../scene/layer";
-import type { SymmetryState } from "../symmetry/symmetry";
+import { normalizeSymmetry as normalizeSymmetryState, type SymmetryState } from "../symmetry/symmetry";
 import { DEFAULT_WORLD, type WorldSettings } from "../physics/world";
 import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
 import type { BrushSettings } from "../stroke/types";
@@ -82,8 +82,8 @@ export function parseProject(text: string): ProjectFile {
 export function applyProject(doc: SceneDocument, file: ProjectFile): void {
   doc.meta.name = file.name;
   doc.meta.background = file.background;
-  doc.items = file.items;
-  doc.symmetry = { ...file.symmetry };
+  doc.items = (file.items as InkItem[]).slice();
+  doc.symmetry = normalizeSymmetryState(file.symmetry as Partial<SymmetryState>);
   // Merge con los defaults: un proyecto anterior a un campo nuevo no debe
   // recibirlo como `undefined` (rompería el control y el render).
   doc.physics.settings = { ...DEFAULT_WORLD, ...file.world, gravity: { ...file.world.gravity } };

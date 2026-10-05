@@ -6,7 +6,9 @@
       "Bash(rm -f \"E:/tmp/shim-old.mjs\" \"E:/tmp/shim-new.mjs\")",
       "Bash(rmdir \"E:/tmp\")",
       "Bash(git --no-pager diff --stat)",
-      "Bash(git --no-pager diff --stat HEAD)"
+      "Bash(git --no-pager diff --stat HEAD)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }

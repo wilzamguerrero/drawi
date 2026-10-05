@@ -472,6 +472,14 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
   };
 
   // ----------------------------------------------------------- Simetria
+  // Panel unificado segun captura: toggle arriba → presets 0/45/90 → angulo →
+  // tipo (Radial/Caleidoscopio) → sectores → centrar/enderezar → guia/bloquear.
+  // S activa/desactiva recordando el ultimo tipo; presets 0/45/90 son un click.
+  // El segmentado solo ofrece Radial y Caleidoscopio: al activar la simetria ya
+  // esta en Espejo (modo base), asi que estos dos botones "suben" a un modo con
+  // sectores. Clic en el ya activo vuelve a Espejo (ningun boton resaltado).
+  const ACTIVE_SYMS: SymmetryMode[] = ["radial", "kaleido"];
+  const ACTIVE_LABELS: Record<string, string> = { mirror: "Espejo", radial: "Radial", kaleido: "Caleidoscopio" };
   const symmetry: Domain = {
     id: "symmetry",
     label: "Simetria",
@@ -479,22 +487,78 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     children: [
       { kind: "action", id: "tool-symmetry", label: "Mover eje", icon: "symmetry", surfaces: ["radial"], toggled: (s) => s.tool === "symmetry", run: () => editor.setTool("symmetry") },
       {
+        kind: "toggle",
+        id: "sym-active",
+        label: "Simetria",
+        icon: "symmetry",
+        hint: (s) => s.symmetry.mode === "none" ? "Activar simetria (S) — vuelve al ultimo tipo usado" : `${SYMMETRY_LABELS[s.symmetry.mode]} activa — S para desactivar`,
+        get: (s) => s.symmetry.mode !== "none",
+        set: (v) => {
+          const cur = editor.state.symmetry;
+          if (v && cur.mode === "none") editor.setSymmetry({ mode: cur.lastMode });
+          else if (!v && cur.mode !== "none") editor.setSymmetry({ mode: "none" });
+        },
+      },
+      // Presets rapidos: 0 / 45 / 90 como en la captura (radios sutiles sobre el angulo)
+      { kind: "custom", id: "sym-angle-presets", label: "Angulo", surfaces: ["dock"] },
+      { kind: "number", id: "sym-angle", label: "Angulo", min: -180, max: 180, step: 1, unit: "deg", visible: (s) => s.symmetry.mode !== "none", whenHidden: "dim", get: (s) => (s.symmetry.angle * 180) / Math.PI, set: (v) => editor.setSymmetry({ angle: (v * Math.PI) / 180 }) },
+      // Tipo: Radial / Caleidoscopio. Espejo es el modo base (al activar la
+      // simetria). Clic en Radial/Caleidoscopio sube a ese modo; clic en el que
+      // ya esta activo baja de vuelta a Espejo (ningun boton resaltado).
+      {
+        kind: "choice",
+        id: "sym-type",
+        label: "Tipo",
+        icon: "symmetry",
+        chooser: "segmented",
+        visible: (s) => s.symmetry.mode !== "none",
+        whenHidden: "prune",
+        options: ACTIVE_SYMS.map((k) => ({ value: k, id: `sym-${k}`, label: ACTIVE_LABELS[k] })),
+        get: (s) => (s.symmetry.mode === "none" ? s.symmetry.lastMode : s.symmetry.mode),
+        set: (v) => {
+          const cur = editor.state.symmetry;
+          const next = cur.mode === v ? "mirror" : (v as SymmetryMode);
+          if (cur.mode === "none") {
+            editor.doc.symmetry.lastMode = next as unknown as typeof editor.doc.symmetry.lastMode;
+            editor.emitState();
+          } else {
+            editor.setSymmetry({ mode: next });
+          }
+        },
+      },
+      // Sectores: solo cuando Radial o Caleidoscopio esta activo (Espejo no tiene
+      // sectores). Se oculta por completo en Espejo o con la simetria apagada.
+      { kind: "number", id: "sym-count", label: "Sectores", min: 2, max: 64, step: 1, gamma: 1.4, visible: (s) => s.symmetry.mode === "radial" || s.symmetry.mode === "kaleido", whenHidden: "prune", get: (s) => s.symmetry.count, set: (v) => editor.setSymmetry({ count: Math.round(v) }) },
+      { kind: "action", id: "sym-center", label: "Centrar", visible: (s) => s.symmetry.mode !== "none", whenHidden: "dim", run: () => editor.setSymmetry({ x: editor.camera.x, y: editor.camera.y }) },
+      { kind: "action", id: "sym-straighten", label: "Enderezar", visible: (s) => s.symmetry.mode !== "none", whenHidden: "dim", run: () => editor.setSymmetry({ angle: 0 }) },
+      { kind: "toggle", id: "sym-visible", label: "Guia", hint: "Muestra el eje sobre el lienzo.", visible: (s) => s.symmetry.mode !== "none", whenHidden: "dim", get: (s) => s.symmetry.visible, set: (v) => editor.setSymmetry({ visible: v }) },
+      { kind: "toggle", id: "sym-locked", label: "Bloquear", hint: "Evita mover el eje sin querer mientras dibujas.", visible: (s) => s.symmetry.mode !== "none", whenHidden: "dim", get: (s) => s.symmetry.locked, set: (v) => editor.setSymmetry({ locked: v }) },
+      // Compat: mantiene el id antiguo para deep-links/chips viejos — espeja sym-type
+      {
         kind: "choice",
         id: "sym-mode",
         label: "Modo",
-        chooser: "segmented",
-        options: (Object.keys(SYMMETRY_LABELS) as SymmetryMode[]).map((k) => ({ value: k, id: `sym-${k}`, label: SYMMETRY_LABELS[k] })),
+        chooser: "select",
+        surfaces: [],
+        options: (Object.keys(SYMMETRY_LABELS) as SymmetryMode[]).map((k) => ({ value: k, id: `sym-${k}-legacy`, label: SYMMETRY_LABELS[k] })),
         get: (s) => s.symmetry.mode,
         set: (v) => editor.setSymmetry({ mode: v as SymmetryMode }),
       },
-      { kind: "number", id: "sym-count", label: "Sectores", min: 2, max: 64, step: 1, gamma: 1.4, visible: (s) => s.symmetry.mode === "radial" || s.symmetry.mode === "kaleido", get: (s) => s.symmetry.count, set: (v) => editor.setSymmetry({ count: Math.round(v) }) },
-      { kind: "number", id: "sym-angle", label: "Angulo", min: -180, max: 180, step: 1, unit: "deg", visible: (s) => s.symmetry.mode !== "none", get: (s) => (s.symmetry.angle * 180) / Math.PI, set: (v) => editor.setSymmetry({ angle: (v * Math.PI) / 180 }) },
-      { kind: "action", id: "sym-center", label: "Centrar", run: () => editor.setSymmetry({ x: editor.camera.x, y: editor.camera.y }) },
-      { kind: "action", id: "sym-straighten", label: "Enderezar", run: () => editor.setSymmetry({ angle: 0 }) },
-      { kind: "toggle", id: "sym-visible", label: "Guia", get: (s) => s.symmetry.visible, set: (v) => editor.setSymmetry({ visible: v }) },
-      { kind: "toggle", id: "sym-locked", label: "Bloquear", hint: "Evita mover el eje sin querer mientras dibujas.", get: (s) => s.symmetry.locked, set: (v) => editor.setSymmetry({ locked: v }) },
       { kind: "custom", id: "sym-copies", label: "Copias", surfaces: ["dock"] },
-      { kind: "custom", id: "note-symmetry", label: "Nota", surfaces: ["dock"], hint: "Con la herramienta de simetria (S) puedes arrastrar el eje a cualquier punto del lienzo." },
+      { kind: "custom", id: "note-symmetry", label: "Nota", surfaces: ["dock"], hint: "S activa/desactiva la simetria recordando el ultimo tipo. Con S+Shift o la herramienta Simetria arrastras el eje a cualquier punto." },
+      // ROTACION de lienzo — vive como seccion inferior del mismo panel (vista vs
+      // contenido, estilo Photoshop). Es un grupo propio para que salga bajo su
+      // propia cabecera "Rotacion" dentro de la pagina de Simetria.
+      {
+        id: "rotation",
+        label: "Rotacion",
+        icon: "rotate",
+        children: [
+          { kind: "custom", id: "rot-presets", label: "Rotar contenido", hint: "Gira tinta, materia, imagenes y eje de simetria alrededor del centro de la vista. La vista (camara) se queda donde esta." },
+          { kind: "number", id: "rot-canvas", label: "Rotar vista", min: -180, max: 180, step: 1, unit: "deg", hint: "Gira solo la camara (como rotar el papel). No toca el documento.", get: (s) => (s as unknown as { cameraRotation?: number }).cameraRotation ?? (editor.camera.rotation * 180) / Math.PI, set: (v) => editor.setCanvasRotation(v) },
+          { kind: "action", id: "rot-reset-view", label: "Enderezar vista", run: () => editor.resetCanvasRotation() },
+        ],
+      },
     ],
   };
 
