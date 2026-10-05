@@ -4,19 +4,31 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#101217" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="application-name" content="Zence Draw" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Zence Draw" />
     <meta
       name="description"
       content="Zence Draw: dibujo generativo con lapiz de alta respuesta, simetria movil y materia que se funde."
     />
     <title>Zence Draw</title>
 
-    <!-- Favicon: arranca con una gota estática (SVG en línea) y, al montar la app,
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <!-- Favicon legacy (data URI): respalda el primer frame antes de que /favicon.svg cargue.
          `startFavicon()` lo sustituye por la versión animada dibujada a canvas. -->
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='45' cy='22' r='6' fill='%23161619'/%3E%3Ccircle cx='18' cy='40' r='4.5' fill='%23161619'/%3E%3Ccircle cx='32' cy='32' r='15' fill='%23161619'/%3E%3C/svg%3E"
     />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png" />
 
     <!--
       Splash de arranque.

@@ -6,8 +6,10 @@ import "./styles-panels.css";
 import "./styles-side-dock.css";
 import "./styles-command.css";
 import "./styles-diagnostics.css";
+import "./styles-pwa.css";
 import { App } from "./ui/app";
 import { startFavicon } from "./ui/favicon";
+import { initPWA } from "./pwa";
 
 const root = document.getElementById("app");
 if (!root) throw new Error("Falta el contenedor #app");
@@ -17,6 +19,9 @@ app.startStatusPolling();
 
 // Favicon animado: la misma materia viva del buscador, latiendo en la pestaña.
 startFavicon();
+
+// PWA instalable: registra /sw.js, gestiona updates y banner de instalación.
+initPWA();
 
 // Retira el splash de arranque (vive en index.html) ahora que el editor esta montado.
 // Un respiro minimo para que la materia no parpadee si el bundle llego demasiado rapido.
