@@ -119,9 +119,11 @@ export class SideDock {
 
   /** Abre la rueda de color flotante (la resuelve la App). */
   private onOpenWheel: () => void;
+  private editor: Editor;
 
   constructor(editor: Editor, onOpenWheel: () => void = () => {}) {
     this.onOpenWheel = onOpenWheel;
+    this.editor = editor;
     const schema = buildSchema(editor, editor.state, NO_HOOKS);
     const byId = new Map(schema.map((d) => [d.id, d] as const));
     this.dock = new DockRenderer(editor, schema);
@@ -499,6 +501,13 @@ export class SideDock {
     this.openCat = cat;
     if (cat) this.edge.start();
     else this.edge.collapse();
+
+    // Avisar en el HUD qué panel se abrió (o que se cerró), para que el usuario
+    // sepa dónde está sin mirar la pestaña. Al cambiar entre paneles también.
+    if (cat) {
+      const def = this.tabDefs.find((d) => d.id === cat);
+      if (def) this.editor.status(`Panel ${def.label}`);
+    }
 
     // Al CERRAR (cat === null) no se ocultan las páginas todavía: el cajón se
     // desliza fuera con su contenido intacto. Solo se quita is-open.

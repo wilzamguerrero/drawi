@@ -976,6 +976,12 @@ export class PantoneWheel {
     else this.setExpanded(!this.expanded);
   }
 
+  /** ¿La rueda está a la vista y expandida (no solo la bolita)? Lo usa el HUD
+      para avisar si un toggle la abrió o la cerró. */
+  get isShowing(): boolean {
+    return this.visible && this.expanded;
+  }
+
   /** Abre la rueda expandida. Si ya está a la vista (aunque plegada), la despliega.
       Lo usan el botón del dock y, como alternativa, la acción "Rueda" del radial. */
   open(): void {

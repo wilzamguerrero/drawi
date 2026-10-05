@@ -81,6 +81,7 @@ export class App {
     this.panels = new Panels();
     this.sideDock = new SideDock(this.editor, () => {
       this.pantone.open();
+      this.editor.status("Rueda de color");
       this.wake();
     });
     // Panel de diagnóstico del render (Ctrl+Alt+D). También accesible desde la
@@ -92,7 +93,10 @@ export class App {
     // Puertos de alto nivel compartidos por el menú radial y el paletón: ambos
     // solo declaran intención y es la app quien la resuelve (panel, diálogo...).
     const hooks: MenuHooks = {
-      toggleWheel: () => this.pantone.keyToggle(),
+      toggleWheel: () => {
+        this.pantone.keyToggle();
+        this.editor.status(this.pantone.isShowing ? "Rueda de color" : "Rueda cerrada");
+      },
       help: () => this.help.toggle(),
       newDoc: () => this.editor.status(newDocument(this.editor)),
       openFile: () => this.openFile(),
@@ -193,6 +197,7 @@ export class App {
       if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         this.pantone.keyToggle();
+        this.editor.status(this.pantone.isShowing ? "Rueda de color" : "Rueda cerrada");
         this.wake();
         return;
       }

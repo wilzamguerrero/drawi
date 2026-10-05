@@ -320,6 +320,7 @@ export class RadialMenu {
 
     this.isOpen = true;
     this.el.hidden = false;
+    this.editor.status("Menu radial");
 
     this.container.style.left = `${this.posX}px`;
     this.container.style.top = `${this.posY}px`;
