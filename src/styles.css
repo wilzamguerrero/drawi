@@ -1637,7 +1637,12 @@ body {
   color: var(--hud-ink);
   opacity: 0;
   transform: translateX(-8px);
-  max-width: 220px;
+  /* Ancho fijo reservado: el mensaje SIEMPRE ocupa lo mismo (vacío o con texto
+     corto/largo), así nunca empuja los chips de la derecha. El texto se alinea a
+     la derecha para quedar pegado al resto del HUD y se recorta con elipsis. */
+  flex: 0 0 200px;
+  width: 200px;
+  text-align: right;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2324,6 +2329,12 @@ body {
 @media (max-width: 620px) {
   .status-chip:not(.status-engine) {
     display: none;
+  }
+
+  /* En pantallas estrechas el aviso cede ancho para no desbordar el HUD. */
+  .status-message {
+    flex-basis: 120px;
+    width: 120px;
   }
 
   .pen-num {

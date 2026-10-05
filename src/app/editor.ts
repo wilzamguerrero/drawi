@@ -22,7 +22,7 @@ import type { HistoryStatus } from "./history";
 import type { DiagSnapshot } from "./diagnostics";
 import { History } from "./history";
 import { DEFAULT_BRUSH, type BrushSettings } from "../stroke/types";
-import { symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
+import { symmetryTransforms, SYMMETRY_LABELS, type SymmetryState } from "../symmetry/symmetry";
 import { rotationAround, reflectionAbout, multiply, invert, apply as applyMat, applyDir as applyDirMat, type Mat2d } from "../core/mat2d";
 import { polygonBounds } from "../stroke/outline";
 import { transformRect } from "../scene/document";
@@ -38,6 +38,7 @@ import { HandTool, PickerTool } from "../tools/picker-tool";
 import { ShapeTool } from "../tools/shape-tool";
 import { SymmetryTool } from "../tools/symmetry-tool";
 import type { PullFamily } from "../tools/pull-shapes";
+import { TOOL_LABELS } from "../tools/types";
 import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
 
 /** Operacion activa de la herramienta Materia. */
@@ -1310,6 +1311,7 @@ export class Editor {
         if (e.repeat) return;
         e.preventDefault();
         this.setBrush({ invertErase: !this.brush.invertErase });
+        this.status(this.brush.invertErase ? "Borrador temporal (Alt)" : "Pincel normal");
         return;
       }
 
@@ -1320,53 +1322,66 @@ export class Editor {
         return;
       }
       const key = e.key.toLowerCase();
-      // S: toggle de simetria (activa/desactiva recordando el ultimo tipo).
-      // Shift+S abre la herramienta para arrastrar el eje (compat con flujo anterior).
+      // S: toggle de simetria (activa/desactiva recordando el ultimo tipo) SIN
+      // cambiar de herramienta: sigues con el pincel y dibujas con simetria al
+      // instante. Shift+S abre la herramienta Simetria para arrastrar el eje.
       if (key === "s") {
         e.preventDefault();
         if (e.shiftKey) {
           this.setTool("symmetry");
+          this.status("Herramienta Simetria — arrastra el eje");
         } else {
           this.toggleSymmetry();
-          // Si acaba de activarse, llevar al usuario a la herramienta de eje
-          if (this.doc.symmetry.mode !== "none") this.setTool("symmetry");
+          const m = this.doc.symmetry.mode;
+          this.status(m === "none" ? "Simetria desactivada" : `Simetria activa — ${SYMMETRY_LABELS[m]}`);
         }
         return;
       }
       if (keys[key]) {
         this.setTool(keys[key]);
+        this.status(TOOL_LABELS[keys[key]]);
         return;
       }
       switch (key) {
         case "1":
           this.setBrush({ mode: "stroke" });
+          this.status("Pincel · Trazo");
           break;
         case "2":
           this.setBrush({ mode: "fill" });
+          this.status("Pincel · Relleno");
           break;
         case "3":
           this.setBrush({ mode: "pull" });
+          this.status("Pincel · Arrastre");
           break;
         case "4":
           this.setBrush({ mode: "erase" });
+          this.status("Pincel · Borrador");
           break;
         case "5":
           this.setBrush({ asMatter: !this.brush.asMatter });
+          this.status(this.brush.asMatter ? "Pincel pinta materia" : "Pincel pinta tinta");
           break;
         case "[":
           this.setBrush({ size: Math.max(0.5, this.brush.size * 0.85) });
+          this.status(`Grosor ${Math.round(this.brush.size)} px`);
           break;
         case "]":
           this.setBrush({ size: Math.min(400, this.brush.size * 1.18) });
+          this.status(`Grosor ${Math.round(this.brush.size)} px`);
           break;
         case "g":
           this.setBrush({ gradient: !this.brush.gradient });
+          this.status(this.brush.gradient ? "Degradado activo" : "Degradado desactivado");
           break;
         case "p":
           this.setBrush({ splat: !this.brush.splat });
+          this.status(this.brush.splat ? "Salpicado activo" : "Salpicado desactivado");
           break;
         case "0":
           this.resetView();
+          this.status("Vista restablecida");
           break;
         case "escape":
           if (this.toolId === "select" && !this.selection.empty) { this.clearSelection(); break; }
