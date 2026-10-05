@@ -4,7 +4,7 @@ import { Rng } from "../core/rng";
 import type { Polygon } from "../stroke/types";
 import type { Vec2 } from "../core/vec2";
 
-export type ShapeKind = "circle" | "box" | "capsule" | "ngon" | "star";
+export type ShapeKind = "circle" | "box" | "capsule" | "ngon" | "star" | "poly";
 
 export const SHAPE_LABELS: Record<ShapeKind, string> = {
   circle: "Circulo",
@@ -12,6 +12,7 @@ export const SHAPE_LABELS: Record<ShapeKind, string> = {
   capsule: "Capsula",
   ngon: "Poligono",
   star: "Estrella",
+  poly: "Libre",
 };
 
 /** Codigos que viajan al shader. Deben coincidir con field.frag. */
@@ -21,7 +22,11 @@ export const SHAPE_CODE: Record<ShapeKind, number> = {
   capsule: 2,
   ngon: 3,
   star: 4,
+  poly: 5,
 };
+
+/** Maximo de vertices de una silueta libre (limita el coste por pixel del shader). */
+export const MAX_POLY_VERTS = 64;
 
 export interface ShapeDef {
   kind: ShapeKind;
@@ -36,6 +41,39 @@ export interface ShapeDef {
   /** Redondeo de esquinas en unidades de mundo. */
   round: number;
   seed: number;
+  /**
+   * Silueta libre (solo `kind: "poly"`): vertices locales centrados en el
+   * origen y sin escalar; `size` actua como factor de escala (1 = tal cual).
+   */
+  poly?: Vec2[];
+}
+
+/** Radio maximo de una silueta libre sin escalar. */
+export const polyRadius = (poly: readonly Vec2[] | undefined): number => {
+  let r = 0;
+  if (poly) for (const p of poly) r = Math.max(r, Math.hypot(p.x, p.y));
+  return Math.max(r, 1e-3);
+};
+
+/** Envolvente convexa (cadena monotona): colisionador de una silueta libre. */
+export function convexHull(pts: readonly Vec2[]): Vec2[] {
+  const p = pts.map((v) => ({ x: v.x, y: v.y })).sort((a, b) => a.x - b.x || a.y - b.y);
+  if (p.length < 3) return p;
+  const cross = (o: Vec2, a: Vec2, b: Vec2): number => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Vec2[] = [];
+  for (const v of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], v) <= 0) lower.pop();
+    lower.push(v);
+  }
+  const upper: Vec2[] = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const v = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], v) <= 0) upper.pop();
+    upper.push(v);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
 }
 
 export const DEFAULT_SHAPE: ShapeDef = {
@@ -98,6 +136,8 @@ export function shapeParams(s: ShapeDef): [number, number, number] {
     }
     case "star":
       return [s.size, Math.max(3, Math.round(s.sides)), s.inner];
+    case "poly":
+      return [s.size, s.poly?.length ?? 0, 0];
   }
 }
 
@@ -114,6 +154,8 @@ export function boundingRadius(s: ShapeDef): number {
       return s.size;
     case "star":
       return s.size;
+    case "poly":
+      return polyRadius(s.poly) * s.size;
   }
 }
 
@@ -130,6 +172,8 @@ export function colliderVerts(s: ShapeDef): Vec2[] | null {
   switch (s.kind) {
     case "circle":
       return null;
+    case "poly":
+      return convexHull((s.poly ?? []).map((p) => ({ x: p.x * s.size, y: p.y * s.size })));
     case "box": {
       const w = s.size * s.aspect;
       const h = s.size;
@@ -173,6 +217,10 @@ export function outlinePolygon(s: ShapeDef, steps = 96): Polygon {
   const out: Polygon = [];
   const n = Math.max(3, Math.round(s.sides));
   switch (s.kind) {
+    case "poly": {
+      for (const p of s.poly ?? []) out.push({ x: p.x * s.size, y: p.y * s.size });
+      break;
+    }
     case "circle": {
       for (let i = 0; i < steps; i++) {
         const a = (TAU * i) / steps;

@@ -84,6 +84,11 @@ export interface BrushSettings {
   /** El gesto de borrado elimina también cuerpos de materia que toque. */
   eraseMatter: boolean;
   /**
+   * Convierte el trazo/relleno/arrastre a materia sin cambiar de modo del pincel.
+   * Es un toggle parecido a "Usar como borrador" pero el resultado son cuerpos.
+   */
+  asMatter: boolean;
+  /**
    * Invierte los modos de pintura (Trazo/Relleno/Arrastre) a borrado: el mismo
    * gesto recorta la tinta en vez de pintarla. La tecla Alt lo alterna.
    */
@@ -109,6 +114,7 @@ export const DEFAULT_BRUSH: BrushSettings = {
   eraseMode: "brush",
   eraseFade: false,
   eraseMatter: false,
+  asMatter: false,
   invertErase: false,
 };
 

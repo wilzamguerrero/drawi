@@ -56,14 +56,16 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
     rows: [
       ["1 / 2 / 3", "Trazo, relleno, arrastre"],
       ["4", "Borrador"],
+      ["5", "Hacer materia"],
       ["Alt", "Invertir a borrador"],
+      ["Mover/Rotar/Escalar", "Transformar materia (M)"],
       ["[ / ]", "Tamano -/+"],
       ["G", "Degradado"],
       ["P", "Splat"],
       ["X", "Color y secundario"],
       ["C", "Color y fondo"],
       ["Boton lateral", "Borrar materia"],
-      ["Punta de goma", "Pintar con el fondo"],
+      ["Punta de borrador", "Pintar con el fondo"],
     ],
   },
   {

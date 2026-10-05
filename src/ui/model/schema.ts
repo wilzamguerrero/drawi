@@ -1,4 +1,4 @@
-import type { Editor, EditorState } from "../../app/editor";
+import type { Editor, EditorState, MatterOp } from "../../app/editor";
 import { DEFAULT_PALETTES } from "../../core/color";
 import { SHAPE_LABELS, type ShapeKind } from "../../physics/shapes";
 import { DYNAMICS_INFO, ERASE_MODE_LABELS, type BrushMode, type EraseMode, type StrokeDynamics } from "../../stroke/types";
@@ -230,7 +230,8 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     },
     { kind: "toggle", id: "gradient", label: "Degradado", icon: "layers", hint: "Desvanece el trazo hacia abajo (modificador de Alchemy). Tecla G.", visible: (s) => s.brush.mode !== "erase", get: (s) => s.brush.gradient, set: (v) => editor.setBrush({ gradient: v }) },
     { kind: "toggle", id: "splat", label: "Splat", icon: "droplet", hint: "Contorno anguloso en vez de suave (modificador de Alchemy). Tecla P.", visible: (s) => s.brush.mode !== "erase", get: (s) => s.brush.splat, set: (v) => editor.setBrush({ splat: v }) },
-    { kind: "toggle", id: "invert-erase", label: "Usar como goma", icon: "eraser", hint: "Invierte el trazo, relleno o arrastre a borrado: el mismo gesto recorta la tinta. Tecla Alt.", visible: (s) => s.brush.mode !== "erase", get: (s) => s.brush.invertErase, set: (v) => editor.setBrush({ invertErase: v }) },
+    { kind: "toggle", id: "as-matter", label: "Hacer materia", icon: "matter", hint: "Convierte el trazo, relleno o arrastre en materia sin cambiar de modo del pincel. Tecla 5.", visible: (s) => s.brush.mode !== "erase", get: (s) => s.brush.asMatter, set: (v) => editor.setBrush({ asMatter: v }) },
+    { kind: "toggle", id: "invert-erase", label: "Usar como borrador", icon: "eraser", hint: "Invierte el trazo, relleno o arrastre a borrado: el mismo gesto recorta la tinta. Tecla Alt.", visible: (s) => s.brush.mode !== "erase" && !s.brush.asMatter, get: (s) => s.brush.invertErase, set: (v) => editor.setBrush({ invertErase: v }) },
     // ---- Opciones exclusivas del Borrador (visibles solo en modo "erase"). ----
     {
       kind: "choice",
@@ -418,15 +419,35 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     children: [
       { kind: "action", id: "tool-shape", label: "Crear", icon: "shape", surfaces: ["radial"], toggled: (s) => s.tool === "shape", run: () => editor.setTool("shape") },
       { kind: "action", id: "tool-matter", label: "Mover", icon: "matter", surfaces: ["radial"], toggled: (s) => s.tool === "matter", run: () => editor.setTool("matter") },
+      {
+        kind: "choice",
+        id: "matter-op",
+        label: "Transformar",
+        icon: "move",
+        chooser: "segmented",
+        hint: "Mover: arrastra el cuerpo o el trazo entero. Rotar: gira alrededor del pivote. Escalar: aleja o acerca al pivote. Pivote: coloca a mano el punto de giro/escala; se mantiene coherente al transformar y con la física.",
+        visible: (s) => s.tool === "matter",
+        options: [
+          { value: "move", id: "matter-op-move", label: "Mover" },
+          { value: "rotate", id: "matter-op-rotate", label: "Rotar" },
+          { value: "scale", id: "matter-op-scale", label: "Escalar" },
+          { value: "pivot", id: "matter-op-pivot", label: "Pivote" },
+        ],
+        get: (s) => s.matterOp,
+        set: (v) => editor.setMatterOp(v as MatterOp),
+      },
       { kind: "action", id: "tool-bridge", label: "Puente", icon: "layers", surfaces: ["radial"], toggled: (s) => s.tool === "bridge", run: () => editor.setTool("bridge") },
       { kind: "action", id: "run", label: (s) => (s.running ? "Pausar" : "Reanudar"), icon: (s) => (s.running ? "pause" : "play"), surfaces: ["radial"], keepOpen: true, toggled: (s) => s.running, run: () => editor.setRunning(!editor.state.running) },
       { kind: "action", id: "seed", label: "Sembrar", icon: "seed", surfaces: ["radial"], run: () => editor.seedMatter(8) },
       { kind: "action", id: "bake", label: "Hornear", icon: "bake", surfaces: ["radial"], run: () => editor.bakeMatter() },
+      { kind: "action", id: "ink-to-matter", label: "Tinta a materia", icon: "matter", disabled: (s) => {
+        const layer = s.layers.find((l) => l.id === s.activeLayerId);
+        return layer?.kind !== "ink" || !editor.doc.layerItems(s.activeLayerId).some((item) => !item.erase);
+      }, run: () => editor.convertInkToMatter() },
       shapeCfg,
       physicsCfg,
       fieldCfg,
-      // "Hornear a tinta" en el dock (el radial ya trae la acción `bake` arriba).
-      { kind: "custom", id: "bake-dock", label: "Hornear a tinta", surfaces: ["dock"], hint: "Convierte el contorno fundido en trazos editables" },
+      // La conversión se activa directamente desde el modo Materia del pincel.
       { kind: "toggle", id: "walls", label: "Paredes", icon: "grid", get: (s) => s.showWalls, set: () => editor.toggleWalls() },
       { kind: "action", id: "clear-matter", label: "Vaciar", icon: "trash", accent: "#ff5f6d", danger: true, run: () => editor.clearMatter() },
     ],

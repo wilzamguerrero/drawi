@@ -44,6 +44,14 @@ export interface Body {
   /** Alcance de puentes propio; -1 = usa el global, 0 = sin puentes. */
   bridgeReach: number;
 
+  /** Identidad del trazo del que nace la pieza (agrupa mover/rotar/escalar). */
+  strokeId?: string;
+  /** Orden de la pieza dentro de su trazo. */
+  strokeIndex?: number;
+  /** Pivote del grupo de trazo, en mundo (solo lo lleva la primera pieza). */
+  strokePivotX?: number;
+  strokePivotY?: number;
+
   awake: boolean;
   sleepTimer: number;
 

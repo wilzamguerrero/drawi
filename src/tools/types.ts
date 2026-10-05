@@ -7,6 +7,7 @@ import type { SceneDocument } from "../scene/document";
 import type { History } from "../app/history";
 import type { BrushSettings, Polygon } from "../stroke/types";
 import type { Body } from "../physics/world";
+import type { MatterOp } from "../app/editor";
 import type { PullFamily } from "./pull-shapes";
 
 export type ToolId = "brush" | "shape" | "matter" | "bridge" | "symmetry" | "picker" | "hand";
@@ -52,6 +53,8 @@ export interface ToolContext {
   color: string;
   /** Familia de forma "pull" activa; "random" elige una distinta cada vez. */
   pullFamily: PullFamily | "random";
+  /** Operacion activa de la herramienta Materia (mover/rotar/escalar). */
+  matterOp: MatterOp;
 
   toWorld(s: InputSample, out?: Vec2): Vec2;
   setColor(hex: string): void;
@@ -66,6 +69,8 @@ export interface ToolContext {
   invalidateOverlay(): void;
 
   setHighlight(body: Body | null): void;
+  /** Pivote de transformacion visible (null lo oculta). */
+  setPivot(p: Vec2 | null): void;
   setPreviewShape(visible: boolean): void;
   status(message: string): void;
   /** Lee el color compuesto de un punto de pantalla. */

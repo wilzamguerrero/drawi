@@ -3,9 +3,11 @@ import { StrokeBuilder, type WorldSample } from "../stroke/builder";
 import type { InputSample } from "../input/pointer";
 import type { Polygon, StrokePoint } from "../stroke/types";
 import { outlinePolygon, transformPolygon } from "../physics/shapes";
+import { bodyFromOutline } from "../physics/stroke-matter";
 import { symmetryTransforms } from "../symmetry/symmetry";
 import type { InkItem } from "../scene/types";
 import type { Mat2d } from "../core/mat2d";
+import { uid } from "../core/rng";
 import { placePullShape, pullShape, randomPullShape } from "./pull-shapes";
 import type { Tool, ToolContext, WetStroke } from "./types";
 
@@ -40,7 +42,7 @@ export class BrushTool implements Tool {
   private builder: StrokeBuilder | null = null;
   private active = false;
   private eraser = false;
-  // Al pintar con "usar como goma" activo (toggle del panel / tecla Alt), el
+  // Al pintar con "usar como borrador" activo (toggle del panel / tecla Alt), el
   // gesto se invierte a borrado sin cambiar de modo (p. ej. la forma de relleno
   // recorta la tinta). El modo Borrador (4) ya borra por sí mismo.
   private invert = false;
@@ -59,8 +61,9 @@ export class BrushTool implements Tool {
     ctx.history.begin();
     this.active = true;
     this.eraser = s.eraser;
-    // Los modos de pintura se invierten a borrado si "usar como goma" está activo.
-    this.invert = ctx.brush.mode !== "erase" && ctx.brush.invertErase;
+    // Los modos de pintura se invierten a borrado si "usar como borrador" está
+    // activo. Materia se controla con el toggle del pincel, no con otro modo.
+    this.invert = ctx.brush.mode !== "erase" && !ctx.brush.asMatter && ctx.brush.invertErase;
     this.startX = w.x;
     this.startY = w.y;
     this.lastX = w.x;
@@ -127,8 +130,8 @@ export class BrushTool implements Tool {
       return;
     }
 
-    // Estado final de "usar como goma" (el modo ya no puede ser "erase" aquí).
-    this.invert = ctx.brush.invertErase;
+    // Estado final de "usar como borrador" / "hacer materia".
+    this.invert = !ctx.brush.asMatter && ctx.brush.invertErase;
 
     if (ctx.brush.mode === "pull") {
       const w = ctx.toWorld(s);
@@ -136,6 +139,12 @@ export class BrushTool implements Tool {
       this.lastY = w.y;
       const wet = this.buildWet(ctx, false);
       this.shape = null;
+      // "Hacer materia" tambien convierte el arrastre: la forma estirada pasa
+      // a ser un cuerpo de silueta libre, igual que el trazo y el relleno.
+      if (ctx.brush.asMatter) {
+        this.finishMatter(ctx, wet?.polys ?? []);
+        return;
+      }
       this.finish(ctx, wet, this.invert ? "Borrar" : "Forma");
       return;
     }
@@ -148,6 +157,12 @@ export class BrushTool implements Tool {
     }
     b.push([this.worldSample(ctx, s)], true);
     const points = b.finalize();
+
+    if (ctx.brush.asMatter) {
+      this.finishMatter(ctx, this.wetFromPoints(ctx, points, false)?.polys ?? []);
+      return;
+    }
+
     const wet = this.wetFromPoints(ctx, points, false);
     const label = this.invert ? "Borrar" : ctx.brush.mode === "fill" ? "Relleno" : "Trazo";
     this.finish(ctx, wet, label);
@@ -255,6 +270,44 @@ export class BrushTool implements Tool {
     }
     if (wet && hasInk) ctx.commitWet(wet);
     ctx.history.commit("Borrar");
+  }
+
+  /**
+   * Consolida un gesto con "Hacer materia": cada silueta del trazo se convierte
+   * en UN cuerpo de forma libre (poly) que conserva el contorno dibujado. Las
+   * copias de simetria nacen como cuerpos hermanos; cada uno lleva su pivote en
+   * el centroide local de su propia forma.
+   */
+  private finishMatter(ctx: ToolContext, polys: readonly Polygon[]): void {
+    ctx.setWet(null);
+    const target = ctx.doc.matterTarget();
+    const transforms = symmetryTransforms(ctx.doc.symmetry);
+    let created = 0;
+    for (const poly of polys) {
+      const strokeId = uid();
+      for (const m of transforms) {
+        const world = transformPolygon(poly, m);
+        const body = bodyFromOutline(world, {
+          color: ctx.color,
+          blend: ctx.doc.field.blend,
+          restitution: ctx.doc.physics.settings.restitution,
+          friction: ctx.doc.physics.settings.friction,
+          layerId: target.id,
+        });
+        if (!body) continue;
+        body.strokeId = strokeId;
+        body.strokeIndex = created;
+        ctx.doc.physics.add(body);
+        created++;
+      }
+    }
+    if (created === 0) {
+      ctx.history.abort();
+      return;
+    }
+    ctx.doc.physics.wakeAll();
+    ctx.history.commit(created > 1 ? `Materia · ${created} formas` : "Materia");
+    ctx.invalidateField();
   }
 
   /** Elimina los trazos que toca el punto (todo el item, con sus copias). */

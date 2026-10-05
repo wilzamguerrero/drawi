@@ -2,7 +2,7 @@ import { hexToRgb } from "../core/color";
 import { clamp } from "../core/math";
 import type { Camera } from "./camera";
 import { computeBridges } from "../physics/bridges";
-import { boundingRadius, SHAPE_CODE, shapeParams, starM } from "../physics/shapes";
+import { boundingRadius, MAX_POLY_VERTS, SHAPE_CODE, shapeParams, starM } from "../physics/shapes";
 import type { Body } from "../physics/world";
 
 /** Forma de los puentes entre cuerpos. */
@@ -69,6 +69,8 @@ const MAX_BODIES = 512;
 const TEXELS = 4;
 const MAX_LINKS = 1024;
 const LINK_TEXELS = 3;
+/** Ancho (en texels) de la textura de vertices de siluetas libres. */
+const POLY_W = 256;
 
 const VERT = `#version 300 es
 in vec2 aPos;
@@ -103,6 +105,7 @@ uniform int   uBridgeFade;
 uniform float uTime;
 uniform sampler2D uData;
 uniform sampler2D uLinks;
+uniform sampler2D uPoly;
 
 const float PI = 3.141592653589793;
 
@@ -228,9 +231,33 @@ float sdStar(vec2 p, float r, float n, float m) {
   return length(p) * sign(p.x);
 }
 
+vec2 polyV(int idx) { return texelFetch(uPoly, ivec2(idx & 255, idx >> 8), 0).rg; }
+
+// SDF exacta de una silueta libre (convexa o concava); espejo de sdPoly en sdf.ts.
+float sdPoly(vec2 p, float k, int n, int off) {
+  float d = 1e20;
+  float sg = 1.0;
+  for (int i = 0; i < ${MAX_POLY_VERTS}; i++) {
+    if (i >= n) break;
+    int j = i == 0 ? n - 1 : i - 1;
+    vec2 a = polyV(off + j) * k;
+    vec2 b = polyV(off + i) * k;
+    vec2 e = b - a;
+    vec2 w = p - a;
+    vec2 q = w - e * clamp(dot(w, e) / max(dot(e, e), 1e-12), 0.0, 1.0);
+    d = min(d, dot(q, q));
+    bool c1 = p.y >= a.y;
+    bool c2 = p.y < b.y;
+    bool c3 = e.x * w.y > e.y * w.x;
+    if ((c1 && c2 && c3) || (!c1 && !c2 && !c3)) sg = -sg;
+  }
+  return sg * sqrt(d);
+}
+
 float shapeSdf(vec2 p, vec4 s) {
   int t = int(s.x + 0.5);
   if (t == 0) return sdCircle(p, s.y);
+  if (t == 5) return sdPoly(p, s.y, int(s.z + 0.5), int(s.w + 0.5));
   if (t == 1) return sdRoundBox(p, vec2(s.y, s.z), s.w);
   if (t == 2) return sdCapsule(p, s.z, s.y);
   if (t == 3) return sdNgon(p, s.y, max(3.0, s.z), s.w);
@@ -383,6 +410,9 @@ export class FieldRenderer {
   private vao: WebGLVertexArrayObject | null = null;
   private tex: WebGLTexture | null = null;
   private linkTex: WebGLTexture | null = null;
+  private polyTex: WebGLTexture | null = null;
+  private polyData = new Float32Array(MAX_BODIES * MAX_POLY_VERTS * 4);
+  private polyRows = 0;
   private data = new Float32Array(MAX_BODIES * TEXELS * 4);
   private linkData = new Float32Array(MAX_LINKS * LINK_TEXELS * 4);
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
@@ -475,7 +505,15 @@ export class FieldRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    this.polyTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.polyTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
     for (const name of [
+      "uPoly",
       "uResolution",
       "uCenter",
       "uZoom",
@@ -538,6 +576,9 @@ export class FieldRenderer {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.linkTex);
 
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.polyTex);
+
     const u = this.uniforms;
     gl.uniform2f(u.uResolution!, this.canvas.width, this.canvas.height);
     gl.uniform2f(u.uCenter!, camera.x, camera.y);
@@ -562,6 +603,7 @@ export class FieldRenderer {
     gl.uniform1f(u.uTime!, time);
     gl.uniform1i(u.uData!, 0);
     gl.uniform1i(u.uLinks!, 1);
+    gl.uniform1i(u.uPoly!, 2);
 
     // Tijera: solo sombrear la caja que ocupa la materia (cuerpos + alcance),
     // no toda la pantalla. En escenas dispersas evita evaluar millones de
@@ -658,6 +700,8 @@ export class FieldRenderer {
 
   private uploadBodies(gl: WebGL2RenderingContext, bodies: readonly Body[], count: number): void {
     const d = this.data;
+    const pd = this.polyData;
+    let polyN = 0;
     for (let i = 0; i < count; i++) {
       const b = bodies[i];
       const o = i * TEXELS * 4;
@@ -674,6 +718,18 @@ export class FieldRenderer {
       d[o + 5] = pa;
       d[o + 6] = b.shape.kind === "ngon" || b.shape.kind === "star" ? sides : pb;
       d[o + 7] = b.shape.kind === "star" ? starM(sides, b.shape.inner) : pc;
+      if (b.shape.kind === "poly") {
+        // Silueta libre: (kind, escala, nº vertices, offset en la textura de vertices).
+        const verts = b.shape.poly ?? [];
+        const n = Math.min(verts.length, MAX_POLY_VERTS);
+        d[o + 6] = n;
+        d[o + 7] = polyN;
+        for (let v = 0; v < n; v++) {
+          pd[(polyN + v) * 4] = verts[v].x;
+          pd[(polyN + v) * 4 + 1] = verts[v].y;
+        }
+        polyN += n;
+      }
 
       d[o + 8] = boundingRadius(b.shape);
       d[o + 9] = b.blend;
@@ -687,6 +743,7 @@ export class FieldRenderer {
       d[o + 15] = 1;
     }
 
+    this.uploadPolys(gl, polyN);
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     if (this.texWidth !== TEXELS || this.texHeight !== count) {
       gl.texImage2D(
@@ -708,6 +765,17 @@ export class FieldRenderer {
     }
   }
 
+  private uploadPolys(gl: WebGL2RenderingContext, total: number): void {
+    const rows = Math.max(1, Math.ceil(total / POLY_W));
+    gl.bindTexture(gl.TEXTURE_2D, this.polyTex);
+    if (this.polyRows !== rows) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, POLY_W, rows, 0, gl.RGBA, gl.FLOAT, this.polyData, 0);
+      this.polyRows = rows;
+    } else if (total > 0) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, POLY_W, rows, gl.RGBA, gl.FLOAT, this.polyData, 0);
+    }
+  }
+
   dispose(): void {
     const gl = this.gl;
     if (!gl) return;
@@ -715,6 +783,7 @@ export class FieldRenderer {
     if (this.vao) gl.deleteVertexArray(this.vao);
     if (this.tex) gl.deleteTexture(this.tex);
     if (this.linkTex) gl.deleteTexture(this.linkTex);
+    if (this.polyTex) gl.deleteTexture(this.polyTex);
     this.gl = null;
   }
 }

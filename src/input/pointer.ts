@@ -21,7 +21,7 @@ export interface InputSample {
   predicted: boolean;
   /** Boton lateral del lapiz pulsado. */
   barrel: boolean;
-  /** Punta de goma del lapiz. */
+  /** Punta de borrador del lapiz. */
   eraser: boolean;
 }
 

@@ -32,6 +32,9 @@ import { SymmetryTool } from "../tools/symmetry-tool";
 import type { PullFamily } from "../tools/pull-shapes";
 import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
 
+/** Operacion activa de la herramienta Materia. */
+export type MatterOp = "move" | "rotate" | "scale" | "pivot";
+
 /** Semilla del historial de colores: la escala de grises de la paleta Tinta.
     Se va sustituyendo por los colores que el usuario elige. */
 const RECENT_SEED = ["#000000", "#1b1b1f", "#3d3d46", "#6e6e78", "#a8a8b3", "#d6d6dd", "#ffffff"];
@@ -77,6 +80,8 @@ export interface EditorState {
   debugColliders: boolean;
   /** Dibuja el radio de alcance de puentes de cada cuerpo. */
   showBridgeReach: boolean;
+  /** Operacion de la herramienta Materia: mover, rotar o escalar. */
+  matterOp: MatterOp;
   /** Capas del documento (abajo→arriba) para el panel. */
   layers: SceneLayer[];
   activeLayerId: string;
@@ -124,6 +129,7 @@ export class Editor {
   showWalls = false;
   debugColliders = false;
   showBridgeReach = false;
+  matterOp: MatterOp = "move";
 
   private host: HTMLElement;
   private inkLayer: Layer;
@@ -149,6 +155,7 @@ export class Editor {
   /** Capa aislada (modo foco): solo ella se compone; null = todas. */
   private soloLayerId: string | null = null;
   private highlight: Body | null = null;
+  private transformPivot: Vec2 | null = null;
   private cursor: Vec2 | null = null;
   private cursorKind: "pen" | "touch" | "mouse" = "mouse";
   private previewShape = false;
@@ -264,6 +271,7 @@ export class Editor {
       showWalls: this.showWalls,
       debugColliders: this.debugColliders,
       showBridgeReach: this.showBridgeReach,
+      matterOp: this.matterOp,
       layers: this.doc.layers,
       activeLayerId: this.doc.activeLayerId,
       soloLayerId: this.soloLayerId,
@@ -498,6 +506,11 @@ export class Editor {
     this.emitState();
   }
 
+  setMatterOp(op: MatterOp): void {
+    this.matterOp = op;
+    this.emitState();
+  }
+
   toggleBridgeReach(): void {
     this.showBridgeReach = !this.showBridgeReach;
     this.overlayLayer.invalidate();
@@ -557,6 +570,28 @@ export class Editor {
     this.doc.clearAll();
     this.history.record("Limpiar todo", before);
     this.afterHistory("Lienzo limpio");
+  }
+
+  /** Convierte los trazos de la capa de tinta activa en capsulas fisicas. */
+  convertInkToMatter(): void {
+    const layer = this.doc.activeLayer;
+    if (!layer || layer.kind !== "ink") {
+      this.status("Selecciona una capa de tinta para convertirla en materia");
+      return;
+    }
+    const eligible = this.doc.layerItems(layer.id).some((item) => !item.erase);
+    if (!eligible) {
+      this.status("La capa no tiene trazos convertibles");
+      return;
+    }
+    const before = this.doc.snapshot();
+    const created = this.doc.convertInkLayerToMatter(layer.id);
+    if (created === 0) {
+      this.status("No se pudo convertir ningún trazo");
+      return;
+    }
+    this.history.record("Tinta a materia", before);
+    this.afterHistory(`${created} cuerpos creados desde tinta`);
   }
 
   /**
@@ -717,6 +752,7 @@ export class Editor {
       this.toolCtx.brush = this.brush;
       this.toolCtx.color = this.color;
       this.toolCtx.pullFamily = this.pullFamily;
+      this.toolCtx.matterOp = this.matterOp;
       return this.toolCtx;
     }
     const editor = this;
@@ -728,6 +764,7 @@ export class Editor {
       brush: this.brush,
       color: this.color,
       pullFamily: this.pullFamily,
+      matterOp: this.matterOp,
       toWorld(s: InputSample, out?: Vec2): Vec2 {
         return editor.camera.screenToWorld(s.x, s.y, out);
       },
@@ -738,7 +775,10 @@ export class Editor {
         editor.wet = wet;
         // El trazo húmedo se compone dentro de la capa activa: siempre hay que
         // recomponer la tinta para verlo en vivo (pinte contenido o máscara).
+        // Si pinta materia y la capa activa no es de tinta, además se repinta la
+        // capa húmeda flotante (encima del plano de materia).
         editor.inkLayer.invalidate();
+        if (editor.wetIsOverlay) editor.wetLayer.invalidate();
       },
       commitWet(wet: WetStroke): void {
         // La materia (y los grupos) no admiten tinta. Si la capa activa no es de
@@ -796,6 +836,10 @@ export class Editor {
           editor.highlight = body;
           editor.overlayLayer.invalidate();
         }
+      },
+      setPivot(p): void {
+        editor.transformPivot = p;
+        editor.overlayLayer.invalidate();
       },
       setPreviewShape(visible: boolean): void {
         if (editor.previewShape !== visible) {
@@ -961,7 +1005,7 @@ export class Editor {
       // Solo se bloquea el atajo cuando de verdad se está escribiendo texto (un
       // campo de texto o editable). Deslizadores, interruptores y botones NO son
       // texto: con ellos enfocados, deshacer/rehacer y los atajos deben seguir
-      // funcionando (antes cualquier <input> tragaba Ctrl+Z tras tocar la goma).
+      // funcionando (antes cualquier <input> tragaba Ctrl+Z tras tocar el borrador).
       const editingText =
         tag === "TEXTAREA" ||
         !!target?.isContentEditable ||
@@ -1008,7 +1052,7 @@ export class Editor {
       // El resto de atajos de una tecla no deben dispararse mientras se teclea.
       if (editingText) return;
 
-      // Alt alterna "usar como goma": invierte los modos de pintura a borrado.
+      // Alt alterna "usar como borrador": invierte los modos de pintura a borrado.
       // Es el mismo estado que el toggle del panel, así que ambos se sincronizan.
       if (e.key === "Alt") {
         if (e.repeat) return;
@@ -1040,6 +1084,9 @@ export class Editor {
           break;
         case "4":
           this.setBrush({ mode: "erase" });
+          break;
+        case "5":
+          this.setBrush({ asMatter: !this.brush.asMatter });
           break;
         case "[":
           this.setBrush({ size: Math.max(0.5, this.brush.size * 0.85) });
@@ -1157,12 +1204,14 @@ export class Editor {
     if (this.inkLayer.dirty) {
       // El compositor compone todas las capas (orden, opacidad, relleno, fusión,
       // máscara, alfa y recorte) y pinta en vivo el trazo húmedo dentro de la
-      // capa activa (o su máscara, en modo máscara).
+      // capa activa (o su máscara, en modo máscara). Si la vista previa pinta
+      // materia, se salta aquí y se pinta flotante en la capa húmeda.
       this.compositor.composite(this.inkLayer, this.doc, this.camera, {
         wet: this.wet,
         activeLayerId: this.doc.activeLayerId,
         maskMode: this.maskMode,
         soloId: this.soloLayerId,
+        wetAsOverlay: this.wetIsOverlay,
       });
       this.inkLayer.dirty = false;
     }
@@ -1189,9 +1238,15 @@ export class Editor {
     }
 
     if (this.wetLayer.dirty) {
-      // El trazo húmedo se compone ahora dentro de la capa activa (compositor),
-      // así respeta su opacidad/fusión/máscara/alfa. La capa húmeda queda libre.
-      this.wetLayer.clear();
+      // El trazo húmedo se compone dentro de la capa activa (compositor), así
+      // respeta su opacidad/fusión/máscara/alfa. EXCEPTO cuando pinta sobre la
+      // materia (toggle "Hacer materia" del pincel): las capas de materia no se
+      // componen, así que la vista previa se pinta aquí, en la capa húmeda, que
+      // va ENCIMA del plano de materia y permite ver el trazo mientras se
+      // dibuja antes de convertirse en cuerpos.
+      const w = this.wet;
+      if (w && this.wetIsOverlay) this.paintWetOverlay(w);
+      else this.wetLayer.clear();
       this.wetLayer.dirty = false;
     }
 
@@ -1200,6 +1255,25 @@ export class Editor {
       this.overlayRenderer.render(this.overlayLayer, this.overlayState(), this.camera);
       this.overlayLayer.dirty = false;
     }
+  }
+
+  /** ¿La vista previa vive en la capa húmeda (materia) y no en la tinta? */
+  private get wetIsOverlay(): boolean {
+    const layer = this.doc.activeLayer;
+    return this.brush.asMatter && !!layer && layer.kind !== "ink";
+  }
+
+  /**
+   * Pinta el trazo húmedo sobre la capa húmeda cuando se dibuja materia: color
+   * de tinta normal con un trazo de contorno suave para que se distinga del
+   * campo de materia ya asentado debajo.
+   */
+  private paintWetOverlay(w: WetStroke): void {
+    this.wetLayer.clear();
+    const ctx = this.wetLayer.ctx;
+    this.camera.applyTo(ctx, this.wetLayer.dpr);
+    this.compositor.paintFloatingStroke(ctx, w);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   private overlayState(): OverlayState {
@@ -1220,6 +1294,7 @@ export class Editor {
       cursorRadius: (this.brush.size / 2) * this.camera.zoom,
       previewShape: this.previewShape && this.toolId === "shape" ? this.doc.shape : null,
       highlight: this.highlight,
+      transformPivot: this.transformPivot,
       showWalls: this.showWalls,
       walls: this.doc.physics.bounds,
       debugColliders: this.debugColliders,

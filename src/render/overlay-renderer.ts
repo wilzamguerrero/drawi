@@ -22,6 +22,8 @@ export interface OverlayState {
   cursorRadius: number;
   /** Forma en previsualizacion bajo el cursor (herramienta forma). */
   previewShape: ShapeDef | null;
+  /** Pivote de transformacion de la seleccion, en mundo. */
+  transformPivot?: Vec2 | null;
   /** Cuerpo resaltado (hover o arrastre). */
   highlight: Body | null;
   /** Muestra la caja de contencion de la fisica. */
@@ -51,6 +53,7 @@ export class OverlayRenderer {
     if (state.debugColliders) this.drawColliders(ctx, state.bodies, camera);
     if (state.showBridgeReach) this.drawBridgeReach(ctx, state.bodies, state.bridgeReach, camera);
     if (state.highlight) this.drawHighlight(ctx, state.highlight, camera);
+    if (state.transformPivot) this.drawPivot(ctx, state.transformPivot, camera);
     if (state.previewShape && state.cursor) {
       this.drawShapePreview(ctx, state.previewShape, state.cursor, camera);
     }
@@ -154,8 +157,29 @@ export class OverlayRenderer {
     ctx.restore();
   }
 
-  private drawHighlight(ctx: CanvasRenderingContext2D, body: Body, camera: Camera): void {
-    const poly = outlinePolygon(body.shape, 64);
+  /** Pivote de rotacion/escala: cruz con circulo, siempre en tamano de pantalla. */
+  private drawPivot(ctx: CanvasRenderingContext2D, p: Vec2, camera: Camera): void {
+    const s = camera.worldToScreen(p);
+    ctx.save();
+    ctx.strokeStyle = HOT;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 9, 0, TAU);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(s.x - 14, s.y);
+    ctx.lineTo(s.x + 14, s.y);
+    ctx.moveTo(s.x, s.y - 14);
+    ctx.lineTo(s.x, s.y + 14);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 2.5, 0, TAU);
+    ctx.fillStyle = HOT;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  private drawHighlight(ctx: CanvasRenderingContext2D, body: Body, camera: Camera): void {    const poly = outlinePolygon(body.shape, 64);
     const cos = Math.cos(body.angle);
     const sin = Math.sin(body.angle);
     ctx.beginPath();

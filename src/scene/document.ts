@@ -3,6 +3,7 @@ import { multiply, type Mat2d } from "../core/mat2d";
 import { polygonBounds } from "../stroke/outline";
 import type { Polygon } from "../stroke/types";
 import { boundingRadius, DEFAULT_SHAPE, type ShapeDef } from "../physics/shapes";
+import { bodiesForInkItem } from "../physics/stroke-matter";
 import { createBody, PhysicsWorld, type Body, type WorldSettings } from "../physics/world";
 import { DEFAULT_SYMMETRY, symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
 import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
@@ -34,6 +35,10 @@ export interface BodySnapshot {
   restitution: number;
   friction: number;
   layerId: string;
+  strokeId?: string;
+  strokeIndex?: number;
+  strokePivotX?: number;
+  strokePivotY?: number;
 }
 
 export interface SceneSnapshot {
@@ -69,6 +74,10 @@ export function snapshotBody(b: Body): BodySnapshot {
     restitution: b.restitution,
     friction: b.friction,
     layerId: b.layerId,
+    strokeId: b.strokeId,
+    strokeIndex: b.strokeIndex,
+    strokePivotX: b.strokePivotX,
+    strokePivotY: b.strokePivotY,
   };
 }
 
@@ -89,6 +98,10 @@ export function restoreBody(s: BodySnapshot): Body {
   body.vel.x = s.vx;
   body.vel.y = s.vy;
   body.angVel = s.av;
+  body.strokeId = s.strokeId;
+  body.strokeIndex = s.strokeIndex;
+  body.strokePivotX = s.strokePivotX;
+  body.strokePivotY = s.strokePivotY;
   return body;
 }
 
@@ -514,6 +527,48 @@ export class SceneDocument {
   clearAll(): void {
     this.clearInk();
     this.clearMatter();
+  }
+
+  /**
+   * Convierte los trazos de una capa de tinta en cuerpos de forma libre.
+   *
+   * Cada silueta conservada por el item se convierte en UN cuerpo `poly` con el
+   * contorno dibujado (no cadenas de cápsulas), con sus transformaciones de
+   * simetria congeladas replicadas como cuerpos hermanos y el pivote en el
+   * centroide de la forma. Devuelve el numero de cuerpos creados; los items sin
+   * geometria valida quedan intactos para no destruir contenido que no se pudo
+   * convertir.
+   */
+  convertInkLayerToMatter(layerId: string, maxBodies = 4096): number {
+    const source = this.layerById(layerId);
+    if (!source || source.kind !== "ink") return 0;
+    const candidates = this.layerItems(layerId).filter((item) => !item.erase);
+    if (candidates.length === 0) return 0;
+
+    const target = this.matterTarget();
+    let created = 0;
+    const converted = new Set<string>();
+    for (const item of candidates) {
+      if (created >= maxBodies) break;
+      const bodies = bodiesForInkItem(item, {
+        color: item.color,
+        blend: this.field.blend,
+        restitution: this.physics.settings.restitution,
+        friction: this.physics.settings.friction,
+        layerId: target.id,
+        maxBodies: maxBodies - created,
+      });
+      if (bodies.length === 0) continue;
+      for (const body of bodies) {
+        this.physics.add(body);
+        created++;
+      }
+      converted.add(item.id);
+    }
+    if (created === 0) return 0;
+    this.items = this.items.filter((item) => !converted.has(item.id));
+    this.inkRevision++;
+    return created;
   }
 
   /** Crea el item de tinta de un trazo aplicando la simetria vigente. */

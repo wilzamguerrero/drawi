@@ -35,6 +35,12 @@ export interface CompositeOptions {
   maskMode: boolean;
   /** Capa aislada (modo foco): si está fijada, el resto se oculta. */
   soloId: string | null;
+  /**
+   * El trazo húmedo se pinta fuera del compositor (capa húmeda flotante):
+   * pasa cuando dibuja materia y la vista previa debe verse ENCIMA del plano
+   * de materia en vez de dentro de una capa de tinta.
+   */
+  wetAsOverlay: boolean;
 }
 
 /** Lienzo fuera de pantalla con su contexto, redimensionable al vuelo. */
@@ -237,7 +243,7 @@ export class Compositor {
     const ctx = buf.ctx;
     const items = doc.layerItems(layer.id);
     const isActive = layer.id === opts.activeLayerId;
-    const paintingContent = isActive && opts.wet !== null && !opts.maskMode;
+    const paintingContent = isActive && opts.wet !== null && !opts.maskMode && !opts.wetAsOverlay;
 
     camera.applyTo(ctx, dpr);
     this.paintItems(ctx, items, view);
@@ -281,6 +287,26 @@ export class Compositor {
     ctx.globalCompositeOperation = prev;
   }
 
+  /**
+   * Pinta el trazo húmedo como capa FLOTANTE sobre un contexto ya apuntado al
+   * mundo (lo llama el editor en su capa húmeda cuando se dibuja materia).
+   * Igual que dentro de una capa: relleno plano del color, sin alfa bloqueado
+   * ni máscara, porque no hay contenido debajo al que respetar.
+   */
+  paintFloatingStroke(ctx: CanvasRenderingContext2D, wet: WetStroke): void {
+    const prev = ctx.globalCompositeOperation;
+    if (wet.erase) {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = `rgba(0,0,0,${wet.opacity})`;
+    } else {
+      ctx.fillStyle = wet.gradient
+        ? buildGradient(ctx, wet.color, wet.opacity, wet.gy0, wet.gy1)
+        : cssRgba(hexToRgb(wet.color), wet.opacity);
+    }
+    this.fillPolys(ctx, wet.polys, wet.transforms, wet.smooth);
+    ctx.globalCompositeOperation = prev;
+  }
+
   /** Bucle común: convierte polígonos a Path2D y los rellena por transformación. */
   private fillPolys(
     ctx: CanvasRenderingContext2D,
@@ -316,7 +342,7 @@ export class Compositor {
     isActive: boolean,
   ): void {
     const mask = layer.mask;
-    const previewing = isActive && opts.maskMode && opts.wet !== null;
+    const previewing = isActive && opts.maskMode && opts.wet !== null && !opts.wetAsOverlay;
     if (!mask && !previewing) return;
 
     const maskBuf = this.bufAt(this.maskPool, depth);

@@ -216,6 +216,74 @@ noThrow("hornear materia a tinta", () => ed.bakeMatter());
 ok("hornear vacia los cuerpos y deja tinta", ed.state.bodies === 0 && ed.state.items > 0,
    `${bodiesBeforeBake} cuerpos -> ${ed.state.bodies}, ${ed.state.items} items`);
 
+// --- Tinta a materia ---
+const inkLayer = ed.doc.layers.find((layer) => layer.kind === "ink");
+if (inkLayer) ed.setActiveLayer(inkLayer.id);
+const itemsBeforeConvert = ed.state.items;
+noThrow("convertir tinta a materia", () => ed.convertInkToMatter());
+ok("tinta a materia crea cuerpos y quita tinta", ed.state.bodies > 0 && ed.state.items < itemsBeforeConvert,
+   `${itemsBeforeConvert} items -> ${ed.state.items}, ${ed.state.bodies} cuerpos`);
+// Deshacer la conversion devuelve la tinta
+noThrow("deshacer conversion tinta a materia", () => ed.undo());
+ok("deshacer conversion restaura tinta", ed.state.items === itemsBeforeConvert && ed.state.bodies === 0,
+   `${ed.state.items} items / ${ed.state.bodies} cuerpos`);
+
+// --- Modo Materia del pincel: dibujar siembra cuerpos, no tinta ---
+const bodiesBeforeMatter = ed.state.bodies;
+const itemsBeforeMatter = ed.state.items;
+noThrow("pintar materia con el pincel", () => {
+  ed.setTool("brush");
+  ed.setBrush({ mode: "stroke", asMatter: true });
+  send("pointerdown", 200, 520, 0.4);
+  for (let i = 1; i <= 24; i++) send("pointermove", 200 + i * 6, 520 + Math.sin(i * 0.4) * 30, 0.5);
+  send("pointerup", 344, 520, 0);
+});
+ok("el modo Materia siembra cuerpos", ed.state.bodies > bodiesBeforeMatter,
+   `${bodiesBeforeMatter} -> ${ed.state.bodies} cuerpos`);
+ok("el modo Materia no deja tinta", ed.state.items === itemsBeforeMatter,
+   `${itemsBeforeMatter} -> ${ed.state.items} items`);
+ed.setBrush({ mode: "stroke", asMatter: false });
+
+// --- Transformar materia: rotar y escalar un grupo de trazo ---
+{
+  const group = ed.doc.bodies.filter((b) => b.strokeId);
+  const target = group[Math.floor(group.length / 2)];
+  if (target && target.strokeId) {
+    const ids = new Set(group.map((b) => b.id));
+    const beforeAngle = target.angle;
+    const beforeSize = target.shape.size;
+    const beforePivotX = target.strokePivotX;
+
+    ed.setTool("matter");
+    ed.setMatterOp("rotate");
+    const sx = 200 + 12 * 6;
+    const sy = 520;
+    noThrow("rotar grupo de materia", () => {
+      send("pointerdown", sx, sy, 0.5);
+      send("pointermove", sx + 80, sy + 80, 0.5);
+      send("pointerup", sx + 80, sy + 80, 0);
+    });
+    ok("rotar cambia el angulo del grupo", Math.abs(target.angle - beforeAngle) > 1e-3,
+       `${beforeAngle.toFixed(3)} -> ${target.angle.toFixed(3)}`);
+    ok("rotar conserva el pivote", target.strokePivotX === beforePivotX,
+       `pivote ${beforePivotX?.toFixed(1)}`);
+    ok("rotar conserva el grupo de trazo", ed.doc.bodies.filter((b) => ids.has(b.id)).length === ids.size,
+       `${ids.size} piezas`);
+
+    ed.setMatterOp("scale");
+    const mid = { x: target.pos.x, y: target.pos.y };
+    noThrow("escalar grupo de materia", () => {
+      send("pointerdown", mid.x, mid.y, 0.5);
+      send("pointermove", mid.x + 90, mid.y, 0.5);
+      send("pointerup", mid.x + 90, mid.y, 0);
+    });
+    ok("escalar cambia el tamano", target.shape.size !== beforeSize,
+       `${beforeSize.toFixed(1)} -> ${target.shape.size.toFixed(1)}`);
+    ed.setMatterOp("move");
+    noThrow("deshacer escalar y rotar", () => { ed.undo(); ed.undo(); });
+  }
+}
+
 // --- Cuentagotas ---
 noThrow("cuentagotas sobre el lienzo", () => {
   ed.setTool("picker");

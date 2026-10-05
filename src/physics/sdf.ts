@@ -70,9 +70,39 @@ export const sdStar = (px: number, py: number, r: number, n: number, m: number):
   return Math.hypot(x, y) * Math.sign(x);
 };
 
+/** SDF exacta de un poligono simple (convexo o concavo), vertices escalados por `k`. */
+export const sdPoly = (px: number, py: number, poly: readonly { x: number; y: number }[], k: number): number => {
+  const n = poly.length;
+  if (n < 3) return 1e20;
+  let d = Infinity;
+  let s = 1;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const ax = poly[j].x * k;
+    const ay = poly[j].y * k;
+    const bx = poly[i].x * k;
+    const by = poly[i].y * k;
+    const ex = bx - ax;
+    const ey = by - ay;
+    const wx = px - ax;
+    const wy = py - ay;
+    const l2 = Math.max(ex * ex + ey * ey, 1e-12);
+    const t = Math.min(Math.max((wx * ex + wy * ey) / l2, 0), 1);
+    const dx = wx - ex * t;
+    const dy = wy - ey * t;
+    d = Math.min(d, dx * dx + dy * dy);
+    const c1 = py >= ay;
+    const c2 = py < by;
+    const c3 = ex * wy > ey * wx;
+    if ((c1 && c2 && c3) || (!c1 && !c2 && !c3)) s = -s;
+  }
+  return s * Math.sqrt(d);
+};
+
 export function sdShape(lx: number, ly: number, shape: ShapeDef): number {
   const [a, b, c] = shapeParams(shape);
   switch (shape.kind) {
+    case "poly":
+      return sdPoly(lx, ly, shape.poly ?? [], shape.size);
     case "circle":
       return sdCircle(lx, ly, a);
     case "box":
