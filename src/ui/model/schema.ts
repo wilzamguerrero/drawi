@@ -562,6 +562,42 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     ],
   };
 
+  // ----------------------------------------------------------- Acuarela
+  // Pintura humeda por simulacion de fluidos (plano WebGL propio). El boton
+  // activa la herramienta; el segmentado elige pluma (deposita pigmento) o
+  // pincel de agua (moja y empuja el fluido). Los sliders mapean 1:1 a los
+  // parametros vivos del motor (AquaParams), que son la fuente de datos unica.
+  const aqua: Domain = {
+    id: "aqua",
+    label: "Acuarela",
+    icon: "brush",
+    visible: (s) => s.aquaAvailable,
+    children: [
+      { kind: "action", id: "tool-aqua", label: "Pintar", icon: "brush", toggled: (s) => s.tool === "aqua", run: () => editor.setTool("aqua") },
+      {
+        kind: "choice",
+        id: "aqua-mode",
+        label: "Pincel",
+        chooser: "segmented",
+        hint: "Pluma: deposita pigmento en linea fina. Agua: moja el papel y empuja el fluido, mezclando el pigmento que ya hay.",
+        options: [
+          { value: "pen", id: "aqua-pen", label: "Pluma" },
+          { value: "brush", id: "aqua-brush", label: "Agua" },
+        ],
+        get: (s) => s.aquaMode,
+        set: (v) => editor.setAquaMode(v as "pen" | "brush"),
+      },
+      { kind: "number", id: "aqua-size", label: "Tamaño", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Escala global de la huella (pluma y pincel).", get: (s) => s.aquaParams.size, set: (v) => editor.setAquaParam("size", v) },
+      { kind: "number", id: "aqua-flow", label: "Flujo", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Energia del fluido: a mas flujo, mas movimiento y remolinos.", get: (s) => s.aquaParams.flow, set: (v) => editor.setAquaParam("flow", v) },
+      { kind: "number", id: "aqua-bleed", label: "Sangrado", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Cuanto se difunde el pigmento hacia los bordes (los halos de acuarela).", get: (s) => s.aquaParams.bleed, set: (v) => editor.setAquaParam("bleed", v) },
+      { kind: "number", id: "aqua-dry", label: "Secado", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Velocidad a la que el papel se seca: alto = la tinta deja de fluir antes.", get: (s) => s.aquaParams.dry, set: (v) => editor.setAquaParam("dry", v) },
+      { kind: "number", id: "aqua-color", label: "Matiz", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Tiñe el sangrado de calido a frio (azules y violetas tipicos).", get: (s) => s.aquaParams.color, set: (v) => editor.setAquaParam("color", v) },
+      { kind: "number", id: "aqua-ink", label: "Carga", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Pigmento que lleva el pincel de agua (0 = solo agua, limpia).", get: (s) => s.aquaParams.brushInk, set: (v) => editor.setAquaParam("brushInk", v) },
+      { kind: "action", id: "aqua-fix", label: "Hornear", icon: "bake", hint: "Asienta el pigmento movil en el papel: queda fijo y puedes pintar encima.", run: () => editor.aquaFix() },
+      { kind: "action", id: "aqua-clear", label: "Limpiar", icon: "trash", danger: true, hint: "Vacia por completo el plano de acuarela.", run: () => editor.aquaClear() },
+    ],
+  };
+
   // ----------------------------------------------------------- Explorar
   const view: Domain = {
     id: "view",
@@ -621,5 +657,5 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
   };
 
   // Orden: Flecha primero (antes de Pincel), luego el resto. El dock lo refleja.
-  return [file, select, brush, color, layers, matter, symmetry, view];
+  return [file, select, brush, color, layers, matter, symmetry, aqua, view];
 }

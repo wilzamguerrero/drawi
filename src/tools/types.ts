@@ -10,7 +10,7 @@ import type { Body } from "../physics/world";
 import type { MatterOp } from "../app/editor";
 import type { PullFamily } from "./pull-shapes";
 
-export type ToolId = "select" | "brush" | "shape" | "matter" | "bridge" | "symmetry" | "picker" | "hand";
+export type ToolId = "select" | "brush" | "shape" | "matter" | "bridge" | "symmetry" | "picker" | "hand" | "aqua";
 
 export const TOOL_LABELS: Record<ToolId, string> = {
   select: "Selección",
@@ -21,6 +21,7 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   symmetry: "Simetria",
   picker: "Cuentagotas",
   hand: "Mano",
+  aqua: "Acuarela",
 };
 
 /** Trazo humedo: lo que se pinta mientras el gesto sigue vivo. */
@@ -79,6 +80,23 @@ export interface ToolContext {
   status(message: string): void;
   /** Lee el color compuesto de un punto de pantalla. */
   sampleScreenColor(x: number, y: number): string | null;
+  /** Puerto a la acuarela (null si el plano no esta activo/disponible). */
+  readonly aqua: AquaPort | null;
+}
+
+/**
+ * Lo que la herramienta de acuarela necesita del editor: traducir pantalla a UV
+ * y alimentar al emisor de fluido. El editor implementa esto sobre AquaField +
+ * AquaStroker; la herramienta no conoce WebGL.
+ */
+export interface AquaPort {
+  /** Modo de huella: pluma (pigmento) o pincel de agua. */
+  mode: "pen" | "brush";
+  /** Convierte un punto de pantalla (px CSS) a UV 0..1 del plano. */
+  toUv(x: number, y: number): { x: number; y: number };
+  begin(x: number, y: number, pressure: number): void;
+  move(x: number, y: number, pressure: number): void;
+  end(): void;
 }
 
 export interface Tool {

@@ -37,9 +37,13 @@ import { MatterTool } from "../tools/matter-tool";
 import { HandTool, PickerTool } from "../tools/picker-tool";
 import { ShapeTool } from "../tools/shape-tool";
 import { SymmetryTool } from "../tools/symmetry-tool";
+import { AquaTool } from "../tools/aqua-tool";
+import { AquaField } from "../aqua/aqua-field";
+import { DEFAULT_AQUA_PARAMS } from "../aqua/aqua-field";
+import { AquaStroker } from "../aqua/aqua-stroker";
 import type { PullFamily } from "../tools/pull-shapes";
 import { TOOL_LABELS } from "../tools/types";
-import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
+import type { AquaPort, Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
 
 /** Operacion activa de la herramienta Materia. */
 export type MatterOp = "move" | "rotate" | "scale" | "pivot";
@@ -106,6 +110,12 @@ export interface EditorState {
   soloLayerId: string | null;
   /** El pincel pinta la máscara de la capa activa, no su contenido. */
   maskMode: boolean;
+  /** El plano de acuarela existe (WebGL2 disponible). */
+  aquaAvailable: boolean;
+  /** Modo del pincel de acuarela: pluma (pigmento) o agua. */
+  aquaMode: "pen" | "brush";
+  /** Parametros vivos de la acuarela (0..1). */
+  aquaParams: import("../aqua/aqua-field").AquaParams;
 }
 
 interface EditorEvents extends Record<string, unknown> {
@@ -166,6 +176,10 @@ export class Editor {
   private fieldRenderer: FieldRenderer;
   private matter: MatterCompositor;
 
+  /** Plano de acuarela (fluidos WebGL2); null si WebGL2 no esta disponible. */
+  private aquaField: AquaField | null = null;
+  private aquaStroker: AquaStroker | null = null;
+
   private pointer: PointerInput;
   private tools: Record<ToolId, Tool>;
   private toolId: ToolId = "brush";
@@ -215,6 +229,19 @@ export class Editor {
 
     host.appendChild(this.inkLayer.canvas);
     host.appendChild(this.matter.output.canvas);
+    // Plano de acuarela: su propio canvas WebGL encima de tinta+materia y debajo
+    // del trazo humedo/overlay. Si WebGL2 falla, se queda en null y la
+    // herramienta simplemente no hace nada (el resto de la app sigue igual).
+    try {
+      const aquaCanvas = document.createElement("canvas");
+      aquaCanvas.className = "layer layer-aqua";
+      this.aquaField = new AquaField(aquaCanvas);
+      this.aquaField.asLayer = true;
+      this.aquaStroker = new AquaStroker(this.aquaField);
+      host.appendChild(aquaCanvas);
+    } catch (err) {
+      console.warn("[drawi] Acuarela no disponible:", err);
+    }
     host.appendChild(this.wetLayer.canvas);
     host.appendChild(this.overlayLayer.canvas);
     host.style.background = this.doc.meta.background;
@@ -238,6 +265,7 @@ export class Editor {
       symmetry: new SymmetryTool(),
       picker: new PickerTool(),
       hand: new HandTool(),
+      aqua: new AquaTool(),
     };
 
     this.pointer = new PointerInput(host, {
@@ -309,6 +337,9 @@ export class Editor {
       activeLayerId: this.doc.activeLayerId,
       soloLayerId: this.soloLayerId,
       maskMode: this.maskMode,
+      aquaAvailable: this.aquaField !== null,
+      aquaMode: this.aquaStroker?.mode ?? "pen",
+      aquaParams: this.aquaField?.params ?? DEFAULT_AQUA_PARAMS,
     };
   }
 
@@ -318,6 +349,51 @@ export class Editor {
 
   status(message: string): void {
     this.events.emit("status", message);
+  }
+
+  // ------------------------------------------------------------- acuarela
+
+  /** ¿El plano de acuarela existe (WebGL2 disponible)? */
+  get aquaAvailable(): boolean {
+    return this.aquaField !== null;
+  }
+
+  /** Modo del pincel de acuarela: pluma (pigmento) o agua. */
+  get aquaMode(): "pen" | "brush" {
+    return this.aquaStroker?.mode ?? "pen";
+  }
+
+  setAquaMode(mode: "pen" | "brush"): void {
+    if (this.aquaStroker) this.aquaStroker.mode = mode;
+    this.emitState();
+  }
+
+  /** Lee un parametro vivo de la acuarela (0..1). */
+  aquaParam(key: keyof import("../aqua/aqua-field").AquaParams): number {
+    return this.aquaField?.params[key] ?? 0;
+  }
+
+  /** Fija un parametro vivo de la acuarela (0..1). */
+  setAquaParam(key: keyof import("../aqua/aqua-field").AquaParams, value: number): void {
+    if (this.aquaField) this.aquaField.params[key] = value;
+    this.emitState();
+  }
+
+  /** Tinta blanca (gouache) para la acuarela. */
+  setAquaWhite(on: boolean): void {
+    this.aquaField?.setWhite(on);
+  }
+
+  /** Hornea (fija) el pigmento movil de la acuarela en el papel. */
+  aquaFix(): void {
+    this.aquaField?.fix();
+    this.status("Acuarela horneada");
+  }
+
+  /** Vacia el plano de acuarela. */
+  aquaClear(): void {
+    this.aquaField?.clear();
+    this.status("Acuarela limpiada");
   }
 
   // ------------------------------------------------------------- comandos
@@ -1106,8 +1182,40 @@ export class Editor {
       sampleScreenColor(x: number, y: number): string | null {
         return editor.sampleScreenColor(x, y);
       },
+      aqua: editor.aquaPort,
     };
     return this.toolCtx;
+  }
+
+  /** Puerto de acuarela para las herramientas: null si el plano no existe. */
+  private get aquaPort(): AquaPort | null {
+    const field = this.aquaField;
+    const stroker = this.aquaStroker;
+    if (!field || !stroker) return null;
+    const editor = this;
+    return {
+      get mode() {
+        return stroker.mode;
+      },
+      set mode(m: "pen" | "brush") {
+        stroker.mode = m;
+      },
+      toUv(x: number, y: number): { x: number; y: number } {
+        // Pantalla (px CSS) -> UV 0..1 con Y invertida (WebGL arranca abajo).
+        const w = Math.max(1, editor.host.clientWidth);
+        const h = Math.max(1, editor.host.clientHeight);
+        return { x: x / w, y: 1 - y / h };
+      },
+      begin(x: number, y: number, pressure: number): void {
+        stroker.begin(x, y, pressure);
+      },
+      move(x: number, y: number, pressure: number): void {
+        stroker.move(x, y, pressure);
+      },
+      end(): void {
+        stroker.end();
+      },
+    };
   }
 
   // -------------------------------------------------------------- entrada
@@ -1440,6 +1548,7 @@ export class Editor {
     this.overlayLayer.resize(w, h, dpr);
     this.fieldRenderer.resize(w, h, dpr);
     this.matter.resize(w, h, dpr);
+    this.aquaField?.resize(w, h, dpr);
     this.pointer.refreshRect();
     this.invalidateAll();
     this.needsResize = false;
@@ -1478,6 +1587,19 @@ export class Editor {
       if (moving || this.doc.physics.dragging) {
         this.doc.physics.update(dt);
         this.matter.invalidate();
+      }
+    }
+
+    // Acuarela: el emisor siembra huellas (si se esta pintando) y el fluido
+    // avanza + se repinta mientras siga vivo. Dormido no consume GPU. El emisor
+    // se actualiza siempre (aunque no haya trazo) para que la posicion suavizada
+    // y la velocidad decaigan de forma natural al soltar.
+    if (this.aquaField && this.aquaStroker) {
+      const painting = this.activeTool.id === "aqua";
+      if (painting) this.aquaStroker.update(dt);
+      if (this.aquaField.active) {
+        this.aquaField.step(dt);
+        this.aquaField.render();
       }
     }
 

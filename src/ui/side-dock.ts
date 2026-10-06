@@ -32,6 +32,7 @@ const DOCK_TABS: TabDef[] = [
   { domain: "matter-cfg", icon: "shape" },
   { domain: "color" },
   { domain: "symmetry" },
+  { domain: "aqua", icon: "brush" },
 ];
 
 /**
@@ -51,6 +52,7 @@ const TOOL_TO_CAT: Partial<Record<ToolId, string>> = {
   shape: "matter-cfg",
   matter: "matter-cfg",
   symmetry: "symmetry",
+  aqua: "aqua",
 };
 
 /**
