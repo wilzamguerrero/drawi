@@ -37,13 +37,12 @@ import { MatterTool } from "../tools/matter-tool";
 import { HandTool, PickerTool } from "../tools/picker-tool";
 import { ShapeTool } from "../tools/shape-tool";
 import { SymmetryTool } from "../tools/symmetry-tool";
-import { AquaTool } from "../tools/aqua-tool";
 import { AquaField } from "../aqua/aqua-field";
 import { DEFAULT_AQUA_PARAMS } from "../aqua/aqua-field";
 import { AquaStroker } from "../aqua/aqua-stroker";
 import type { PullFamily } from "../tools/pull-shapes";
 import { TOOL_LABELS } from "../tools/types";
-import type { AquaPort, Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
+import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
 
 /** Operacion activa de la herramienta Materia. */
 export type MatterOp = "move" | "rotate" | "scale" | "pivot";
@@ -265,7 +264,6 @@ export class Editor {
       symmetry: new SymmetryTool(),
       picker: new PickerTool(),
       hand: new HandTool(),
-      aqua: new AquaTool(),
     };
 
     this.pointer = new PointerInput(host, {
@@ -1182,47 +1180,49 @@ export class Editor {
       sampleScreenColor(x: number, y: number): string | null {
         return editor.sampleScreenColor(x, y);
       },
-      aqua: editor.aquaPort,
     };
     return this.toolCtx;
   }
 
-  /** Puerto de acuarela para las herramientas: null si el plano no existe. */
-  private get aquaPort(): AquaPort | null {
-    const field = this.aquaField;
-    const stroker = this.aquaStroker;
-    if (!field || !stroker) return null;
-    const editor = this;
-    return {
-      get mode() {
-        return stroker.mode;
-      },
-      set mode(m: "pen" | "brush") {
-        stroker.mode = m;
-      },
-      toUv(x: number, y: number): { x: number; y: number } {
-        // Pantalla (px CSS) -> UV 0..1 con Y invertida (WebGL arranca abajo).
-        const w = Math.max(1, editor.host.clientWidth);
-        const h = Math.max(1, editor.host.clientHeight);
-        return { x: x / w, y: 1 - y / h };
-      },
-      begin(x: number, y: number, pressure: number): void {
-        stroker.begin(x, y, pressure);
-      },
-      move(x: number, y: number, pressure: number): void {
-        stroker.move(x, y, pressure);
-      },
-      end(): void {
-        stroker.end();
-      },
-    };
+  // -------------------------------------------------------------- entrada
+
+  /**
+   * ¿El gesto actual debe pintar acuarela en vez de tinta? Pasa cuando la
+   * herramienta Pincel esta activa con el toggle "Acuarela" encendido y el
+   * plano de fluido existe. Si es asi, los eventos del puntero alimentan el
+   * emisor de fluido y NO llegan al BrushTool (que queda intacto).
+   */
+  private get aquaBrushing(): boolean {
+    return this.toolId === "brush" && this.brush.asAqua && !!this.aquaStroker;
   }
 
-  // -------------------------------------------------------------- entrada
+  /** Mapea una muestra a UV y la entrega al emisor segun la fase del trazo. */
+  private feedAqua(s: InputSample, phase: "down" | "move" | "up"): void {
+    const stroker = this.aquaStroker;
+    const field = this.aquaField;
+    if (!stroker || !field) return;
+    // El tamaño del pincel (px mundo) controla la huella de acuarela: se mapea
+    // al parametro `size` del motor (0..1 ~ 1/3x..3x) para que el mismo slider
+    // de "Tamaño" del pincel gobierne tambien el fluido. ~24px = x1 (0.5).
+    field.params.size = clamp01(0.5 + Math.log2(Math.max(this.brush.size, 1) / 24) / 6);
+    const w = Math.max(1, this.host.clientWidth);
+    const h = Math.max(1, this.host.clientHeight);
+    const ux = s.x / w;
+    const uy = 1 - s.y / h;
+    const pr = s.pressure >= 0 ? s.pressure : 0.5;
+    if (phase === "down") stroker.begin(ux, uy, pr);
+    else if (phase === "move") stroker.move(ux, uy, pr);
+    else stroker.end();
+  }
 
   private onStart(s: InputSample): void {
     this.trackPen(s);
     this.cursor = { x: s.x, y: s.y };
+    if (this.aquaBrushing) {
+      this.feedAqua(s, "down");
+      this.overlayLayer.invalidate();
+      return;
+    }
     this.activeTool.onDown(this.ctx(), s);
     this.overlayLayer.invalidate();
   }
@@ -1231,17 +1231,29 @@ export class Editor {
     const last = samples[samples.length - 1];
     this.trackPen(last);
     this.cursor = { x: last.x, y: last.y };
+    if (this.aquaBrushing) {
+      this.feedAqua(last, "move");
+      this.overlayLayer.invalidate();
+      return;
+    }
     this.activeTool.onMove(this.ctx(), samples, predicted);
     this.overlayLayer.invalidate();
   }
 
   private onEnd(s: InputSample): void {
+    if (this.aquaBrushing) {
+      this.feedAqua(s, "up");
+      this.overlayLayer.invalidate();
+      this.emitState();
+      return;
+    }
     this.activeTool.onUp(this.ctx(), s);
     this.overlayLayer.invalidate();
     this.emitState();
   }
 
   private onCancel(): void {
+    if (this.aquaBrushing) this.aquaStroker?.end();
     this.activeTool.onCancel(this.ctx());
     this.wet = null;
     this.wetLayer.invalidate();
@@ -1595,8 +1607,7 @@ export class Editor {
     // se actualiza siempre (aunque no haya trazo) para que la posicion suavizada
     // y la velocidad decaigan de forma natural al soltar.
     if (this.aquaField && this.aquaStroker) {
-      const painting = this.activeTool.id === "aqua";
-      if (painting) this.aquaStroker.update(dt);
+      if (this.aquaBrushing) this.aquaStroker.update(dt);
       if (this.aquaField.active) {
         this.aquaField.step(dt);
         this.aquaField.render();

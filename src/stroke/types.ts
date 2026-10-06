@@ -89,6 +89,12 @@ export interface BrushSettings {
    */
   asMatter: boolean;
   /**
+   * Convierte el pincel en acuarela (pintura humeda por fluidos): el mismo gesto
+   * inyecta pigmento/agua en el plano de acuarela en vez de tinta vectorial.
+   * Como "Hacer materia", pero el resultado fluye y se difumina.
+   */
+  asAqua: boolean;
+  /**
    * Invierte los modos de pintura (Trazo/Relleno/Arrastre) a borrado: el mismo
    * gesto recorta la tinta en vez de pintarla. La tecla Alt lo alterna.
    */
@@ -115,6 +121,7 @@ export const DEFAULT_BRUSH: BrushSettings = {
   eraseFade: false,
   eraseMatter: false,
   asMatter: false,
+  asAqua: false,
   invertErase: false,
 };
 
