@@ -113,6 +113,12 @@ export interface EditorState {
   aquaAvailable: boolean;
   /** Modo del pincel de acuarela: pluma (pigmento) o agua. */
   aquaMode: "pen" | "brush";
+  /** Tamaño propio de la acuarela (px mundo) del modo activo. */
+  aquaSize: number;
+  /** El plano de acuarela esta visible. */
+  aquaLayerVisible: boolean;
+  /** Opacidad del plano de acuarela (0..1). */
+  aquaLayerOpacity: number;
   /** Parametros vivos de la acuarela (0..1). */
   aquaParams: import("../aqua/aqua-field").AquaParams;
 }
@@ -178,6 +184,16 @@ export class Editor {
   /** Plano de acuarela (fluidos WebGL2); null si WebGL2 no esta disponible. */
   private aquaField: AquaField | null = null;
   private aquaStroker: AquaStroker | null = null;
+  /** Canvas del plano de acuarela (para visibilidad/opacidad). */
+  private aquaCanvas: HTMLCanvasElement | null = null;
+  /** El plano de acuarela esta visible. */
+  private aquaVisible = true;
+  /** Opacidad del plano de acuarela (0..1). */
+  private aquaOpacity = 1;
+  /** Tamaños propios de la acuarela por modo (px mundo), independientes del
+      pincel vectorial y entre si: pluma fina, agua ancha. */
+  private aquaSizePen = 10;
+  private aquaSizeBrush = 40;
 
   private pointer: PointerInput;
   private tools: Record<ToolId, Tool>;
@@ -237,6 +253,7 @@ export class Editor {
       this.aquaField = new AquaField(aquaCanvas);
       this.aquaField.asLayer = true;
       this.aquaStroker = new AquaStroker(this.aquaField);
+      this.aquaCanvas = aquaCanvas;
       host.appendChild(aquaCanvas);
     } catch (err) {
       console.warn("[drawi] Acuarela no disponible:", err);
@@ -337,6 +354,9 @@ export class Editor {
       maskMode: this.maskMode,
       aquaAvailable: this.aquaField !== null,
       aquaMode: this.aquaStroker?.mode ?? "pen",
+      aquaSize: this.aquaMode === "brush" ? this.aquaSizeBrush : this.aquaSizePen,
+      aquaLayerVisible: this.aquaVisible,
+      aquaLayerOpacity: this.aquaOpacity,
       aquaParams: this.aquaField?.params ?? DEFAULT_AQUA_PARAMS,
     };
   }
@@ -366,6 +386,18 @@ export class Editor {
     this.emitState();
   }
 
+  /** Tamaño de la acuarela (px mundo) del modo activo. Independiente por modo. */
+  get aquaSize(): number {
+    return this.aquaMode === "brush" ? this.aquaSizeBrush : this.aquaSizePen;
+  }
+
+  setAquaSize(px: number): void {
+    const v = clamp(px, 1, 400);
+    if (this.aquaMode === "brush") this.aquaSizeBrush = v;
+    else this.aquaSizePen = v;
+    this.emitState();
+  }
+
   /** Lee un parametro vivo de la acuarela (0..1). */
   aquaParam(key: keyof import("../aqua/aqua-field").AquaParams): number {
     return this.aquaField?.params[key] ?? 0;
@@ -392,6 +424,86 @@ export class Editor {
   aquaClear(): void {
     this.aquaField?.clear();
     this.status("Acuarela limpiada");
+  }
+
+  /** ¿El plano de acuarela esta visible? */
+  get aquaLayerVisible(): boolean {
+    return this.aquaVisible;
+  }
+
+  /** Muestra u oculta el plano de acuarela (como una capa). */
+  setAquaVisible(on: boolean): void {
+    this.aquaVisible = on;
+    if (this.aquaCanvas) this.aquaCanvas.style.display = on ? "" : "none";
+    this.status(on ? "Capa acuarela visible" : "Capa acuarela oculta");
+    this.emitState();
+  }
+
+  /** Opacidad del plano de acuarela (0..1). */
+  get aquaLayerOpacity(): number {
+    return this.aquaOpacity;
+  }
+
+  setAquaOpacity(v: number): void {
+    this.aquaOpacity = clamp01(v);
+    if (this.aquaCanvas) this.aquaCanvas.style.opacity = String(this.aquaOpacity);
+    this.emitState();
+  }
+
+  /** ¿El pincel esta en modo acuarela y el plano existe? */
+  get aquaBrushActive(): boolean {
+    return this.brush.asAqua && this.aquaField !== null;
+  }
+
+  /**
+   * Siembra un TRAZO (linea central con radios, en mundo) en el plano de
+   * acuarela. Convierte cada punto a UV de pantalla y su radio (px mundo) a la
+   * escala Y-normalizada del fluido. Asi el trazo humedo sigue exactamente la
+   * geometria del pincel vectorial (presion/afilado incluidos).
+   */
+  stampAquaStroke(points: readonly import("../stroke/types").StrokePoint[], color: string): void {
+    const field = this.aquaField;
+    if (!field || points.length === 0) return;
+    field.setPigment(color);
+    const dens = this.aquaStroker?.mode === "brush" ? 0 : 0.9;
+    const w = Math.max(1, this.host.clientWidth);
+    const h = Math.max(1, this.host.clientHeight);
+    const p: Vec2 = { x: 0, y: 0 };
+    // El trazo conserva la dinamica de presion del pincel (variacion relativa de
+    // pt.r), pero su grosor base lo fija el tamaño propio de la acuarela, no el
+    // del pincel vectorial: se reescala por aquaSize/brushSize.
+    const sizeScale = this.aquaSize / Math.max(this.brush.size, 1);
+    const uvPts = points.map((pt) => {
+      this.camera.worldToScreen(pt, p);
+      // Radio: px mundo -> px pantalla (x zoom) -> fraccion de alto (como el splat).
+      const rScreen = pt.r * sizeScale * this.camera.zoom;
+      return { x: p.x / w, y: 1 - p.y / h, r: Math.max(rScreen / h, 0.002) };
+    });
+    field.stampStroke(uvPts, dens);
+    this.status(dens === 0 ? "Agua" : "Acuarela");
+  }
+
+  /**
+   * Siembra AREAS rellenas (poligonos en mundo) en el plano de acuarela: para el
+   * modo Relleno y las formas de Arrastre. Cada poligono se rasteriza como mancha.
+   */
+  stampAquaArea(polys: readonly import("../stroke/types").Polygon[], color: string): void {
+    const field = this.aquaField;
+    if (!field || polys.length === 0) return;
+    field.setPigment(color);
+    const dens = this.aquaStroker?.mode === "brush" ? 0 : 0.9;
+    const w = Math.max(1, this.host.clientWidth);
+    const h = Math.max(1, this.host.clientHeight);
+    const p: Vec2 = { x: 0, y: 0 };
+    for (const poly of polys) {
+      if (poly.length < 3) continue;
+      const uv = poly.map((pt) => {
+        this.camera.worldToScreen(pt, p);
+        return { x: p.x / w, y: 1 - p.y / h };
+      });
+      field.stampArea(uv, dens);
+    }
+    this.status(dens === 0 ? "Agua" : "Acuarela");
   }
 
   // ------------------------------------------------------------- comandos
@@ -1180,49 +1292,24 @@ export class Editor {
       sampleScreenColor(x: number, y: number): string | null {
         return editor.sampleScreenColor(x, y);
       },
+      get aquaBrushActive(): boolean {
+        return editor.aquaBrushActive;
+      },
+      stampAquaStroke(points, color): void {
+        editor.stampAquaStroke(points, color);
+      },
+      stampAquaArea(polys, color): void {
+        editor.stampAquaArea(polys, color);
+      },
     };
     return this.toolCtx;
   }
 
   // -------------------------------------------------------------- entrada
 
-  /**
-   * ¿El gesto actual debe pintar acuarela en vez de tinta? Pasa cuando la
-   * herramienta Pincel esta activa con el toggle "Acuarela" encendido y el
-   * plano de fluido existe. Si es asi, los eventos del puntero alimentan el
-   * emisor de fluido y NO llegan al BrushTool (que queda intacto).
-   */
-  private get aquaBrushing(): boolean {
-    return this.toolId === "brush" && this.brush.asAqua && !!this.aquaStroker;
-  }
-
-  /** Mapea una muestra a UV y la entrega al emisor segun la fase del trazo. */
-  private feedAqua(s: InputSample, phase: "down" | "move" | "up"): void {
-    const stroker = this.aquaStroker;
-    const field = this.aquaField;
-    if (!stroker || !field) return;
-    // El tamaño del pincel (px mundo) controla la huella de acuarela: se mapea
-    // al parametro `size` del motor (0..1 ~ 1/3x..3x) para que el mismo slider
-    // de "Tamaño" del pincel gobierne tambien el fluido. ~24px = x1 (0.5).
-    field.params.size = clamp01(0.5 + Math.log2(Math.max(this.brush.size, 1) / 24) / 6);
-    const w = Math.max(1, this.host.clientWidth);
-    const h = Math.max(1, this.host.clientHeight);
-    const ux = s.x / w;
-    const uy = 1 - s.y / h;
-    const pr = s.pressure >= 0 ? s.pressure : 0.5;
-    if (phase === "down") stroker.begin(ux, uy, pr);
-    else if (phase === "move") stroker.move(ux, uy, pr);
-    else stroker.end();
-  }
-
   private onStart(s: InputSample): void {
     this.trackPen(s);
     this.cursor = { x: s.x, y: s.y };
-    if (this.aquaBrushing) {
-      this.feedAqua(s, "down");
-      this.overlayLayer.invalidate();
-      return;
-    }
     this.activeTool.onDown(this.ctx(), s);
     this.overlayLayer.invalidate();
   }
@@ -1231,29 +1318,17 @@ export class Editor {
     const last = samples[samples.length - 1];
     this.trackPen(last);
     this.cursor = { x: last.x, y: last.y };
-    if (this.aquaBrushing) {
-      this.feedAqua(last, "move");
-      this.overlayLayer.invalidate();
-      return;
-    }
     this.activeTool.onMove(this.ctx(), samples, predicted);
     this.overlayLayer.invalidate();
   }
 
   private onEnd(s: InputSample): void {
-    if (this.aquaBrushing) {
-      this.feedAqua(s, "up");
-      this.overlayLayer.invalidate();
-      this.emitState();
-      return;
-    }
     this.activeTool.onUp(this.ctx(), s);
     this.overlayLayer.invalidate();
     this.emitState();
   }
 
   private onCancel(): void {
-    if (this.aquaBrushing) this.aquaStroker?.end();
     this.activeTool.onCancel(this.ctx());
     this.wet = null;
     this.wetLayer.invalidate();
@@ -1602,16 +1677,12 @@ export class Editor {
       }
     }
 
-    // Acuarela: el emisor siembra huellas (si se esta pintando) y el fluido
-    // avanza + se repinta mientras siga vivo. Dormido no consume GPU. El emisor
-    // se actualiza siempre (aunque no haya trazo) para que la posicion suavizada
-    // y la velocidad decaigan de forma natural al soltar.
-    if (this.aquaField && this.aquaStroker) {
-      if (this.aquaBrushing) this.aquaStroker.update(dt);
-      if (this.aquaField.active) {
-        this.aquaField.step(dt);
-        this.aquaField.render();
-      }
+    // Acuarela: el fluido avanza y se repinta mientras siga vivo (unos segundos
+    // tras el ultimo deposito). Dormido no consume GPU. Los trazos se siembran
+    // al soltar el pincel (ver stampAqua), no aqui.
+    if (this.aquaField && this.aquaField.active) {
+      this.aquaField.step(dt);
+      this.aquaField.render();
     }
 
     if (this.inkLayer.dirty) {

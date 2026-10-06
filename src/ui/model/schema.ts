@@ -251,22 +251,18 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       get: (s) => s.aquaMode,
       set: (v) => editor.setAquaMode(v as "pen" | "brush"),
     },
-    {
-      id: "aqua-params",
-      label: "Fluido",
-      icon: "droplet",
-      hint: "Como se comporta el agua y el pigmento",
-      visible: (s) => s.brush.asAqua && s.brush.mode !== "erase",
-      children: [
-        { kind: "number", id: "aqua-flow", label: "Flujo", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Energia del fluido: a mas flujo, mas movimiento y remolinos.", get: (s) => s.aquaParams.flow, set: (v) => editor.setAquaParam("flow", v) },
-        { kind: "number", id: "aqua-bleed", label: "Sangrado", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Cuanto se difunde el pigmento hacia los bordes (los halos de acuarela).", get: (s) => s.aquaParams.bleed, set: (v) => editor.setAquaParam("bleed", v) },
-        { kind: "number", id: "aqua-dry", label: "Secado", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Velocidad a la que el papel se seca: alto = la tinta deja de fluir antes.", get: (s) => s.aquaParams.dry, set: (v) => editor.setAquaParam("dry", v) },
-        { kind: "number", id: "aqua-color", label: "Matiz", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Tiñe el sangrado de calido a frio (azules y violetas tipicos).", get: (s) => s.aquaParams.color, set: (v) => editor.setAquaParam("color", v) },
-        { kind: "number", id: "aqua-ink", label: "Carga de agua", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Pigmento que lleva el pincel de agua (0 = solo agua, limpia).", visible: (s) => s.aquaMode === "brush", get: (s) => s.aquaParams.brushInk, set: (v) => editor.setAquaParam("brushInk", v) },
-        { kind: "action", id: "aqua-fix", label: "Hornear acuarela", icon: "bake", hint: "Asienta el pigmento movil en el papel: queda fijo y puedes pintar encima.", run: () => editor.aquaFix() },
-        { kind: "action", id: "aqua-clear", label: "Limpiar acuarela", icon: "trash", danger: true, hint: "Vacia por completo el plano de acuarela.", run: () => editor.aquaClear() },
-      ],
-    },
+    // Tamaño propio de la acuarela, INDEPENDIENTE por modo: pluma fina / agua
+    // ancha se recuerdan por separado (cambiar de modo trae su tamaño).
+    { kind: "number", id: "aqua-size", label: (s) => (s.aquaMode === "brush" ? "Tamaño agua" : "Tamaño pluma"), min: 1, max: 400, step: 1, gamma: 1.5, unit: "px", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaSize, set: (v) => editor.setAquaSize(v) },
+    { kind: "number", id: "aqua-flow", label: "Flujo", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Energia del fluido: a mas flujo, mas movimiento y remolinos.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaParams.flow, set: (v) => editor.setAquaParam("flow", v) },
+    { kind: "number", id: "aqua-bleed", label: "Sangrado", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Cuanto se difunde el pigmento hacia los bordes (los halos de acuarela).", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaParams.bleed, set: (v) => editor.setAquaParam("bleed", v) },
+    { kind: "number", id: "aqua-dry", label: "Secado", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Velocidad a la que el papel se seca: alto = la tinta deja de fluir antes.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaParams.dry, set: (v) => editor.setAquaParam("dry", v) },
+    { kind: "number", id: "aqua-color", label: "Matiz", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Tiñe el sangrado de calido a frio (azules y violetas tipicos).", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaParams.color, set: (v) => editor.setAquaParam("color", v) },
+    { kind: "number", id: "aqua-ink", label: "Carga de agua", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Pigmento que lleva el pincel de agua (0 = solo agua, limpia).", visible: (s) => s.brush.asAqua && s.aquaMode === "brush" && s.brush.mode !== "erase", get: (s) => s.aquaParams.brushInk, set: (v) => editor.setAquaParam("brushInk", v) },
+    { kind: "action", id: "aqua-fix", label: "Hornear acuarela", icon: "bake", hint: "Asienta el pigmento movil en el papel: queda fijo y puedes pintar encima.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", run: () => editor.aquaFix() },
+    { kind: "action", id: "aqua-clear", label: "Limpiar acuarela", icon: "trash", danger: true, hint: "Vacia por completo el plano de acuarela.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", run: () => editor.aquaClear() },
+    { kind: "toggle", id: "aqua-visible", label: "Capa visible", icon: "layers", hint: "Muestra u oculta todo el plano de acuarela, como una capa.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaLayerVisible, set: (v) => editor.setAquaVisible(v) },
+    { kind: "number", id: "aqua-opacity", label: "Opacidad capa", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Opacidad del plano de acuarela completo.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaLayerOpacity, set: (v) => editor.setAquaOpacity(v) },
     { kind: "toggle", id: "invert-erase", label: "Usar como borrador", icon: "eraser", hint: "Invierte el trazo, relleno o arrastre a borrado: el mismo gesto recorta la tinta. Tecla Alt.", visible: (s) => s.brush.mode !== "erase" && !s.brush.asMatter, get: (s) => s.brush.invertErase, set: (v) => editor.setBrush({ invertErase: v }) },
     // ---- Opciones exclusivas del Borrador (visibles solo en modo "erase"). ----
     {

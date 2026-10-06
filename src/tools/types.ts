@@ -5,7 +5,7 @@ import type { Vec2 } from "../core/vec2";
 import type { Camera } from "../render/camera";
 import type { SceneDocument } from "../scene/document";
 import type { History } from "../app/history";
-import type { BrushSettings, Polygon } from "../stroke/types";
+import type { BrushSettings, Polygon, StrokePoint } from "../stroke/types";
 import type { Body } from "../physics/world";
 import type { MatterOp } from "../app/editor";
 import type { PullFamily } from "./pull-shapes";
@@ -79,6 +79,12 @@ export interface ToolContext {
   status(message: string): void;
   /** Lee el color compuesto de un punto de pantalla. */
   sampleScreenColor(x: number, y: number): string | null;
+  /** El pincel esta en modo acuarela (plano de fluido disponible y activo). */
+  readonly aquaBrushActive: boolean;
+  /** Siembra una LINEA CENTRAL (puntos con radio, en mundo) como trazo de acuarela. */
+  stampAquaStroke(points: readonly StrokePoint[], color: string): void;
+  /** Siembra AREAS rellenas (poligonos en mundo) como mancha de acuarela. */
+  stampAquaArea(polys: readonly Polygon[], color: string): void;
 }
 
 export interface Tool {

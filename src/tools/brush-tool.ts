@@ -162,6 +162,11 @@ export class BrushTool implements Tool {
         this.finishMatter(ctx, wet?.polys ?? []);
         return;
       }
+      // Acuarela: la misma silueta estirada se vierte en el plano de fluido.
+      if (ctx.aquaBrushActive) {
+        this.finishAquaArea(ctx, wet?.polys ?? []);
+        return;
+      }
       this.finish(ctx, wet, this.invert ? "Borrar" : "Forma");
       return;
     }
@@ -177,6 +182,17 @@ export class BrushTool implements Tool {
 
     if (ctx.brush.asMatter) {
       this.finishMatter(ctx, this.wetFromPoints(ctx, points, false)?.polys ?? []);
+      return;
+    }
+    // Acuarela: el trazo/relleno (con toda su dinamica ya resuelta) se siembra en
+    // el fluido. El Trazo usa su linea central (radios por punto); el Relleno usa
+    // el area cerrada. Asi el gesto es identico al vectorial, pero fluye.
+    if (ctx.aquaBrushActive) {
+      if (ctx.brush.mode === "fill") {
+        this.finishAquaArea(ctx, this.wetFromPoints(ctx, points, false)?.polys ?? []);
+      } else {
+        this.finishAquaStroke(ctx, points);
+      }
       return;
     }
 
@@ -325,6 +341,51 @@ export class BrushTool implements Tool {
     ctx.doc.physics.wakeAll();
     ctx.history.commit(created > 1 ? `Materia · ${created} formas` : "Materia");
     ctx.invalidateField();
+  }
+
+  /**
+   * Consolida un TRAZO con "Acuarela": su linea central (puntos con radio por
+   * presion/afilado) se siembra en el plano de fluido, aplicando la simetria
+   * activa. El resultado no es tinta vectorial: es pigmento+agua que fluyen. El
+   * historial no lo registra (el fluido es un medio en vivo), asi que se aborta.
+   */
+  private finishAquaStroke(ctx: ToolContext, points: readonly StrokePoint[]): void {
+    ctx.setWet(null);
+    if (points.length === 0) {
+      ctx.history.abort();
+      return;
+    }
+    // Simetria: cada transformacion genera una copia del trazo central.
+    const transforms = symmetryTransforms(ctx.doc.symmetry);
+    for (const m of transforms) {
+      const tp = points.map((p) => {
+        const w = { x: m.a * p.x + m.c * p.y + m.e, y: m.b * p.x + m.d * p.y + m.f };
+        // El radio escala con la parte lineal de la matriz (det^0.5 aprox).
+        const scale = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)) || 1;
+        return { x: w.x, y: w.y, r: p.r * scale, p: p.p, v: p.v, a: p.a, t: p.t };
+      });
+      ctx.stampAquaStroke(tp, ctx.color);
+    }
+    ctx.history.abort();
+  }
+
+  /**
+   * Consolida un RELLENO o FORMA con "Acuarela": las siluetas cerradas se
+   * siembran como manchas en el fluido, con la simetria activa.
+   */
+  private finishAquaArea(ctx: ToolContext, polys: readonly Polygon[]): void {
+    ctx.setWet(null);
+    if (polys.length === 0) {
+      ctx.history.abort();
+      return;
+    }
+    const transforms = symmetryTransforms(ctx.doc.symmetry);
+    const stamped: Polygon[] = [];
+    for (const poly of polys) {
+      for (const m of transforms) stamped.push(transformPolygon(poly, m));
+    }
+    ctx.stampAquaArea(stamped, ctx.color);
+    ctx.history.abort();
   }
 
   /** Elimina los trazos que toca el punto (todo el item, con sus copias). */

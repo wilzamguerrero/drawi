@@ -130,6 +130,8 @@ export class AquaField {
   private fixTimer = 0;
   /** Blanco (gouache) en vez de tinta oscura. */
   private white = false;
+  /** Absorcion del pigmento activo (rgb). Deriva del color del pincel. */
+  private pigment: [number, number, number] = [INK_ABS[0], INK_ABS[1], INK_ABS[2]];
   /** Segundos de simulacion restantes tras el ultimo deposito (ahorro de GPU). */
   private aliveTimer = 0;
   /** ¿Se ha pintado algo alguna vez? (para no limpiar un canvas ya vacio). */
@@ -395,6 +397,28 @@ export class AquaField {
     this.white = on;
   }
 
+  /**
+   * Fija el pigmento activo desde un color CSS "#rrggbb". El motor pinta por
+   * absorcion (exp(-abs)): un color claro absorbe poco, uno oscuro mucho. Se
+   * convierte el color a absorcion por canal = 1 - canal_normalizado, con un
+   * minimo para que los colores muy claros aun dejen marca.
+   */
+  setPigment(hex: string): void {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+    if (!m) return;
+    const n = parseInt(m[1], 16);
+    const r = ((n >> 16) & 255) / 255;
+    const g = ((n >> 8) & 255) / 255;
+    const b = (n & 255) / 255;
+    // Absorcion: canal que falta para el blanco. Se realza un poco para que el
+    // pigmento tiña con fuerza como una acuarela saturada.
+    this.pigment = [
+      Math.min(1.4, (1 - r) * 1.1 + 0.02),
+      Math.min(1.4, (1 - g) * 1.1 + 0.02),
+      Math.min(1.4, (1 - b) * 1.1 + 0.02),
+    ];
+  }
+
   // ------------------------------------------------------------------- splats
 
   /**
@@ -433,7 +457,7 @@ export class AquaField {
   private inkColor(dens: number): [number, number, number, number] {
     return this.white
       ? [0, 0, 0, dens]
-      : [INK_ABS[0] * dens, INK_ABS[1] * dens, INK_ABS[2] * dens, 0];
+      : [this.pigment[0] * dens, this.pigment[1] * dens, this.pigment[2] * dens, 0];
   }
 
   /** Deposita pigmento en (x,y) 0..1 con radio y densidad dados. */
@@ -459,6 +483,96 @@ export class AquaField {
     this.brushNow.x = x;
     this.brushNow.y = y;
     this.brushNow.r = r;
+  }
+
+  /**
+   * Estampa un TRAZO como acuarela: siembra splats gaussianos solapados a lo
+   * largo de la linea central, con el radio real de cada punto. Es el puente
+   * desde la geometria del pincel vectorial (ya resuelta con toda su dinamica de
+   * presion y afilado) hacia el fluido: el trazo se siente igual que el pincel
+   * normal, pero el resultado es humedo y fluye.
+   *
+   * @param pts  puntos de la linea central en UV: {x,y en 0..1 (Y arriba), r en
+   *             unidades Y-normalizadas (como el radio del splat)}.
+   * @param dens densidad de pigmento (0 = solo agua, para el modo "Agua").
+   */
+  stampStroke(pts: readonly { x: number; y: number; r: number }[], dens: number): void {
+    if (pts.length === 0) return;
+    const wet = this.white ? 0.45 : 0.5;
+    let prev = pts[0];
+    this.depositDab(prev.x, prev.y, prev.r, dens, wet);
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i];
+      const dx = p.x - prev.x;
+      const dy = p.y - prev.y;
+      const dist = Math.hypot(dx, dy);
+      // Espaciado denso (fraccion del radio) para que los dabs se solapen y la
+      // linea salga continua, no como perlas sueltas.
+      const r = Math.max(p.r, 0.002);
+      const spacing = r * 0.18;
+      const steps = Math.min(Math.ceil(dist / spacing), 260);
+      for (let s = 1; s <= steps; s++) {
+        const t = s / steps;
+        const x = prev.x + dx * t;
+        const y = prev.y + dy * t;
+        const rr = prev.r + (p.r - prev.r) * t;
+        this.depositDab(x, y, Math.max(rr, 0.002), dens, wet);
+      }
+      prev = p;
+    }
+    this.keepAlive(3);
+  }
+
+  /**
+   * Estampa un AREA rellena (relleno/forma) como acuarela: rasteriza el poligono
+   * con una rejilla densa de dabs solapados para que la mancha sea uniforme.
+   */
+  stampArea(poly: readonly { x: number; y: number }[], dens: number): void {
+    if (poly.length < 3) return;
+    let minx = 1;
+    let miny = 1;
+    let maxx = 0;
+    let maxy = 0;
+    for (const p of poly) {
+      if (p.x < minx) minx = p.x;
+      if (p.y < miny) miny = p.y;
+      if (p.x > maxx) maxx = p.x;
+      if (p.y > maxy) maxy = p.y;
+    }
+    minx = Math.max(0, minx);
+    miny = Math.max(0, miny);
+    maxx = Math.min(1, maxx);
+    maxy = Math.min(1, maxy);
+    const bw = maxx - minx;
+    const bh = maxy - miny;
+    if (bw <= 0 || bh <= 0) return;
+    const wet = this.white ? 0.45 : 0.5;
+    // Rejilla fina y solapada (paso pequeño, dab mayor que el paso).
+    const step = Math.max(0.0035, Math.min(bw, bh) / 26);
+    const r = step * 1.6;
+    for (let y = miny; y <= maxy; y += step) {
+      for (let x = minx; x <= maxx; x += step) {
+        if (!pointInPoly(x, y, poly)) continue;
+        this.depositDab(x, y, r, dens, wet);
+      }
+    }
+    this.keepAlive(3);
+  }
+
+  /**
+   * Deposita un dab de acuarela: pigmento (si dens>0), humedad para que fluya y
+   * una pizca de velocidad radial que empuja la tinta hacia afuera (asi el agua
+   * de verdad arrastra el pigmento existente, no solo lo moja).
+   */
+  private depositDab(x: number, y: number, r: number, dens: number, wet: number): void {
+    if (dens > 0) this.splat(this.ink, x, y, r, this.inkColor(dens), false);
+    this.splat(this.wet, x, y, r * 2.0, [wet, 0, 0, 0], true);
+    // Empuje radial pequeño: da vida al borde (halos) y hace que el modo Agua
+    // mueva de verdad el pigmento ya depositado.
+    const push = (12 + this.params.flow * 40) * (dens > 0 ? 0.4 : 1.0);
+    const a = Math.random() * Math.PI * 2;
+    this.splat(this.velocity, x, y, r * 1.2, [Math.cos(a) * push, Math.sin(a) * push, 0, 0], false);
+    this.keepAlive(3);
   }
 
   // --------------------------------------------------------------------- step
@@ -602,4 +716,18 @@ export class AquaField {
     gl.uniform1f(this.pDisplay.uniforms.uAsLayer, this.asLayer ? 1 : 0);
     this.blit(null);
   }
+}
+
+/** Test punto-en-poligono (ray casting) en coordenadas UV. */
+function pointInPoly(x: number, y: number, poly: readonly { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x;
+    const yi = poly[i].y;
+    const xj = poly[j].x;
+    const yj = poly[j].y;
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }
