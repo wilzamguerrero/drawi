@@ -36,10 +36,20 @@ export class StrokeBuilder {
   private lastT = 0;
   private lastX = 0;
   private lastY = 0;
+  // Ultima posicion CRUDA (sin filtrar): base de la velocidad, para que no
+  // dependa del propio arrastre (si no, se realimenta y oscila).
+  private lastRawX = 0;
+  private lastRawY = 0;
   private speed = 0;
   private smoothPressure = 0;
   private arcLen = 0;
   private started = false;
+  // Rumbo (direccion unitaria) suavizado del trazo. La prediccion se sintetiza
+  // a partir de aqui, nunca de los puntos crudos del navegador: por eso la punta
+  // no puede temblar ni "saltar" cuando cambia la presion o el boton del lapiz.
+  private headX = 0;
+  private headY = 0;
+  private hasHeading = false;
 
   constructor(settings: BrushSettings) {
     this.settings = settings;
@@ -70,14 +80,28 @@ export class StrokeBuilder {
     this.rng.reseed(seed);
     this.filter.reset();
     // smoothing 0..1 -> corte bajo (suave) o alto (directo).
-    this.filter.configure(lerp(9, 0.7, clamp01(st.smoothing)), 0.02 + clamp01(st.smoothing) * 0.06);
+    //
+    // Dos parametros gobiernan el One-Euro:
+    //  - minCutoff: cuanto se filtra EN REPOSO (temblor de la mano). Un piso alto
+    //    mantiene la punta pegada al lapiz cuando casi no te mueves.
+    //  - beta: cuanto SUBE el corte con la velocidad. Un beta alto hace que a
+    //    velocidad de dibujo real el filtro practicamente se apague, asi el trazo
+    //    no se queda atras (la sensacion "pro", sin retardo). Antes era demasiado
+    //    bajo: por eso se sentia lento.
+    const sm = clamp01(st.smoothing);
+    this.filter.configure(lerp(12, 1.2, sm), 0.045 + sm * 0.11);
     this.penX = s.x;
     this.penY = s.y;
     this.lastX = s.x;
     this.lastY = s.y;
+    this.lastRawX = s.x;
+    this.lastRawY = s.y;
     this.lastT = s.t;
     this.speed = 0;
     this.arcLen = 0;
+    this.headX = 0;
+    this.headY = 0;
+    this.hasHeading = false;
     this.smoothPressure = s.pressure >= 0 ? s.pressure : 0.5;
     this.started = true;
     this.pushPoint(s, true);
@@ -101,21 +125,59 @@ export class StrokeBuilder {
   }
 
   /**
-   * Tramo predicho: se dibuja pero no se consolida. Es lo que hace que la punta
-   * "alcance" al lapiz en pantalla sin ensuciar el trazo final.
+   * Tramo predicho (la "punta que alcanza al lapiz"). NO se consolida.
+   *
+   * Clave de la fluidez sin temblor: no se pintan los puntos crudos de
+   * `getPredictedEvents()` (que saltan y se reemiten cuando cambia la presion o
+   * el boton del lapiz -> esa era la punta que "se movia"). En su lugar se
+   * SINTETIZA un arco corto y suave desde el ultimo punto consolidado usando el
+   * rumbo ya suavizado del trazo, inclinandolo apenas hacia donde esta de verdad
+   * el cursor. Al derivarse de valores estables, es imposible que tiemble.
    */
   setPredicted(samples: readonly WorldSample[]): void {
     this.tail = [];
     if (!this.started || samples.length === 0 || this.pts.length === 0) return;
+    if (!this.hasHeading) return;
+
+    // A mano casi quieta la prediccion es ruido puro.
+    if (this.speed < 0.07) return;
+
     const last = this.pts[this.pts.length - 1];
-    let px = last.x;
-    let py = last.y;
-    for (const s of samples) {
-      const d = Math.hypot(s.x - px, s.y - py);
-      if (d * this.zoom < 0.4) continue;
-      px = s.x;
-      py = s.y;
-      this.tail.push({ x: s.x, y: s.y, r: last.r, p: last.p, v: last.v, a: last.a, t: s.t });
+    const target = samples[samples.length - 1]; // posicion real actual del lapiz
+    const tx = target.x - last.x;
+    const ty = target.y - last.y;
+    const toTarget = Math.hypot(tx, ty);
+
+    // Longitud a proyectar (px de mundo): limitada por la velocidad real y por
+    // lo lejos que esta el cursor, con un techo duro para no adelantarse de mas.
+    const capScreen = Math.min(30, this.speed * 36);
+    const cap = capScreen / this.zoom;
+    const reach = Math.min(cap, Math.max(toTarget, cap * 0.4));
+    if (reach < 0.5 / this.zoom) return;
+
+    // Punto de destino sobre el rumbo, llevado un poco hacia el cursor real para
+    // matar latencia sin copiar su ruido (90% rumbo / 10% cursor).
+    const aimX = last.x + this.headX * reach;
+    const aimY = last.y + this.headY * reach;
+    const tnx = toTarget > 1e-4 ? tx / toTarget : this.headX;
+    const tny = toTarget > 1e-4 ? ty / toTarget : this.headY;
+    const endX = lerp(aimX, last.x + tnx * reach, 0.1);
+    const endY = lerp(aimY, last.y + tny * reach, 0.1);
+    // Control de la curva: sobre el rumbo, para que el arco salga tangente al
+    // trazo (sin esquina en la union) y gire suave.
+    const ctrlX = last.x + this.headX * reach * 0.5;
+    const ctrlY = last.y + this.headY * reach * 0.5;
+
+    const steps = 5;
+    for (let i = 1; i <= steps; i++) {
+      const u = i / steps;
+      const iu = 1 - u;
+      // Bezier cuadratica last -> ctrl -> end.
+      const bx = iu * iu * last.x + 2 * iu * u * ctrlX + u * u * endX;
+      const by = iu * iu * last.y + 2 * iu * u * ctrlY + u * u * endY;
+      // Afilado hacia la punta: radio pleno en la base, ~50% al final.
+      const r = last.r * lerp(1, 0.5, u);
+      this.tail.push({ x: bx, y: by, r, p: last.p, v: last.v, a: last.a, t: target.t });
     }
   }
 
@@ -140,9 +202,28 @@ export class StrokeBuilder {
     const dtMs = Math.max(0.5, s.t - this.lastT);
     const dt = dtMs / 1000;
 
-    // 1. Posicion filtrada + arrastre opcional.
+    // 1. Filtro One-Euro de la posicion cruda.
     const f = this.filter.filter(s.x, s.y, dt);
-    const drag = clamp01(st.streamline) * 0.85;
+
+    // 2. Velocidad SUAVIZADA, medida sobre el salto crudo del digitalizador.
+    //    Se calcula ANTES de aplicar el arrastre y se usa tanto para la dinamica
+    //    como para modular el arrastre. Usar la velocidad cruda por-muestra hacia
+    //    que el arrastre parpadeara entre muestras -> el trazo salia ondulado en
+    //    las curvas rapidas. Suavizada, el arrastre varia de forma continua.
+    const rawStep = Math.hypot(s.x - this.lastRawX, s.y - this.lastRawY) * this.zoom;
+    const instant = rawStep / dtMs;
+    this.speed = damp(this.speed, instant, 22, dt);
+    this.lastRawX = s.x;
+    this.lastRawY = s.y;
+
+    // 3. Arrastre tipo lazo ("estabilizador"), modulado por la velocidad suave y
+    //    con RAMPA DE ARRANQUE. Al empezar un trazo rapido, un arrastre pleno
+    //    retiene la punta y luego la suelta de golpe -> el "apendice"/gancho del
+    //    inicio. La rampa (sobre los primeros ~14 px de recorrido) deja la punta
+    //    pegada al inicio y mete el arrastre poco a poco.
+    const release = clamp01(this.speed / 1.1); // 0 quieto -> 1 rapido
+    const startup = smoothstep(clamp01((this.arcLen * this.zoom) / 14));
+    const drag = clamp01(st.streamline) * 0.8 * (1 - 0.6 * release) * startup;
     this.penX = lerp(f.x, this.penX, drag);
     this.penY = lerp(f.y, this.penY, drag);
     const x = this.penX;
@@ -152,10 +233,6 @@ export class StrokeBuilder {
     const dy = y - this.lastY;
     const dWorld = Math.hypot(dx, dy);
     const dScreen = dWorld * this.zoom;
-
-    // 2. Velocidad en px de pantalla / ms, suavizada: independiente del zoom.
-    const instant = dScreen / dtMs;
-    this.speed = damp(this.speed, instant, 22, dt);
     this.lastT = s.t;
 
     if (!force && dScreen < 0.55) return false;
@@ -163,6 +240,24 @@ export class StrokeBuilder {
     this.lastX = x;
     this.lastY = y;
     this.arcLen += dWorld;
+
+    // Rumbo suavizado (unitario). Se mezcla con damp para que gire sin saltos:
+    // es la base de la prediccion sintetica y del afilado estable de la punta.
+    const invd = 1 / dWorld;
+    const nx = dx * invd;
+    const ny = dy * invd;
+    if (!this.hasHeading) {
+      this.headX = nx;
+      this.headY = ny;
+      this.hasHeading = true;
+    } else {
+      const k = 1 - Math.exp(-30 * dt);
+      this.headX += (nx - this.headX) * k;
+      this.headY += (ny - this.headY) * k;
+      const hl = Math.hypot(this.headX, this.headY) || 1;
+      this.headX /= hl;
+      this.headY /= hl;
+    }
 
     // 3. Presion efectiva (con sustituto por velocidad si no hay tableta).
     const hasPressure = s.pressure >= 0;

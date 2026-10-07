@@ -4,6 +4,69 @@ import type { OutlineOptions, Polygon, StrokePoint } from "./types";
 
 const DEFAULT_OPTS: OutlineOptions = { splat: false, arcQuality: 4, caps: true };
 
+/**
+ * Reconstruye una curva suave que PASA por los puntos del trazo e inserta
+ * puntos intermedios a lo largo de ella (Catmull-Rom centripeto).
+ *
+ * Es la pieza que falta para que un trazo rapido no se vea como "rectas unidas":
+ * cuando mueves rapido, el digitalizador entrega pocos puntos muy separados y el
+ * contorno los une con segmentos. Aqui se rellena ese hueco con una curva real,
+ * asi la linea queda redonda a cualquier velocidad. Interpola tambien el radio y
+ * el resto de atributos, de modo que el ancho sigue variando con suavidad.
+ */
+export function resampleStroke(points: readonly StrokePoint[]): StrokePoint[] {
+  const n = points.length;
+  if (n < 3) return points.slice();
+
+  // Espaciado objetivo en unidades de mundo, ligado al grosor local: trazos
+  // finos se subdividen mas fino, los gruesos no necesitan tanto detalle.
+  const out: StrokePoint[] = [points[0]];
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = points[i === 0 ? 0 : i - 1];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2 < n ? i + 2 : n - 1];
+
+    const segLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const spacing = Math.max(0.5, Math.min(p1.r, p2.r) * 0.5);
+    const steps = Math.max(1, Math.min(32, Math.ceil(segLen / spacing)));
+    if (steps <= 1) {
+      out.push(p2);
+      continue;
+    }
+    for (let k = 1; k <= steps; k++) {
+      const t = k / steps;
+      out.push(catmull(p0, p1, p2, p3, t));
+    }
+  }
+  return out;
+}
+
+/** Catmull-Rom (tension 0.5) para posicion + atributos de un StrokePoint. */
+function catmull(
+  p0: StrokePoint,
+  p1: StrokePoint,
+  p2: StrokePoint,
+  p3: StrokePoint,
+  t: number,
+): StrokePoint {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const h = (a: number, b: number, c: number, d: number): number =>
+    0.5 *
+    (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+  return {
+    x: h(p0.x, p1.x, p2.x, p3.x),
+    y: h(p0.y, p1.y, p2.y, p3.y),
+    r: Math.max(0.03, h(p0.r, p1.r, p2.r, p3.r)),
+    p: p1.p + (p2.p - p1.p) * t,
+    v: p1.v + (p2.v - p1.v) * t,
+    a: p1.a + (p2.a - p1.a) * t,
+    t: p1.t + (p2.t - p1.t) * t,
+  };
+}
+
+
 const arcPoints = (
   out: Polygon,
   cx: number,
@@ -44,7 +107,10 @@ const circlePolygon = (p: StrokePoint, quality: number): Polygon => {
  */
 export function strokeOutline(points: readonly StrokePoint[], options?: Partial<OutlineOptions>): Polygon {
   const opts = { ...DEFAULT_OPTS, ...options };
-  const pts = dedupe(points);
+  // Splat es intencionadamente facetado; el resto se resamplea para que las
+  // curvas rapidas no se vean como segmentos rectos.
+  const base = opts.splat ? points : resampleStroke(points);
+  const pts = dedupe(base);
   if (pts.length === 0) return [];
   if (pts.length === 1) return circlePolygon(pts[0], opts.arcQuality);
 
