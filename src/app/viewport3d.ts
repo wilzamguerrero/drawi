@@ -24,11 +24,10 @@
  * donde pinta-, asi que el plano es fijo y la profundidad se ajusta aparte.
  */
 
-import { DEFAULT_BRUSH, type BrushSettings } from "../stroke/types";
+import { DEFAULT_BRUSH, type BrushSettings, type Polygon } from "../stroke/types";
 import { Stroke3DBuilder } from "../scene3d/builder";
 import { StrokeScene } from "../scene3d/batch";
 import { radiusAt, type Sample3D, type Stroke3D } from "../scene3d/types";
-import type { V3 } from "../scene3d/vec3";
 import type { SceneDocument } from "../scene/document";
 import type { History } from "../app/history";
 import {
@@ -41,11 +40,13 @@ import {
   DEFAULT_CAMERA_3D,
   forwardOf,
   projectPoint,
+  rightOf,
+  upOf,
   viewProjection,
   type Camera3DState,
 } from "../scene3d/camera3d";
 import { Scene3DBackend, type LayerPaint } from "../render3d/backend";
-import { pullStroke, relaxStroke, touches } from "../scene3d/relax";
+import { relaxStroke, touches } from "../scene3d/relax";
 import type { Scene3DSettings } from "../scene3d/tools3d";
 import {
   MAX_OUTLINE_POINTS,
@@ -53,10 +54,22 @@ import {
   makeFill,
   outlineArea,
 } from "../scene3d/fill";
-import { uid } from "../core/rng";
+import { placePullShape, pullShape, randomPullShape, type PullFamily } from "../tools/pull-shapes";
+import { Rng, uid } from "../core/rng";
+import { v3, type V3 } from "../scene3d/vec3";
 
 /** Recurso de un lote cuya capa ya no existe: no se dibuja. */
 const HIDDEN_PAINT: LayerPaint = { visible: false, opacity: 1, order: 0 };
+
+/**
+ * Grosor del contorno con el que se enseña un relleno o un arrastre mientras se
+ * dibujan, en unidades de mundo.
+ *
+ * Es fino y constante a proposito: no es la pintura, es el borde de lo que va a
+ * quedar. Con el grosor del pincel, un pincel grueso taparia con la vista previa
+ * justo lo que se esta intentando encuadrar.
+ */
+const OUTLINE_WIDTH = 2.5;
 
 /**
  * Area minima de una mancha, en unidades de mundo al cuadrado.
@@ -81,12 +94,30 @@ const MIN_FILL_AREA = 8;
  * - `fill`: acumula el contorno para rellenarlo al soltar. Mientras dura, la cinta
  *   provisional pinta ese contorno, que es lo unico que se puede enseñar en el
  *   acto: la mancha no existe hasta que el gesto cierra.
+ * - `pull`: estira una forma geometrica entre donde se apoya y donde esta el
+ *   puntero, que es lo que hace el arrastre en el lienzo. La forma se calcula en
+ *   coordenadas del plano de dibujo y se sube al espacio, asi que se reutilizan
+ *   las mismas familias -blob, hoja, astilla...- que en 2D.
+ * - `erase`: barrido del borrador; va borrando lo que toca por el camino.
+ * - `smooth`: relaja lo que va tocando el puntero, acumulando pasadas mientras se
+ *   insiste, que es como se dosifica un suavizado a mano.
  */
 type Gesture =
   | { kind: "stroke"; planeNormal: V3 }
   | { kind: "fill"; planeNormal: V3; outline: number[]; minStep: number }
+  | {
+      kind: "pull";
+      /** Base del plano de dibujo: pasar del mundo a 2D y volver. */
+      origin: V3;
+      u: V3;
+      w: V3;
+      /** Donde se apoyo el lapiz y donde esta ahora, en coordenadas del plano. */
+      a: { x: number; y: number };
+      b: { x: number; y: number };
+      /** La forma de la familia activa, en espacio unitario. */
+      shape: Polygon;
+    }
   | { kind: "erase"; erasing: boolean }
-  | { kind: "pull"; start: V3; baseline: readonly Stroke3D[] }
   | { kind: "smooth" }
   | null;
 
@@ -101,6 +132,8 @@ export interface Viewport3DHost {
   color(): string;
   /** Ajustes del pincel activo. */
   brush(): BrushSettings;
+  /** Familia de forma del arrastre activa; "random" elige una distinta cada vez. */
+  pullFamily(): PullFamily | "random";
   /** El documento: los trazos del espacio viven en el, no en el visor. */
   doc(): SceneDocument;
   /** Historial, para que las operaciones del espacio sean deshacibles. */
@@ -123,6 +156,26 @@ export class Viewport3D {
   private readonly controls = new CameraController3D(this.camera);
   private readonly backend: Scene3DBackend;
   private readonly builder = new Stroke3DBuilder({ ...DEFAULT_BRUSH });
+  /**
+   * Constructor propio para el contorno de lo que se esta encuadrando -un relleno
+   * o un arrastre-.
+   *
+   * Va aparte del de dibujo y con el pincel domado: sin ruido, sin estabilizador,
+   * sin afilado y de grosor fino y constante. Es un borde, no pintura; con el
+   * pincel real, un pincel grueso taparia con la vista previa justo lo que se
+   * esta intentando encuadrar.
+   */
+  private readonly outline = new Stroke3DBuilder({
+    ...DEFAULT_BRUSH,
+    size: OUTLINE_WIDTH,
+    dynamics: "constant",
+    smoothing: 0,
+    streamline: 0,
+    jitter: 0,
+    taperIn: 0,
+    taperOut: 0,
+  });
+  private readonly rng = new Rng();
   private readonly api: Viewport3DHost;
   private readonly hud: HTMLDivElement;
 
@@ -314,12 +367,16 @@ export class Viewport3D {
     const paintOf = (id: string): LayerPaint => paint.get(id) ?? HIDDEN_PAINT;
     this.backend.sync(this.scene.all, paintOf);
     this.backend.syncFills(this.fills.all, paintOf);
-    const tracing = this.gesture?.kind === "stroke" || this.gesture?.kind === "fill";
-    if (!this.dirty && !tracing) return;
+    const tracing = this.gesture?.kind === "stroke";
+    const contouring = this.gesture?.kind === "fill" || this.gesture?.kind === "pull";
+    if (!this.dirty && !tracing && !contouring) return;
     // La vista previa se rehace una vez por fotograma y no una por evento de
     // puntero: el navegador puede entregar varios eventos coalescidos entre dos
     // fotogramas, y recomponer la cinta para cada uno seria trabajo tirado.
-    this.backend.setLive(tracing ? this.builder.preview(this.tail) : null);
+    let live: Stroke3D | null = null;
+    if (tracing) live = this.builder.preview(this.tail);
+    else if (contouring) live = this.outline.preview(null);
+    this.backend.setLive(live);
     this.backend.render(this.camera);
     this.dirty = false;
   }
@@ -517,7 +574,7 @@ export class Viewport3D {
    */
   private beginGesture(e: PointerEvent): void {
     if (this.api.settings().tool === "smooth") {
-      this.beginEdit(e, "smooth");
+      this.beginEdit(e);
       return;
     }
 
@@ -529,7 +586,7 @@ export class Viewport3D {
       return;
     }
     if (brush.mode === "pull") {
-      this.beginEdit(e, "pull");
+      this.beginPull(e);
       return;
     }
     if (brush.mode === "fill") {
@@ -550,17 +607,17 @@ export class Viewport3D {
       this.pushFill(e);
       return;
     }
+    if (g.kind === "pull") {
+      this.movePull(e);
+      return;
+    }
     if (g.kind === "erase") {
       this.eraseAlong(e);
       return;
     }
     const p = this.worldPoint(e);
     if (!p) return;
-    if (g.kind === "smooth") {
-      this.smoothAt(p);
-      return;
-    }
-    this.pullTo(p);
+    this.smoothAt(p);
   }
 
   private endGesture(): void {
@@ -587,9 +644,17 @@ export class Viewport3D {
     }
 
     if (g.kind === "fill") {
-      this.builder.cancel();
+      this.outline.cancel();
       this.tail = null;
       this.closeFill(g);
+      this.updateHud();
+      return;
+    }
+
+    if (g.kind === "pull") {
+      this.outline.cancel();
+      this.tail = null;
+      this.closePull(g);
       this.updateHud();
       return;
     }
@@ -599,7 +664,8 @@ export class Viewport3D {
       if (g.erasing) history.commit("Borrar en el espacio");
       else history.abort();
     } else {
-      history.commit(g.kind === "pull" ? "Arrastrar en el espacio" : "Suavizar trazos");
+      // Queda el suavizado: el arrastre y el relleno ya salieron arriba.
+      history.commit("Suavizar trazos");
       this.api.changed();
     }
     this.updateHud();
@@ -611,11 +677,12 @@ export class Viewport3D {
     this.eraseFrom = null;
     this.tail = null;
     this.builder.cancel();
+    this.outline.cancel();
     this.controls.end();
-    // El trazado y el relleno no tocaron el documento -solo el constructor-, pero
-    // suavizar y arrastrar ya lo modificaron: cancelar es volver a la instantanea
-    // que se fotografio al empezar, sin dejar rastro en el historial.
-    if (g && (g.kind === "pull" || g.kind === "smooth")) {
+    // El trazado, el relleno y el arrastre no tocaron el documento -solo el
+    // constructor-, pero suavizar si lo modifico: cancelar es volver a la
+    // instantanea que se fotografio al empezar, sin dejar rastro en el historial.
+    if (g && g.kind === "smooth") {
       this.api.history().rollback();
       this.dirty = true;
       this.updateHud();
@@ -704,8 +771,6 @@ export class Viewport3D {
     if (!p) return;
     const planeNormal = forwardOf(this.camera, { x: 0, y: 0, z: 0 });
     const brush = this.api.brush();
-    this.builder.settings = brush;
-    this.builder.setZoom(1);
     this.gesture = {
       kind: "fill",
       planeNormal,
@@ -716,7 +781,7 @@ export class Viewport3D {
     };
     const sample = this.sampleOf(e, p);
     this.tail = sample;
-    this.builder.begin(sample, {
+    this.outline.begin(sample, {
       brush: "fill",
       color: this.api.color(),
       layerId: this.api.doc().scene3dTarget().id,
@@ -733,7 +798,7 @@ export class Viewport3D {
     const samples = this.coalescedSamples(e);
     if (samples.length > 0) {
       this.tail = samples[samples.length - 1];
-      this.builder.push(samples);
+      this.outline.push(samples);
     }
     this.appendOutline(g, p.x, p.y, p.z);
     this.dirty = true;
@@ -806,31 +871,17 @@ export class Viewport3D {
   // ------------------------------------------------- suavizar y arrastrar
 
   /**
-   * Empieza un gesto que retoca trazos ya dibujados.
+   * Empieza a suavizar.
    *
-   * Los dos abren un paso de historial, porque el gesto entero -con sus muchos
-   * fotogramas- tiene que deshacerse de una vez.
+   * Abre un paso de historial, porque el gesto entero -con sus muchos fotogramas-
+   * tiene que deshacerse de una vez.
    */
-  private beginEdit(e: PointerEvent, kind: "smooth" | "pull"): void {
+  private beginEdit(e: PointerEvent): void {
     const p = this.worldPoint(e);
     if (!p) return;
     this.api.history().begin();
-
-    if (kind === "smooth") {
-      this.gesture = { kind: "smooth" };
-      this.smoothAt(p);
-      return;
-    }
-
-    // El arrastre guarda la forma ORIGINAL de lo que agarra: el desplazamiento se
-    // aplica entero sobre ella en cada fotograma, no acumulado sobre lo ya movido.
-    const radius = this.api.settings().radius;
-    const doc = this.api.doc();
-    const baseline = doc.strokes3d.filter(
-      (s) => doc.layerVisible(s.layerId) && touches(s, p, radius),
-    );
-    this.gesture = { kind: "pull", start: p, baseline };
-    this.dirty = true;
+    this.gesture = { kind: "smooth" };
+    this.smoothAt(p);
   }
 
   /**
@@ -861,21 +912,165 @@ export class Viewport3D {
     }
   }
 
-  /** Arrastra lo agarrado al empezar el gesto hasta donde esta ahora la punta. */
-  private pullTo(now: V3): void {
+  /** Arrastra: estira la forma activa entre donde se apoyo y donde esta ahora. */
+  private movePull(e: PointerEvent): void {
     const g = this.gesture;
     if (!g || g.kind !== "pull") return;
-    const delta = { x: now.x - g.start.x, y: now.y - g.start.y, z: now.z - g.start.z };
-    if (delta.x === 0 && delta.y === 0 && delta.z === 0) return;
+    const p = this.worldPoint(e);
+    if (!p) return;
+    this.tail = this.sampleOf(e, p);
+    g.b = this.toPlane2d(p, g.origin, g.u, g.w);
+    const contorno = this.pullOutline(g);
+    this.outline.cancel();
+    this.previewOutline(contorno);
+    this.dirty = true;
+  }
 
-    const radius = this.api.settings().radius;
-    const doc = this.api.doc();
-    for (const original of g.baseline) {
-      const moved = pullStroke(original, g.start, delta, radius);
-      if (moved) doc.replaceStroke3D(moved);
+  // -------------------------------------------------------------- arrastre
+
+  /**
+   * Empieza un arrastre: estira una forma geometrica entre donde se apoya el
+   * lapiz y donde este el puntero al soltar.
+   *
+   * Es la mecanica del arrastre del lienzo -la de Alchemy-, y se hace igual: las
+   * mismas familias de formas y la misma colocacion. Lo que cambia es el soporte.
+   * En 2D la forma es un poligono de tinta; en el espacio es una mancha sobre el
+   * plano de dibujo, porque es exactamente eso: una superficie con area.
+   */
+  private beginPull(e: PointerEvent): void {
+    const p = this.worldPoint(e);
+    if (!p) return;
+    const origin = v3(this.camera.px, this.camera.py, this.camera.pz);
+    const u = rightOf(this.camera, v3());
+    const w = upOf(this.camera, v3());
+    const familia = this.api.pullFamily();
+    const shape = familia === "random" ? randomPullShape(this.rng) : pullShape(familia, this.rng);
+    const a = this.toPlane2d(p, origin, u, w);
+    this.gesture = { kind: "pull", origin, u, w, a, b: { ...a }, shape };
+    this.tail = this.sampleOf(e, p);
+    this.dirty = true;
+  }
+
+  /**
+   * La forma estirada, en puntos de mundo.
+   *
+   * `placePullShape` trabaja en dos dimensiones: se le dan el punto de apoyo y el
+   * actual ya proyectados sobre el plano, y devuelve el contorno ahi mismo. Subirlo
+   * al espacio es deshacer esa proyeccion, que es exacta porque los dos puntos y
+   * la forma viven en el plano.
+   */
+  private pullOutline(g: {
+    origin: V3;
+    u: V3;
+    w: V3;
+    a: { x: number; y: number };
+    b: { x: number; y: number };
+    shape: Polygon;
+  }): V3[] {
+    const poly = placePullShape(g.shape, g.a.x, g.a.y, g.b.x, g.b.y, 0.5, this.api.brush().size);
+    const out: V3[] = [];
+    for (const q of poly) out.push(this.fromPlane2d(q.x, q.y, g.origin, g.u, g.w));
+    return out;
+  }
+
+  /**
+   * Cierra el arrastre: la forma estirada pasa a ser una mancha.
+   *
+   * Se descarta si el recorrido fue tan corto que la forma no llega a tener area,
+   * y se avisa: un tiron sin recorrido no dibuja nada, y conviene decirlo en vez
+   * de no hacer nada en silencio.
+   */
+  private closePull(g: {
+    origin: V3;
+    u: V3;
+    w: V3;
+    a: { x: number; y: number };
+    b: { x: number; y: number };
+    shape: Polygon;
+  }): void {
+    const puntos = this.pullOutline(g);
+    if (puntos.length < 3) {
+      this.api.status("Arrastre: el recorrido es demasiado corto");
+      return;
     }
+    const outline = new Float32Array(puntos.length * 3);
+    for (let i = 0; i < puntos.length; i++) {
+      outline[i * 3] = puntos[i].x;
+      outline[i * 3 + 1] = puntos[i].y;
+      outline[i * 3 + 2] = puntos[i].z;
+    }
+    // La forma vive en el plano de dibujo, asi que su normal es la mirada de la
+    // camara: no hace falta deducirla del contorno.
+    const planeNormal = forwardOf(this.camera, v3());
+    if (outlineArea(outline, puntos.length, planeNormal) < MIN_FILL_AREA) {
+      this.api.status("Arrastre: el recorrido no llega a formar una figura");
+      return;
+    }
+
+    const doc = this.api.doc();
+    const fill = makeFill(uid(), outline, puntos.length, {
+      color: this.api.color(),
+      layerId: doc.scene3dTarget().id,
+      planeNormal,
+    });
+    const history = this.api.history();
+    history.begin();
+    doc.addFill3D(fill);
+    history.commit("Arrastre en el espacio");
     this.dirty = true;
     this.api.changed();
+  }
+
+  /** Un punto de mundo, en las dos coordenadas del plano de dibujo. */
+  private toPlane2d(p: V3, origin: V3, u: V3, w: V3): { x: number; y: number } {
+    const dx = p.x - origin.x;
+    const dy = p.y - origin.y;
+    const dz = p.z - origin.z;
+    return {
+      x: dx * u.x + dy * u.y + dz * u.z,
+      y: dx * w.x + dy * w.y + dz * w.z,
+    };
+  }
+
+  /** Y al reves: dos coordenadas del plano, de vuelta al mundo. */
+  private fromPlane2d(x: number, y: number, origin: V3, u: V3, w: V3): V3 {
+    return v3(
+      origin.x + u.x * x + w.x * y,
+      origin.y + u.y * x + w.y * y,
+      origin.z + u.z * x + w.z * y,
+    );
+  }
+
+  /**
+   * Enseña un contorno con la cinta provisional.
+   *
+   * Se rehace el constructor entero en cada movimiento en vez de acumular: en un
+   * arrastre la forma cambia por completo de un fotograma al siguiente, asi que no
+   * hay nada que conservar. En un relleno si se acumula, y de eso se encarga quien
+   * lo llama.
+   */
+  private previewOutline(puntos: readonly V3[]): void {
+    if (puntos.length < 2) return;
+    const planeNormal = forwardOf(this.camera, v3());
+    const muestra = (p: V3, t: number): Sample3D => ({
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      pressure: 1,
+      tilt: 0,
+      azimuth: 0,
+      t,
+      predicted: false,
+    });
+    this.outline.begin(muestra(puntos[0], 0), {
+      brush: "outline",
+      color: this.api.color(),
+      layerId: "outline",
+      planeNormal,
+    });
+    const resto: Sample3D[] = [];
+    for (let i = 1; i < puntos.length; i++) resto.push(muestra(puntos[i], i * 8));
+    this.outline.push(resto, true);
   }
 
   // ------------------------------------------------------------- borrador
@@ -1032,8 +1227,7 @@ export class Viewport3D {
     if (mode === "pull") return "arrastre";
     if (mode === "fill") return "relleno";
     return "trazo";
-  }
-}
+  }}
 
 /** Radio del trazo en su punto medio, para pruebas y depuracion. */
 export const midRadius = (stroke: Stroke3D): number =>

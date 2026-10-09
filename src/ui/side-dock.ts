@@ -30,7 +30,6 @@ const DOCK_TABS: TabDef[] = [
   { domain: "select" },
   { domain: "brush" },
   { domain: "layers" },
-  { domain: "scene3d" },
   { domain: "matter-cfg", icon: "shape" },
   { domain: "color" },
   { domain: "symmetry" },

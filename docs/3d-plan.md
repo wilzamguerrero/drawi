@@ -181,8 +181,25 @@ trazo ya dibujado. Por eso hay dos cosas distintas y no una:
   allí sería cargar el motor compartido con opciones ajenas.
 
 El despacho es un único campo con etiqueta (`Gesture`) en vez de varios booleanos,
-porque los gestos son excluyentes y cada uno lleva sus datos: el arrastre guarda
-de dónde salió y la forma original de lo que agarró.
+porque los gestos son excluyentes y cada uno lleva sus datos.
+
+**No hay un panel de 3D aparte.** El interruptor del espacio vive en el panel del
+pincel, junto a "Hacer materia" y "Acuarela", con sus opciones debajo y visibles
+solo cuando está encendido. Los modos del pincel **no se repiten** allí: los manda
+el selector del propio pincel, que es el mismo, y en el espacio significan lo que
+significan en el lienzo. Un panel con una copia de los mismos cuatro modos sería
+una segunda fuente de verdad para el mismo dato.
+
+**El arrastre en el espacio estira una forma, igual que en el lienzo.** No es una
+invención para 3D: es la mecánica de Alchemy que ya usa el 2D, con las mismas
+familias (`pull-shapes.ts`) y la misma colocación. Lo único que cambia es el
+soporte: la forma se calcula en coordenadas del plano de dibujo -que es una base
+ortonormal, así que proyectar y volver es exacto- y se estampa como mancha, que es
+exactamente lo que es: una superficie con área.
+
+**El borrador es el del pincel.** No hay un borrador del espacio: al elegir
+Borrador, el gesto del visor quita los trazos que toca. En el espacio no hay
+ráster que recortar, así que equivale al submodo "Objeto" del borrador del lienzo.
 
 ### 4.9c Suavizar se acumula; arrastrar no
 

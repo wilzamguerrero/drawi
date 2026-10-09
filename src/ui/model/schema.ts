@@ -295,6 +295,95 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     { kind: "action", id: "aqua-new-layer", label: "Nueva capa de acuarela", icon: "droplet", hint: "Añade otra capa de acuarela con su propio fluido, para no mezclarla con la que ya hay. Tambien esta en el pie del panel de capas.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", run: () => editor.addAquaLayer() },
     { kind: "toggle", id: "aqua-visible", label: "Capa visible", icon: "layers", hint: "Muestra u oculta la capa de acuarela de destino (lo mismo que su ojo en el panel de capas).", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaLayerVisible, set: (v) => editor.setAquaVisible(v) },
     { kind: "number", id: "aqua-opacity", label: "Opacidad capa", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Opacidad de la capa de acuarela de destino. Su fusion, mascara y orden se ajustan en el panel de capas, como en cualquier otra capa.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaLayerOpacity, set: (v) => editor.setAquaOpacity(v) },
+    // ---- Espacio 3D: el mismo pincel dibuja en el espacio. ----
+    // Mismo patron que "Hacer materia" y "Acuarela": un interruptor y, debajo,
+    // solo lo que aplica cuando esta encendido. Los modos del pincel NO se
+    // repiten aqui: los manda el selector de arriba, que es el mismo, y en el
+    // espacio significan lo mismo que en el lienzo.
+    { kind: "toggle", id: "space-on", label: "Espacio 3D", icon: "cube", hint: "Dibuja en el espacio. Orbita con el boton central o el derecho, mueve el plano con [ y ], y encuadra con F.", disabled: (s) => !s.scene3dAvailable, get: (s) => s.mode3d, set: (v) => editor.setMode3D(v) },
+    {
+      id: "space-options",
+      label: "Espacio",
+      icon: "cube",
+      visible: (s) => s.mode3d,
+      children: [
+        {
+          kind: "choice",
+          id: "space-tool",
+          label: "Herramienta",
+          icon: "cube",
+          chooser: "segmented",
+          hint: "El pincel dibuja con los modos de arriba. Suavizar relaja los trazos que toca el puntero.",
+          options: [
+            { value: "brush", id: "space-tool-brush", label: "Pincel" },
+            { value: "smooth", id: "space-tool-smooth", label: "Suavizar" },
+          ],
+          get: (s) => s.scene3dSettings.tool,
+          set: (v) => editor.setScene3D({ tool: v as Tool3D }),
+        },
+        {
+          kind: "number",
+          id: "space-radius",
+          label: "Radio del suavizado",
+          icon: "circle",
+          min: 2,
+          max: 400,
+          step: 1,
+          unit: "u",
+          decimals: 0,
+          hint: "Zona que alcanza el suavizado. No es el tamano del pincel: se puede querer punta fina y mano ancha.",
+          visible: (s) => s.scene3dSettings.tool === "smooth",
+          get: (s) => s.scene3dSettings.radius,
+          set: (v) => editor.setScene3D({ radius: v }),
+        },
+        {
+          kind: "number",
+          id: "space-strength",
+          label: "Fuerza al suavizar",
+          icon: "smooth",
+          min: 0.02,
+          max: 1,
+          step: 0.01,
+          decimals: 2,
+          hint: "Cuanto relaja cada fotograma. Insistir sobre la misma zona suaviza mas.",
+          visible: (s) => s.scene3dSettings.tool === "smooth",
+          get: (s) => s.scene3dSettings.strength,
+          set: (v) => editor.setScene3D({ strength: v }),
+        },
+        {
+          kind: "toggle",
+          id: "space-refine",
+          label: "Mejorar al soltar",
+          icon: "bake",
+          hint: "Suaviza el trazo y limpia sus esquinas justo al cerrarlo. Va apagado: cambia lo que acabas de dibujar.",
+          get: (s) => s.scene3dSettings.refineOnRelease,
+          set: (v) => editor.setScene3D({ refineOnRelease: v }),
+        },
+        {
+          kind: "number",
+          id: "space-refine-strength",
+          label: "Fuerza de la mejora",
+          icon: "smooth",
+          min: 0.05,
+          max: 1,
+          step: 0.05,
+          decimals: 2,
+          visible: (s) => s.scene3dSettings.refineOnRelease,
+          get: (s) => s.scene3dSettings.refineStrength,
+          set: (v) => editor.setScene3D({ refineStrength: v }),
+        },
+        { kind: "action", id: "space-frame", label: "Encuadrar", icon: "fit", run: () => editor.frame3D() },
+        {
+          kind: "action",
+          id: "space-clear",
+          label: "Vaciar el espacio",
+          icon: "trash",
+          danger: true,
+          disabled: (s) => s.scene3d.strokes === 0 && s.scene3d.fills === 0,
+          run: () => editor.clearScene3D(),
+        },
+      ],
+    },
     { kind: "toggle", id: "invert-erase", label: "Usar como borrador", icon: "eraser", hint: "Invierte el trazo, relleno o arrastre a borrado: el mismo gesto recorta la tinta. Tecla Alt.", visible: (s) => s.brush.mode !== "erase" && !s.brush.asMatter, get: (s) => s.brush.invertErase, set: (v) => editor.setBrush({ invertErase: v }) },
     // ---- Opciones exclusivas del Borrador (visibles solo en modo "erase"). ----
     {
@@ -684,127 +773,6 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     ],
   };
 
-  // -------------------------------------------------------- Espacio (3D)
-  //
-  // El modo 3D no secuestra el manifiesto de herramientas del 2D: tiene el suyo,
-  // y este dominio es su panel. Lo que SI comparte con el lienzo es el modo del
-  // pincel, que se declara aqui otra vez -apuntando al mismo `brush.mode`- porque
-  // en el espacio no se quiere tener que cambiar de pestaña para elegir entre
-  // trazo, arrastre y borrador.
-  const spaceModeOptions = (["stroke", "fill", "pull", "erase"] as BrushMode[]).map((m) => ({
-    value: m,
-    id: `space-mode-${m}`,
-    label: MODE_LABELS[m],
-    title:
-      m === "erase"
-        ? "Borrador: quita los trazos que toca el gesto"
-        : m === "pull"
-          ? "Arrastre: mueve lo que agarre el radio de agarre"
-          : m === "fill"
-            ? "Relleno: cierra el contorno y lo rellena de materia"
-            : "Trazo: dibuja la cinta",
-  }));
-
-  const scene3d: Domain = {
-    id: "scene3d",
-    label: "Espacio",
-    icon: "cube",
-    surfaces: ["dock"],
-    children: [
-      {
-        kind: "choice",
-        id: "space-tool",
-        label: "Herramienta",
-        icon: "cube",
-        chooser: "segmented",
-        options: [
-          { value: "brush", id: "space-tool-brush", label: "Pincel" },
-          { value: "smooth", id: "space-tool-smooth", label: "Suavizar" },
-        ],
-        get: (s) => s.scene3dSettings.tool,
-        set: (v) => editor.setScene3D({ tool: v as Tool3D }),
-      },
-      {
-        kind: "choice",
-        id: "space-mode",
-        label: "Modo del pincel",
-        icon: "brush",
-        chooser: "segmented",
-        hint: "Los mismos modos del lienzo, con el mismo significado en el espacio.",
-        visible: (s) => s.scene3dSettings.tool === "brush",
-        options: spaceModeOptions,
-        get: (s) => s.brush.mode,
-        set: (v) => editor.setBrush({ mode: v as BrushMode }),
-      },
-      {
-        kind: "number",
-        id: "space-radius",
-        label: "Radio de agarre",
-        icon: "circle",
-        min: 2,
-        max: 400,
-        step: 1,
-        unit: "u",
-        decimals: 0,
-        hint: "Zona que afectan el suavizado y el arrastre. No es el tamaño del pincel: se puede querer punta fina y mano ancha.",
-        get: (s) => s.scene3dSettings.radius,
-        set: (v) => editor.setScene3D({ radius: v }),
-      },
-      {
-        kind: "number",
-        id: "space-strength",
-        label: "Fuerza al suavizar",
-        icon: "smooth",
-        min: 0.02,
-        max: 1,
-        step: 0.01,
-        decimals: 2,
-        hint: "Cuánto relaja cada fotograma. Insistir sobre la misma zona suaviza más.",
-        visible: (s) => s.scene3dSettings.tool === "smooth",
-        get: (s) => s.scene3dSettings.strength,
-        set: (v) => editor.setScene3D({ strength: v }),
-      },
-      {
-        kind: "toggle",
-        id: "space-refine",
-        label: "Mejorar al soltar",
-        icon: "bake",
-        hint: "Suaviza el trazo y limpia sus esquinas justo al cerrarlo. Va apagado: cambia lo que acabas de dibujar.",
-        get: (s) => s.scene3dSettings.refineOnRelease,
-        set: (v) => editor.setScene3D({ refineOnRelease: v }),
-      },
-      {
-        kind: "number",
-        id: "space-refine-strength",
-        label: "Fuerza de la mejora",
-        icon: "smooth",
-        min: 0.05,
-        max: 1,
-        step: 0.05,
-        decimals: 2,
-        visible: (s) => s.scene3dSettings.refineOnRelease,
-        get: (s) => s.scene3dSettings.refineStrength,
-        set: (v) => editor.setScene3D({ refineStrength: v }),
-      },
-      {
-        kind: "action",
-        id: "space-frame",
-        label: "Encuadrar",
-        icon: "fit",
-        run: () => editor.frame3D(),
-      },
-      {
-        kind: "action",
-        id: "space-clear",
-        label: "Vaciar el espacio",
-        icon: "trash",
-        danger: true,
-        disabled: (s) => s.scene3d.strokes === 0,
-        run: () => editor.clearScene3D(),
-      },
-    ],
-  };
-
   // Orden: Flecha primero (antes de Pincel), luego el resto. El dock lo refleja.
-  return [file, select, brush, color, layers, scene3d, matter, symmetry, view];
+  return [file, select, brush, color, layers, matter, symmetry, view];
 }

@@ -73,7 +73,7 @@ import {
   type Stroke3D,
 } from "../src/scene3d/types";
 import { v3, type V3 } from "../src/scene3d/vec3";
-import { falloff, pullStroke, relaxStroke, touches } from "../src/scene3d/relax";
+import { relaxStroke, touches } from "../src/scene3d/relax";
 import {
   FillScene,
   makeFill,
@@ -2004,52 +2004,10 @@ const noisyLine = (n: number, amp: number): Stroke3D => {
 }
 
 {
-  // El peso de agarre: 1 en el centro, 0 en el borde del radio.
-  ok("el centro agarra del todo", falloff(0, 50) === 1, f(falloff(0, 50), 4));
-  ok("el borde del radio no agarra nada", falloff(50, 50) === 0 && falloff(60, 50) === 0);
-  const medio = falloff(25, 50);
-  ok("y en medio agarra en medio", medio > 0 && medio < 1, f(medio, 4));
-  let monotono = true;
-  let previo = Infinity;
-  for (let d = 0; d <= 50; d += 5) {
-    const w = falloff(d, 50);
-    if (w > previo) monotono = false;
-    previo = w;
-  }
-  ok("el agarre decrece con la distancia", monotono);
-  ok("un radio nulo no agarra", falloff(0, 0) === 0);
-}
-
-{
   const original = planarStroke([[0, 0], [50, 0], [100, 0], [150, 0]], 5);
   ok("se sabe si un trazo cae dentro del radio", touches(original, v3(50, 0, 0), 10) === true);
   ok("y si no cae, tambien", touches(original, v3(50, 200, 0), 10) === false);
   ok("un radio nulo no toca nada", touches(original, v3(50, 0, 0), 0) === false);
-
-  const agarre = v3(50, 0, 0);
-  const delta = v3(0, 30, 0);
-  const movido = pullStroke(original, agarre, delta, 60);
-  ok("arrastrar devuelve un trazo nuevo", movido !== null && movido !== original);
-
-  const y = (s: Stroke3D, i: number): number => s.data[i * POINT_FLOATS + POS_OFFSET + 1];
-  // El punto del centro se mueve entero; los de los cabos, nada.
-  ok("el centro se mueve todo el desplazamiento", Math.abs(y(movido as Stroke3D, 1) - 30) < 1e-5, f(y(movido as Stroke3D, 1), 4));
-  ok("los cabos, fuera del radio, no se mueven", y(movido as Stroke3D, 0) === 0 && y(movido as Stroke3D, 3) === 0);
-  ok("el id se conserva para poder reescribir su hueco", movido?.id === original.id);
-
-  // La propiedad que importa del arrastre: se aplica el desplazamiento TOTAL sobre
-  // la forma original en cada fotograma, asi que volver al punto de partida
-  // devuelve el trazo a su sitio en vez de dejarlo a medio camino.
-  const vuelta = pullStroke(original, agarre, v3(0, 0, 0), 60);
-  ok("con desplazamiento nulo no se mueve nada", vuelta !== null);
-  let peor = 0;
-  for (let i = 0; i < original.count; i++) {
-    peor = Math.max(peor, Math.abs(y(vuelta as Stroke3D, i) - y(original, i)));
-  }
-  ok("volver al punto de partida devuelve el trazo a su sitio", peor < 1e-6, `desvio ${f(peor, 8)}`);
-
-  ok("arrastrar donde no hay nada no devuelve trazo", pullStroke(original, v3(0, 500, 0), delta, 20) === null);
-  ok("un radio nulo no agarra nada", pullStroke(original, agarre, delta, 0) === null);
 }
 
 /** El trazo editado tiene que llegar al buffer del lote, no solo al documento. */

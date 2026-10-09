@@ -421,6 +421,7 @@ export class Editor {
       this.viewport3dInstance = new Viewport3D(this.host, {
         color: () => this.color,
         brush: () => this.brush,
+        pullFamily: () => this.pullFamily,
         doc: () => this.doc,
         history: () => this.history,
         settings: () => this.scene3dSettings,

@@ -14,7 +14,7 @@
  * daria una orientacion distinta y el trazo cambiaria de aspecto al retocarlo.
  */
 
-import { clamp01, smootherstep } from "../core/math";
+import { clamp01 } from "../core/math";
 import { computeFrames } from "./frames";
 import { boundsOf, POINT_FLOATS, POS_OFFSET, RADIUS_OFFSET, type Stroke3D } from "./types";
 import { v3, type V3 } from "./vec3";
@@ -101,61 +101,6 @@ export const relaxStroke = (stroke: Stroke3D, opts: RelaxOptions = DEFAULT_RELAX
       }
     }
     prev = data.slice();
-  }
-
-  return rebuild(stroke, data);
-};
-
-/** Peso de arrastre de un punto, segun lo lejos que este del centro. 0 si no llega. */
-export const falloff = (distance: number, radius: number): number => {
-  if (radius <= 0) return 0;
-  const t = 1 - distance / radius;
-  return t <= 0 ? 0 : smootherstep(t >= 1 ? 1 : t);
-};
-
-/**
- * Desplaza los puntos que caen dentro del radio de agarre.
- *
- * `from` es de donde sale el arrastre y `delta` lo que se ha movido el puntero
- * DESDE el inicio del gesto. Aplicar el desplazamiento total sobre la forma
- * original -y no el incremento sobre la forma ya movida- es lo que evita que el
- * trazo se vaya acumulando: arrastrar en circulo y volver al punto de partida
- * devuelve el trazo a su sitio.
- *
- * Devuelve `null` si no habia ningun punto dentro del radio, que es la senal de
- * que a ese trazo no le toca nada.
- */
-export const pullStroke = (
-  stroke: Stroke3D,
-  from: V3,
-  delta: V3,
-  radius: number,
-): Stroke3D | null => {
-  const count = stroke.count;
-  if (count < 1 || radius <= 0) return null;
-
-  const weights = new Float32Array(count);
-  let touched = false;
-  for (let i = 0; i < count; i++) {
-    const o = i * POINT_FLOATS;
-    const dx = stroke.data[o + POS_OFFSET] - from.x;
-    const dy = stroke.data[o + POS_OFFSET + 1] - from.y;
-    const dz = stroke.data[o + POS_OFFSET + 2] - from.z;
-    const w = falloff(Math.sqrt(dx * dx + dy * dy + dz * dz), radius);
-    weights[i] = w;
-    if (w > 0) touched = true;
-  }
-  if (!touched) return null;
-  if (count < 2) return null;
-
-  const data = stroke.data.slice(0, count * POINT_FLOATS);
-  for (let i = 0; i < count; i++) {
-    const w = weights[i];
-    if (w <= 0) continue;
-    const o = i * POINT_FLOATS + POS_OFFSET;
-    data[o] += delta.x * w;
-    data[o + 1] += delta.y * w;
-    data[o + 2] += delta.z * w;
   }
 
   return rebuild(stroke, data);
