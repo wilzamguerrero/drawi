@@ -179,7 +179,18 @@ export class Viewport3D {
   private readonly api: Viewport3DHost;
   private readonly hud: HTMLDivElement;
 
+  /**
+   * El espacio recibe el puntero.
+   *
+   * Es una cosa distinta de "el lienzo se ve": el espacio se ve siempre que tenga
+   * algo que enseñar, este activo o no, porque salirse de el no debe hacer
+   * desaparecer lo dibujado. Lo que cambia al activarlo es quien atiende el raton.
+   */
   private live = false;
+  /** El lienzo del espacio esta en pantalla. Ver `frame`. */
+  private showing = false;
+  /** Fondo del documento, que solo se pinta cuando el espacio ocupa la vista. */
+  private background = "#f4f1ea";
   /**
    * Gesto en curso, o `null`.
    *
@@ -193,6 +204,8 @@ export class Viewport3D {
   private syncedRevision = -1;
   /** Revision de la pila de capas que ya se pinto. Ver `syncScene`. */
   private syncedInk = -1;
+  /** Firma de la pila que ya se pinto: identidad, ojo y opacidad de cada capa. */
+  private syncedLayers = "";
   /**
    * Ultima muestra cruda bajo el puntero.
    *
@@ -252,13 +265,34 @@ export class Viewport3D {
    * abierto otra aplicacion, que es justo lo que hay que evitar.
    */
   setBackground(css: string): void {
-    this.canvas.style.background = css;
+    this.background = css;
+    this.applyBackground();
   }
 
+  /**
+   * El fondo depende de si el espacio ocupa la vista o esta compuesto encima del
+   * lienzo 2D.
+   *
+   * Dentro del espacio el lienzo lo es todo y lleva el fondo del documento,
+   * porque sobre negro la tinta por defecto no se veria. Compuesto sobre el
+   * lienzo 2D tiene que ser TRANSPARENTE: si no, taparia el dibujo entero.
+   */
+  private applyBackground(): void {
+    this.canvas.style.background = this.live ? this.background : "transparent";
+  }
+
+  /**
+   * El espacio toma el puntero, o lo suelta.
+   *
+   * Ya **no** oculta el lienzo: el espacio se ve tambien cuando no esta activo, y
+   * esa es la diferencia entre un modo del que se sale y una capa con la que se
+   * convive. Lo que se apaga al soltarlo es la atencion del puntero, no la imagen.
+   */
   setActive(on: boolean): void {
     this.live = on && this.backend.available;
-    this.canvas.style.display = this.live ? "" : "none";
+    this.canvas.style.pointerEvents = this.live ? "" : "none";
     this.hud.style.display = this.live ? "" : "none";
+    this.applyBackground();
     if (this.live) {
       // El punto de vista viaja con el documento: al volver al espacio se vuelve
       // a donde se estaba mirando, no a un encuadre por defecto.
@@ -294,6 +328,19 @@ export class Viewport3D {
    * fotograma anterior: el visor solo redibuja cuando algo lo marca sucio, y
    * conserva el buffer de dibujado.
    */
+  /**
+   * Pone los lotes de acuerdo con el documento, y marca sucio si algo cambio.
+   *
+   * Son dos avisos distintos y los dos hacen falta. `spaceRevision` dice que
+   * cambio el dibujo del espacio; la pila de capas dice como se pinta -un ojo, una
+   * opacidad, un reordenamiento-, que no toca ni un vertice pero cambia la imagen.
+   * Sin el segundo, apagar una capa dejaba el lienzo con el fotograma anterior.
+   *
+   * La pila se mira por FIRMA y no por `inkRevision`, porque `inkRevision` sube
+   * tambien cada vez que se pinta tinta en el lienzo 2D, y eso no cambia nada de
+   * lo que se ve aqui: sin la firma, cada trazo de tinta en 2D obligaria a
+   * redibujar el espacio entero.
+   */
   private syncScene(): void {
     const doc = this.api.doc();
     if (doc.spaceRevision !== this.syncedRevision) {
@@ -304,8 +351,19 @@ export class Viewport3D {
     }
     if (doc.inkRevision !== this.syncedInk) {
       this.syncedInk = doc.inkRevision;
-      this.dirty = true;
+      const firma = this.layerSignature(doc);
+      if (firma !== this.syncedLayers) {
+        this.syncedLayers = firma;
+        this.dirty = true;
+      }
     }
+  }
+
+  /** Lo de la pila de capas que cambia lo que se ve: identidad, ojo y opacidad. */
+  private layerSignature(doc: SceneDocument): string {
+    let s = "";
+    for (const l of doc.layers) s += `${l.id}:${l.visible ? 1 : 0}:${l.opacity};`;
+    return s;
   }
 
   /**
@@ -359,17 +417,42 @@ export class Viewport3D {
     this.updateHud();
   }
 
-  /** Un fotograma. Solo dibuja si algo cambio o si se esta trazando. */
+  /**
+   * Un fotograma.
+   *
+   * Se llama tambien cuando el espacio NO esta activo: si tiene algo que enseñar,
+   * se dibuja compuesto sobre el lienzo 2D y se queda ahi. De ahi que la primera
+   * decision sea si hay que enseñarlo, antes que si hay que repintarlo.
+   */
   frame(): void {
-    if (!this.live || !this.backend.available) return;
+    if (!this.backend.available) return;
+    const doc = this.api.doc();
+
+    // El lienzo solo se aparta cuando no hay nada del espacio a la vista. Dejarlo
+    // siempre puesto costaria componer un lienzo WebGL a pantalla completa en
+    // cada fotograma para no enseñar nada.
+    const want = this.live || this.hasVisibleSpace(doc);
+    if (want !== this.showing) {
+      this.showing = want;
+      this.canvas.style.display = want ? "" : "none";
+      this.dirty = true;
+    }
+    if (!this.showing) return;
+
+    // El aviso de cambio se mira ANTES de tocar nada: `syncScene` son dos
+    // comparaciones, y con el espacio a la vista pero quieto -que es como estara
+    // la mayor parte del tiempo mientras se dibuja en el lienzo- no hay motivo
+    // para rehacer el mapa de capas ni para volver a sincronizar los lotes en
+    // cada fotograma.
     this.syncScene();
+    const tracing = this.gesture?.kind === "stroke";
+    const contouring = this.gesture?.kind === "fill" || this.gesture?.kind === "pull";
+    if (!this.dirty && !tracing && !contouring) return;
+
     const paint = this.paintMap();
     const paintOf = (id: string): LayerPaint => paint.get(id) ?? HIDDEN_PAINT;
     this.backend.sync(this.scene.all, paintOf);
     this.backend.syncFills(this.fills.all, paintOf);
-    const tracing = this.gesture?.kind === "stroke";
-    const contouring = this.gesture?.kind === "fill" || this.gesture?.kind === "pull";
-    if (!this.dirty && !tracing && !contouring) return;
     // La vista previa se rehace una vez por fotograma y no una por evento de
     // puntero: el navegador puede entregar varios eventos coalescidos entre dos
     // fotogramas, y recomponer la cinta para cada uno seria trabajo tirado.
@@ -379,6 +462,21 @@ export class Viewport3D {
     this.backend.setLive(live);
     this.backend.render(this.camera);
     this.dirty = false;
+  }
+
+  /**
+   * ¿Hay algo del espacio que enseñar?
+   *
+   * Basta con que exista una capa del espacio visible y que haya trazos o
+   * manchas: mirar capa por capa cual tiene contenido costaria un recorrido del
+   * dibujo entero en cada fotograma, y el caso raro -todo el contenido en una
+   * capa oculta mientras otra esta vacia y visible- solo deja un lienzo
+   * transparente de mas, que no se ve.
+   */
+  private hasVisibleSpace(doc: SceneDocument): boolean {
+    if (doc.strokes3d.length === 0 && doc.fills3d.length === 0) return false;
+    for (const l of doc.scene3dLayers) if (doc.layerVisible(l.id)) return true;
+    return false;
   }
 
   stats(): {

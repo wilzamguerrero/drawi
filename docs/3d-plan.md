@@ -248,6 +248,37 @@ El orden de dibujado dentro de una capa es fijo: **las manchas antes que los
 trazos**, para que las líneas se lean por encima de la materia. Se consigue
 numerando el `renderOrder` de la capa por dos, dejando el `+ 1` para la cinta.
 
+### 4.13 El espacio no es un modo del que se sale: es una capa
+
+Al principio el visor se encendía y se apagaba entero: al salir, su lienzo se
+ocultaba y lo dibujado en el espacio desaparecía de la vista. Eso obligaba a
+elegir entre trabajar en el lienzo o en el espacio, y se sentía como cambiar de
+programa.
+
+Ahora son **dos cosas separadas**:
+
+- **`showing`**: hay algo del espacio a la vista y su lienzo se compone sobre el
+  lienzo 2D. Se enciende solo cuando existe alguna capa del espacio visible con
+  trazos o manchas, para no componer un lienzo WebGL a pantalla completa en cada
+  fotograma sin enseñar nada.
+- **`live`**: el espacio recibe el puntero. Fuera de él, su lienzo lleva
+  `pointer-events: none` y los eventos llegan al editor 2D como siempre.
+
+De ahí sale lo que se pedía: se sigue viendo el espacio mientras se dibuja tinta,
+y no hay que salir de nada para estar en lo otro.
+
+**El modo sigue a la capa activa.** Elegir la capa del espacio pone el puntero en
+el espacio; elegir cualquier otra lo devuelve al lienzo. El atajo y el interruptor
+siguen existiendo, y hacen lo mismo por el otro lado: cambian también la capa
+activa, para que el panel no mienta sobre dónde va a caer el trazo.
+
+Consecuencia que conviene tener presente: **el lienzo del espacio va encima de la
+pila 2D**, así que su contenido tapa la tinta donde se solapen. Lo correcto es
+componerlo en su sitio de la pila -el backend ya se escribió pensando en eso, y la
+acuarela y la materia ya lo hacen-, pero eso pide tocar el compositor 2D y queda
+como paso siguiente. Mientras tanto se ve todo, que es lo que se pedía; lo que no
+está resuelto es el orden entre las dos.
+
 ### 4.10 Los segmentos se prolongan en las juntas
 
 Cada segmento es un quad independiente, así que en un cambio de dirección las dos

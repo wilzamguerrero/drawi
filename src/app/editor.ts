@@ -438,10 +438,12 @@ export class Editor {
   }
 
   /**
-   * Entra o sale del modo 3D.
+   * El espacio toma el puntero, o lo suelta.
    *
-   * Al entrar se encuadra lo dibujado: aparecer mirando a un punto vacio del
-   * espacio, sin nada a la vista, hace pensar que el modo no funciona.
+   * Al entrar **ya no se encuadra**: al no ser un modo del que se sale, el punto
+   * de vista se conserva de una vez para otra y encuadrar de golpe al cambiar de
+   * capa movería la vista sin que nadie lo pidiera. Para encuadrar esta F, el
+   * boton del panel y el menu de la capa.
    */
   setMode3D(on: boolean): void {
     const vp = on ? this.viewport3d : this.viewport3dInstance;
@@ -451,19 +453,31 @@ export class Editor {
     }
 
     this.mode3d = on && vp !== null;
+
+    // El puntero y la capa activa son dos vistas del mismo estado: si se dibuja
+    // en el espacio, la capa activa es la del espacio, y al salir vuelve a ser
+    // una de tinta. Sin esto, salir con el atajo dejaba seleccionada una capa del
+    // espacio mientras el pincel pintaba en otra, y el panel mentia.
+    if (this.mode3d) {
+      if (this.doc.activeLayer?.kind !== "scene3d") {
+        this.doc.setActiveLayer(this.doc.scene3dTarget().id);
+      }
+    } else if (this.doc.activeLayer?.kind === "scene3d") {
+      this.doc.setActiveLayer(this.doc.inkTarget().id);
+    }
+
     if (vp) {
       if (this.mode3d) {
         vp.resize(this.inkLayer.width, this.inkLayer.height, this.dpr);
         vp.setBackground(this.doc.meta.background);
         vp.setActive(true);
-        vp.frameAll();
         this.status(
-          "Modo 3D: dibuja con el lapiz · orbita con el boton central o el derecho · " +
+          "Espacio: dibuja con el lapiz · orbita con el boton central o el derecho · " +
             "corchetes ajustan la profundidad · F encuadra",
         );
       } else {
         vp.setActive(false);
-        this.status("Vuelta al lienzo 2D");
+        this.status("El espacio sigue a la vista, compuesto sobre el lienzo");
       }
     }
     this.invalidateAll();
@@ -1025,8 +1039,23 @@ export class Editor {
   /** Selecciona la capa activa (sin historial: no altera el documento). */
   setActiveLayer(id: string): void {
     this.doc.setActiveLayer(id);
+    this.syncModeToLayer();
     this.inkLayer.invalidate();
     this.emitState();
+  }
+
+  /**
+   * Pone el puntero donde dice la capa activa.
+   *
+   * Es la regla que hace que el espacio no sea un modo del que se sale: elegir la
+   * capa del espacio pone el puntero en el espacio, y elegir cualquier otra lo
+   * devuelve al lienzo. Asi se trabaja con las dos sin cambiar de modo a mano, y
+   * la seleccion ya dice donde va a caer el trazo.
+   */
+  private syncModeToLayer(): void {
+    const espacio = this.doc.activeLayer?.kind === "scene3d";
+    if (espacio && !this.mode3d) this.setMode3D(true);
+    else if (!espacio && this.mode3d) this.setMode3D(false);
   }
 
   /** Alterna el modo de foco (aislar una capa) sin tocar el documento. */
@@ -1544,6 +1573,14 @@ export class Editor {
     // (sus capas no existen) y hay que devolver sus contextos WebGL2.
     this.pruneAquaFields();
     this.host.style.background = this.doc.meta.background;
+    // El visor tambien es otro documento: su fondo puede haber cambiado y sus
+    // trazos son los del proyecto nuevo. `frame` los reconciliara solo, pero el
+    // fondo hay que darselo.
+    this.viewport3dInstance?.setBackground(this.doc.meta.background);
+    // Y el puntero va donde diga la capa activa del documento que se acaba de
+    // abrir: si se guardo con la capa del espacio seleccionada, al reabrirlo se
+    // sigue dibujando en el espacio.
+    this.syncModeToLayer();
     this.invalidateAll();
     if (message) this.status(message);
     this.emitState();
@@ -2143,6 +2180,13 @@ export class Editor {
       this.overlayRenderer.render(this.overlayLayer, this.overlayState(), this.camera);
       this.overlayLayer.dirty = false;
     }
+
+    // El espacio se dibuja TAMBIEN fuera del modo 3D. Es un lienzo propio que va
+    // encima de la pila 2D, asi que basta con darle su fotograma: mientras no
+    // tenga nada que enseñar se aparta solo y no cuesta nada, y cuando lo tiene
+    // se queda a la vista para poder seguir trabajando en la tinta con el espacio
+    // delante. Ese es el punto: no hay que salir de un modo para estar en el otro.
+    this.viewport3dInstance?.frame();
   }
 
   /** ¿La vista previa vive en la capa húmeda (materia) y no en la tinta? */
