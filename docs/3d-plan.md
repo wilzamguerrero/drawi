@@ -265,17 +265,31 @@ Ahora son **dos cosas separadas**:
   `pointer-events: none` y los eventos llegan al editor 2D como siempre.
 
 De ahí sale lo que se pedía: se sigue viendo el espacio mientras se dibuja tinta,
-y no hay que salir de nada para estar en lo otro.
+y no hace falta salir de nada para estar en lo otro.
+
+**Dentro del espacio se ve todo lo demás.** El lienzo del visor es **transparente**
+—el papel lo pone el fondo del anfitrión, que está por debajo de todas las capas—,
+así que la tinta, la acuarela y la materia se ven a través de él. Y el bucle 2D ya
+no se salta: antes, con el espacio delante, `frame` volvía enseguida y el lienzo 2D
+no se pintaba, lo que dejaba el espacio aislado. Lo que sigue congelado es la
+**simulación** —física, fluido y la ondulación de los puentes—, porque lo que se
+mueve solo bajo el lápiz distrae y la GPU que pide el visor no sobra. El dibujado,
+en cambio, va con su propio aviso de sucio: con el espacio delante el 2D solo se
+recompone cuando algo suyo cambia, no en cada fotograma.
 
 **El modo sigue a la capa activa.** Elegir la capa del espacio pone el puntero en
 el espacio; elegir cualquier otra lo devuelve al lienzo. El atajo y el interruptor
 siguen existiendo, y hacen lo mismo por el otro lado: cambian también la capa
 activa, para que el panel no mienta sobre dónde va a caer el trazo.
 
+**Al entrar ya no se encuadra.** Antes el visor encuadraba lo dibujado al activarse.
+Ahora que entrar y salir es cambiar de capa, eso movería la vista cada vez que se
+toca el panel. Encuadrar es `F`, el botón del panel y el menú de la capa.
+
 Consecuencia que conviene tener presente: **el lienzo del espacio va encima de la
 pila 2D**, así que su contenido tapa la tinta donde se solapen. Lo correcto es
-componerlo en su sitio de la pila -el backend ya se escribió pensando en eso, y la
-acuarela y la materia ya lo hacen-, pero eso pide tocar el compositor 2D y queda
+componerlo en su sitio de la pila —el backend ya se escribió pensando en eso, y la
+acuarela y la materia ya lo hacen—, pero eso pide tocar el compositor 2D y queda
 como paso siguiente. Mientras tanto se ve todo, que es lo que se pedía; lo que no
 está resuelto es el orden entre las dos.
 

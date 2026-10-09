@@ -189,8 +189,6 @@ export class Viewport3D {
   private live = false;
   /** El lienzo del espacio esta en pantalla. Ver `frame`. */
   private showing = false;
-  /** Fondo del documento, que solo se pinta cuando el espacio ocupa la vista. */
-  private background = "#f4f1ea";
   /**
    * Gesto en curso, o `null`.
    *
@@ -257,42 +255,18 @@ export class Viewport3D {
   }
 
   /**
-   * Fondo del visor.
-   *
-   * Se toma del documento y no se fija en negro: la tinta por defecto del
-   * editor es negra, y sobre un fondo oscuro el trazo seria invisible. Ademas,
-   * entrar al espacio y encontrarse otro color hace que se sienta como haber
-   * abierto otra aplicacion, que es justo lo que hay que evitar.
-   */
-  setBackground(css: string): void {
-    this.background = css;
-    this.applyBackground();
-  }
-
-  /**
-   * El fondo depende de si el espacio ocupa la vista o esta compuesto encima del
-   * lienzo 2D.
-   *
-   * Dentro del espacio el lienzo lo es todo y lleva el fondo del documento,
-   * porque sobre negro la tinta por defecto no se veria. Compuesto sobre el
-   * lienzo 2D tiene que ser TRANSPARENTE: si no, taparia el dibujo entero.
-   */
-  private applyBackground(): void {
-    this.canvas.style.background = this.live ? this.background : "transparent";
-  }
-
-  /**
    * El espacio toma el puntero, o lo suelta.
    *
-   * Ya **no** oculta el lienzo: el espacio se ve tambien cuando no esta activo, y
-   * esa es la diferencia entre un modo del que se sale y una capa con la que se
-   * convive. Lo que se apaga al soltarlo es la atencion del puntero, no la imagen.
+   * Ya **no** oculta el lienzo ni le pone fondo: el espacio se ve siempre, y su
+   * lienzo es transparente para que debajo se vean la tinta, la acuarela y la
+   * materia. Esa es la diferencia entre un modo del que se sale y una capa con la
+   * que se convive: lo que se apaga al soltarlo es la atencion del puntero, no la
+   * imagen. El papel lo pone el fondo del anfitrion, que esta por debajo de todo.
    */
   setActive(on: boolean): void {
     this.live = on && this.backend.available;
-    this.canvas.style.pointerEvents = this.live ? "" : "none";
+    this.canvas.classList.toggle("is-active", this.live);
     this.hud.style.display = this.live ? "" : "none";
-    this.applyBackground();
     if (this.live) {
       // El punto de vista viaja con el documento: al volver al espacio se vuelve
       // a donde se estaba mirando, no a un encuadre por defecto.

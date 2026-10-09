@@ -432,7 +432,6 @@ export class Editor {
         },
       });
       this.viewport3dInstance.resize(this.inkLayer.width, this.inkLayer.height, this.dpr);
-      this.viewport3dInstance.setBackground(this.doc.meta.background);
     }
     return this.viewport3dInstance;
   }
@@ -469,7 +468,6 @@ export class Editor {
     if (vp) {
       if (this.mode3d) {
         vp.resize(this.inkLayer.width, this.inkLayer.height, this.dpr);
-        vp.setBackground(this.doc.meta.background);
         vp.setActive(true);
         this.status(
           "Espacio: dibuja con el lapiz · orbita con el boton central o el derecho · " +
@@ -954,8 +952,9 @@ export class Editor {
   setBackground(hex: string): void {
     const before = this.doc.snapshot();
     this.doc.meta.background = hex;
+    // El papel lo pone el anfitrion, por debajo de todas las capas. El visor no
+    // necesita enterarse: su lienzo es transparente y deja ver lo de abajo.
     this.host.style.background = hex;
-    this.viewport3dInstance?.setBackground(hex);
     this.history.record("Fondo", before);
     this.emitState();
   }
@@ -1573,13 +1572,10 @@ export class Editor {
     // (sus capas no existen) y hay que devolver sus contextos WebGL2.
     this.pruneAquaFields();
     this.host.style.background = this.doc.meta.background;
-    // El visor tambien es otro documento: su fondo puede haber cambiado y sus
-    // trazos son los del proyecto nuevo. `frame` los reconciliara solo, pero el
-    // fondo hay que darselo.
-    this.viewport3dInstance?.setBackground(this.doc.meta.background);
-    // Y el puntero va donde diga la capa activa del documento que se acaba de
-    // abrir: si se guardo con la capa del espacio seleccionada, al reabrirlo se
-    // sigue dibujando en el espacio.
+    // Los trazos del visor son los del proyecto nuevo, y `frame` los reconciliara
+    // solo con su revision. Y el puntero va donde diga la capa activa del
+    // documento que se acaba de abrir: si se guardo con la capa del espacio
+    // seleccionada, al reabrirlo se sigue dibujando en el espacio.
     this.syncModeToLayer();
     this.invalidateAll();
     if (message) this.status(message);
@@ -2089,41 +2085,50 @@ export class Editor {
 
     if (this.needsResize) this.resize();
 
-    // En modo 3D no se dibuja el lienzo 2D. Dos renderizadores a plena frecuencia
-    // cuando solo se ve uno es justo el desperdicio que hay que evitar, y de paso
-    // congela la fisica y el fluido mientras se dibuja en el espacio.
-    if (this.mode3d && this.viewport3dInstance) {
-      this.viewport3dInstance.frame();
-      return;
-    }
+    // El espacio tiene el puntero.
+    const enEspacio = this.mode3d && this.viewport3dInstance !== null;
 
-    if (this.running && this.doc.bodies.length > 0) {
-      const walls = this.doc.physics.settings.walls;
-      if (walls) {
-        const v = this.camera.visibleBounds(0);
-        this.doc.physics.bounds = v;
+    // Dentro del espacio se congelan la fisica y el fluido: lo que se mueve solo
+    // bajo el lapiz distrae, y la GPU que pide el visor no sobra. Lo que ya NO se
+    // salta es el DIBUJADO. Antes se saltaba el lienzo 2D entero -para no gastar
+    // dos renderizadores a la vez-, y eso dejaba el espacio aislado: dentro de el
+    // no se veia ni la tinta, ni la acuarela, ni la materia. Y el espacio no es un
+    // modo aparte, es una capa mas: hay que poder verlo todo junto.
+    //
+    // El coste no se dispara porque cada bloque de dibujado va con su propio aviso
+    // de sucio: con el espacio delante, el 2D solo se recompone cuando algo suyo
+    // cambia, no en cada fotograma.
+    if (!enEspacio) {
+      if (this.running && this.doc.bodies.length > 0) {
+        const walls = this.doc.physics.settings.walls;
+        if (walls) {
+          const v = this.camera.visibleBounds(0);
+          this.doc.physics.bounds = v;
+        }
+        const moving = this.doc.bodies.some((b) => b.awake);
+        if (moving || this.doc.physics.dragging) {
+          this.doc.physics.update(dt);
+          this.matter.invalidate();
+        }
       }
-      const moving = this.doc.bodies.some((b) => b.awake);
-      if (moving || this.doc.physics.dragging) {
-        this.doc.physics.update(dt);
-        this.matter.invalidate();
-      }
-    }
 
-    // Acuarela: cada capa con fluido avanza y se repinta mientras siga viva
-    // (unos segundos tras el ultimo deposito). Dormida no consume GPU. Los
-    // trazos se siembran al soltar el pincel (ver stampAqua), no aqui.
-    // Como la acuarela se compone DENTRO de la pila de tinta, mientras el fluido
-    // se mueve hay que recomponerla: es el precio de que su orden Z cuente.
-    let aquaMoving = false;
-    for (const [id, field] of this.aquaFields) {
-      if (!field.active) continue;
-      if (!this.doc.layerById(id)) continue; // capa borrada: se suelta abajo
-      field.step(dt);
-      field.render();
-      aquaMoving = true;
+      // Acuarela: cada capa con fluido avanza y se repinta mientras siga viva
+      // (unos segundos tras el ultimo deposito). Dormida no consume GPU. Los
+      // trazos se siembran al soltar el pincel (ver stampAqua), no aqui.
+      // Como la acuarela se compone DENTRO de la pila de tinta, mientras el
+      // fluido se mueve hay que recomponerla: es el precio de que su orden Z
+      // cuente. Con el espacio delante el fluido se congela; su ultimo fotograma
+      // se sigue viendo, porque el lienzo del campo es una entrada del compositor.
+      let aquaMoving = false;
+      for (const [id, field] of this.aquaFields) {
+        if (!field.active) continue;
+        if (!this.doc.layerById(id)) continue; // capa borrada: se suelta abajo
+        field.step(dt);
+        field.render();
+        aquaMoving = true;
+      }
+      if (aquaMoving) this.inkLayer.invalidate();
     }
-    if (aquaMoving) this.inkLayer.invalidate();
 
     if (this.inkLayer.dirty) {
       // El compositor compone todas las capas (orden, opacidad, relleno, fusión,
@@ -2144,8 +2149,10 @@ export class Editor {
     // Puentes organicos: ondulan con el tiempo (solo en GPU; el shader lee
     // uTime). En CPU quedan estaticos para no re-extraer contornos cada frame.
     // La animacion va ligada al boton Pausar/Reanudar del menu Materia: si la
-    // simulacion esta pausada, los puentes tambien se congelan.
+    // simulacion esta pausada, los puentes tambien se congelan. Con el espacio
+    // delante tambien: lo que se mueve solo, bajo el lapiz, distrae.
     if (
+      !enEspacio &&
       this.running &&
       this.doc.field.bridgeStyle === "organic" &&
       this.fieldRenderer.available &&
@@ -2157,8 +2164,10 @@ export class Editor {
 
     if (this.matter.dirty) {
       // Cada capa de materia se rinde y compone con su opacidad/fusión sobre un
-      // único lienzo que se muestra encima de la tinta.
-      const t = this.running ? now / 1000 : 0;
+      // único lienzo que se muestra encima de la tinta. Se rinde tambien con el
+      // espacio delante: la materia es una de las cosas que hay que poder ver
+      // mientras se dibuja en el espacio.
+      const t = enEspacio || !this.running ? 0 : now / 1000;
       this.matter.render(this.doc, this.camera, this.dpr, t);
     }
 

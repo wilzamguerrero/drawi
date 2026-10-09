@@ -2591,12 +2591,20 @@ body {
    mientras el modo 3D esta activo, sus manejadores capturan el evento antes de
    que llegue al editor y el motor 2D no ve nada. */
 .layer-3d {
-  pointer-events: auto;
+  /* El puntero lo toma solo cuando el espacio esta activo. Si no, los eventos
+     tienen que llegar al editor 2D, que escucha debajo: el espacio es una capa
+     mas, no un modo que se queda con todo. */
+  pointer-events: none;
   touch-action: none;
   cursor: crosshair;
-  /* Lo sustituye el editor con el fondo del documento al entrar; este es
-     solo el valor de partida. */
-  background: #f4f1ea;
+  /* Transparente a proposito. El papel lo pone el fondo del anfitrion, que esta
+     por debajo de todas las capas, asi que el espacio puede dejar ver la tinta,
+     la acuarela y la materia que tiene debajo. Opaco, las taparia. */
+  background: transparent;
+}
+
+.layer-3d.is-active {
+  pointer-events: auto;
 }
 
 .hud-3d {
