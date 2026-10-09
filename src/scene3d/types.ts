@@ -58,6 +58,14 @@ export interface Stroke3D {
   bounds: Bounds3;
   /** Semilla determinista, para que un pincel con ruido se reconstruya idéntico. */
   seed: number;
+  /**
+   * Normal del plano sobre el que se dibujo, o `null` si fue en el aire.
+   *
+   * Se guarda y no se deduce porque editar el trazo -suavizarlo, arrastrarlo-
+   * obliga a rehacer los marcos de la cinta, y sin esta normal los marcos
+   * saldrian orientados de otra forma y la cinta se retorceria al editarla.
+   */
+  planeNormal: V3 | null;
 }
 
 /**

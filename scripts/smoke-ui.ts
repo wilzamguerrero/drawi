@@ -16,7 +16,11 @@ import { LayersPanel } from "../src/ui/layers-panel";
 import { buildRoot } from "../src/ui/hotbox/menu";
 import { exportSvg } from "../src/io/export";
 import { exportVector, newDocument, projectText, saveProject, autosave, restoreAutosave } from "../src/ui/file-actions";
-import { parseProject } from "../src/io/project";
+import { applyProject, parseProject } from "../src/io/project";
+import { SceneDocument } from "../src/scene/document";
+import { computeFrames } from "../src/scene3d/frames";
+import { boundsOf, POINT_FLOATS, POS_OFFSET, PRESSURE_OFFSET, RADIUS_OFFSET, TIME_OFFSET } from "../src/scene3d/types";
+import { v3 } from "../src/scene3d/vec3";
 
 declare const globalThis: any;
 
@@ -457,6 +461,71 @@ ok("el proyecto conserva los items", !!parsed && Array.isArray(parsed.items) && 
    `${parsed?.items?.length} vs ${ed.state.items}`);
 ok("el proyecto conserva las capas", !!parsed && Array.isArray(parsed.layers) && parsed.layers.length === ed.doc.layers.length,
    `${parsed?.layers?.length} vs ${ed.doc.layers.length}`);
+
+// --- Los trazos del espacio viajan en el proyecto ---
+// Se comprueba la ida y la vuelta entera: puntos a base64, JSON, y de vuelta a
+// `Float32Array`. El redondeo no es trivial aqui -son binario en un formato de
+// texto-, asi que se miden los puntos recuperados, no solo que no reviente.
+{
+  const doc = ed.doc;
+  const capa = doc.scene3dTarget();
+  const puntos = 40;
+  const data = new Float32Array(puntos * POINT_FLOATS);
+  for (let i = 0; i < puntos; i++) {
+    const o = i * POINT_FLOATS;
+    data[o + POS_OFFSET] = Math.sin(i * 0.3) * 120;
+    data[o + POS_OFFSET + 1] = i * 4 - 80;
+    data[o + POS_OFFSET + 2] = Math.cos(i * 0.17) * 30;
+    data[o + RADIUS_OFFSET] = 1 + (i % 7) * 0.5;
+    data[o + PRESSURE_OFFSET] = 0.5;
+    data[o + TIME_OFFSET] = i * 8;
+  }
+  computeFrames(data, puntos, v3(0, 0, 1));
+  const trazo = {
+    id: "trazo-de-prueba",
+    brush: "ribbon",
+    color: "#123456",
+    layerId: capa.id,
+    data,
+    count: puntos,
+    bounds: boundsOf(data, puntos),
+    seed: 4321,
+    planeNormal: v3(0, 0, 1),
+  };
+  doc.addStroke3D(trazo);
+  doc.camera3d.yaw = 0.9;
+  doc.camera3d.distance = 555;
+
+  const texto = noThrow("serializar con trazos del espacio", () => projectText(ed)) as string | null;
+  const reabierto = noThrow("reabrir el proyecto", () => parseProject(texto!)) as any;
+  ok(
+    "el proyecto lleva los trazos del espacio",
+    !!reabierto && Array.isArray(reabierto.strokes3d) && reabierto.strokes3d.length === 1,
+    `${reabierto?.strokes3d?.length} trazos`,
+  );
+  ok("y el punto de vista", Math.abs((reabierto?.camera3d?.yaw ?? 0) - 0.9) < 1e-9, `${reabierto?.camera3d?.yaw}`);
+
+  // La vuelta de verdad: se aplica sobre un documento limpio.
+  const otro = new SceneDocument();
+  noThrow("aplicar el proyecto en otro documento", () => applyProject(otro, reabierto));
+  const vuelto = otro.strokes3d[0];
+  let peor = 0;
+  if (vuelto) {
+    for (let i = 0; i < puntos * POINT_FLOATS; i++) peor = Math.max(peor, Math.abs(vuelto.data[i] - data[i]));
+  }
+  ok(
+    "los puntos vuelven exactamente como se guardaron",
+    !!vuelto && vuelto.count === puntos && peor === 0,
+    `${vuelto?.count ?? 0} puntos, desvio maximo ${peor}`,
+  );
+  ok(
+    "y el trazo recupera su capa y su color",
+    vuelto?.layerId === capa.id && vuelto?.color === "#123456" && vuelto?.seed === 4321,
+    `${vuelto?.layerId} / ${vuelto?.color}`,
+  );
+  doc.removeStroke3D(trazo.id);
+}
+
 noThrow("guardar proyecto (descarga)", () => saveProject(ed));
 noThrow("autoguardado", () => autosave(ed));
 

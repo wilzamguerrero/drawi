@@ -210,7 +210,9 @@ export class LayersPanel {
     const l = this.editor.doc.activeLayer;
     setClass(this.head, "is-disabled", !l);
     if (!l) return;
-    const composed = l.kind !== "matter";
+    // El espacio no pasa por el compositor 2D -lo pinta el visor-, asi que ni la
+    // mascara ni el modo mascara tienen sentido en esa fila.
+    const composed = l.kind !== "matter" && l.kind !== "scene3d";
     this.blendSel.set(l.blend);
     this.opacity.set(Math.round(l.opacity * 100));
     this.fill.set(Math.round(l.fill * 100));
@@ -272,7 +274,13 @@ export class LayersPanel {
     const badges = el("span", { class: "layer-badges" });
 
     const kindIcon =
-      layer.kind === "group" ? "folder" : layer.kind === "matter" ? "matter" : null;
+      layer.kind === "group"
+        ? "folder"
+        : layer.kind === "matter"
+          ? "matter"
+          : layer.kind === "scene3d"
+            ? "cube"
+            : null;
     // La acuarela sí lleva miniatura: su mancha es lo que la identifica.
     const glyph = kindIcon ? el("span", { class: "layer-kind", html: icon(kindIcon) }) : thumb;
 
@@ -656,8 +664,10 @@ export class LayersPanel {
     }
     // Un grupo no puede caer dentro de sí mismo ni de sus descendientes.
     if (parentId && doc.isDescendantOf(parentId, id)) return;
-    // Materia y acuarela son planos propios: siempre en la raíz.
-    if (dragged.kind === "matter" || dragged.kind === "aqua") parentId = null;
+    // Materia, acuarela y espacio son planos propios: siempre en la raíz.
+    if (dragged.kind === "matter" || dragged.kind === "aqua" || dragged.kind === "scene3d") {
+      parentId = null;
+    }
 
     // Posición entre hermanas, de abajo arriba: las que quedan bajo el hueco.
     const sibIds = new Set(
@@ -686,7 +696,15 @@ export class LayersPanel {
     const isInk = layer.kind === "ink";
     const isMatter = layer.kind === "matter";
     const isAqua = layer.kind === "aqua";
-    if (isMatter) {
+    const isSpace = layer.kind === "scene3d";
+    if (isSpace) {
+      // Una capa del espacio no lleva mascara ni se combina hacia abajo: lo que se
+      // puede hacer con ella es encuadrarla, vaciarla o quitarla entera.
+      item("Encuadrar en 3D", () => ed.frame3D());
+      item("Vaciar la capa", () => ed.clearSpaceLayer(layer.id));
+      item("Borrar capa", () => ed.removeLayer(layer.id));
+      sep();
+    } else if (isMatter) {
       // La materia sí es una capa eliminable: vaciar sus cuerpos o borrar la capa.
       item("Vaciar materia", () => ed.clearMatterLayer(layer.id));
       item("Borrar capa", () => ed.removeLayer(layer.id));

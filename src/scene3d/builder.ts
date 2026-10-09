@@ -26,6 +26,7 @@ import type { BrushSettings } from "../stroke/types";
 import { computeFrames } from "./frames";
 import { simplifyStroke, type SimplifyOptions } from "./simplify";
 import {
+  EMPTY_BOUNDS3,
   boundsOf,
   POINT_FLOATS,
   POS_OFFSET,
@@ -39,6 +40,15 @@ import {
 
 /** Puntos reservados de entrada, antes de crecer. */
 const RESERVE = 256;
+
+/**
+ * Identidad del trazo provisional de la vista previa.
+ *
+ * Es un centinela a proposito: el trazo en curso no pertenece a la escena y no
+ * debe entrar nunca en un lote. Solo lo consume la cinta provisional del visor,
+ * que lo dibuja aparte.
+ */
+export const LIVE_STROKE_ID = "\u0000live";
 
 export class Stroke3DBuilder {
   settings: BrushSettings;
@@ -68,6 +78,22 @@ export class Stroke3DBuilder {
   private smoothPressure = 0;
   private arcLen = 0;
   private started = false;
+  /** Radio del ultimo punto aceptado. Gobierna el muestreo minimo. */
+  private lastR = 0;
+
+  /** Buffer y objeto reutilizados por `preview`: cero asignaciones por muestra. */
+  private liveBuf: Float32Array = new Float32Array(RESERVE * POINT_FLOATS);
+  private readonly live: Stroke3D = {
+    id: LIVE_STROKE_ID,
+    brush: "",
+    color: "#ffffff",
+    layerId: "",
+    data: this.liveBuf,
+    count: 0,
+    bounds: { ...EMPTY_BOUNDS3 },
+    seed: 0,
+    planeNormal: null,
+  };
 
   constructor(settings: BrushSettings) {
     this.settings = settings;
@@ -158,7 +184,68 @@ export class Stroke3DBuilder {
       count,
       bounds: boundsOf(data, count),
       seed: this.seed,
+      planeNormal: opts.planeNormal ? { ...opts.planeNormal } : null,
     };
+  }
+
+  /**
+   * Trazo provisional con lo dibujado hasta ahora, para poder verlo mientras se
+   * dibuja.
+   *
+   * Dos decisiones que importan:
+   *
+   *  - **No decima.** La tolerancia de decimacion (0.35 unidades de mundo) es
+   *    subpixel a la escala de trabajo, asi que la forma apenas cambia al soltar,
+   *    y correr Douglas-Peucker entero en cada muestra seria justo el trabajo que
+   *    se quiere evitar mientras se dibuja.
+   *  - **Anade la punta cruda.** El muestreo minimo hace que el ultimo punto
+   *    guardado vaya por detras del cursor; sin esta cola el trazo se veria
+   *    retrasado respecto al lapiz, que es la sensacion que se quiere quitar.
+   *
+   * El objeto devuelto es **compartido y se reescribe en cada llamada**: vale
+   * para consumirlo en el acto -que es lo que hace el visor al rellenar la cinta
+   * provisional- y no para guardarlo.
+   */
+  preview(tail: Sample3D | null): Stroke3D | null {
+    const opts = this.opts;
+    if (!opts || !this.started) return null;
+    const count = this.n + (tail ? 1 : 0);
+    if (count < 2) return null;
+
+    if (this.liveBuf.length < count * POINT_FLOATS) {
+      let cap = this.liveBuf.length;
+      while (cap < count * POINT_FLOATS) cap *= 2;
+      this.liveBuf = new Float32Array(cap);
+    }
+    const dst = this.liveBuf;
+    dst.set(this.buf.subarray(0, this.n * POINT_FLOATS));
+
+    if (tail) {
+      const o = this.n * POINT_FLOATS;
+      dst[o + POS_OFFSET] = tail.x;
+      dst[o + POS_OFFSET + 1] = tail.y;
+      dst[o + POS_OFFSET + 2] = tail.z;
+      // La punta hereda el radio del ultimo punto en vez de resolverlo otra vez:
+      // resolverlo aqui avanzaria el generador de ruido del pincel y el trazo
+      // final saldria distinto segun lo deprisa que se hubiera movido el raton.
+      dst[o + RADIUS_OFFSET] = this.lastR;
+      dst[o + PRESSURE_OFFSET] = this.smoothPressure;
+      dst[o + TIME_OFFSET] = tail.t - this.firstT;
+    }
+
+    computeFrames(dst, count, opts.planeNormal ?? null);
+    applyTaper3(dst, count, this.settings);
+
+    const live = this.live;
+    live.brush = opts.brush;
+    live.color = opts.color;
+    live.layerId = opts.layerId;
+    live.data = dst;
+    live.count = count;
+    live.bounds = boundsOf(dst, count);
+    live.seed = this.seed;
+    live.planeNormal = opts.planeNormal ?? null;
+    return live;
   }
 
   private pushPoint(s: Sample3D, force: boolean): boolean {
@@ -191,7 +278,16 @@ export class Stroke3DBuilder {
     const dWorld = Math.hypot(dx, dy, dz);
     this.lastT = s.t;
 
-    if (!force && dWorld * this.zoom < 0.55) return false;
+    // Muestreo minimo, con dos umbrales y gana el mas exigente.
+    //
+    // El primero es el de siempre, en pixeles de pantalla: por debajo de medio
+    // pixel la muestra no aporta nada. El segundo es nuevo y es relativo al
+    // radio: dos puntos mas juntos que medio radio dejan segmentos mucho mas
+    // cortos que el ancho del trazo, y como las juntas se prolongan hasta un
+    // radio, todos los segmentos acabarian conteniendose unos a otros. Ademas de
+    // desperdicio, eso emborrona los codos.
+    const minStep = Math.max(0.55 / this.zoom, 0.5 * this.lastR);
+    if (!force && dWorld < minStep) return false;
 
     this.lastX = this.penX;
     this.lastY = this.penY;
@@ -218,6 +314,7 @@ export class Stroke3DBuilder {
     this.buf[o + RADIUS_OFFSET] = r;
     this.buf[o + PRESSURE_OFFSET] = this.smoothPressure;
     this.buf[o + TIME_OFFSET] = s.t - this.firstT;
+    this.lastR = r;
     this.n++;
     return true;
   }

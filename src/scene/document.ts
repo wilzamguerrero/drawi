@@ -7,6 +7,9 @@ import { bodiesForInkItem } from "../physics/stroke-matter";
 import { createBody, PhysicsWorld, type Body, type WorldSettings } from "../physics/world";
 import { DEFAULT_SYMMETRY, normalizeSymmetry, symmetryTransforms, type SymmetryState } from "../symmetry/symmetry";
 import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
+import { DEFAULT_CAMERA_3D, type Camera3DState } from "../scene3d/camera3d";
+import type { Fill3D } from "../scene3d/fill";
+import type { Stroke3D } from "../scene3d/types";
 import { EMPTY_RECT, unionRect, type InkItem, type Rect } from "./types";
 import { cloneLayer, makeMask, type LayerColor, type SceneLayer } from "./layer";
 
@@ -43,6 +46,12 @@ export interface BodySnapshot {
 
 export interface SceneSnapshot {
   items: InkItem[];
+  /** Trazos del espacio, compartidos por referencia (son inmutables). */
+  strokes3d: Stroke3D[];
+  /** Manchas del espacio, compartidas por referencia por el mismo motivo. */
+  fills3d: Fill3D[];
+  /** Camara del visor espacial en el momento de la instantanea. */
+  camera3d: Camera3DState;
   layers: SceneLayer[];
   activeLayerId: string;
   bodies: BodySnapshot[];
@@ -122,6 +131,27 @@ export class SceneDocument {
   };
 
   items: InkItem[] = [];
+  /**
+   * Trazos del espacio, en el mismo modelo que `items`: lista plana donde cada
+   * trazo lleva su `layerId`. El orden del array da la z dentro de la capa y el
+   * orden de `layers`, la z entre capas.
+   *
+   * Los trazos son inmutables por contrato (editarlos produce uno nuevo con el
+   * mismo id), que es lo que permite que el historial los comparta por referencia
+   * igual que hace con la tinta.
+   */
+  strokes3d: Stroke3D[] = [];
+  /**
+   * Manchas rellenas del espacio, en el mismo modelo que los trazos: lista plana
+   * con su `layerId`, y el orden del array como z dentro de la capa.
+   *
+   * Se guardan aparte de los trazos porque son otra primitiva -una superficie con
+   * area frente a una cinta- y no comparten ni geometria ni sombreado.
+   */
+  fills3d: Fill3D[] = [];
+  /** Camara del visor espacial: viaja con el documento para que reabrirlo
+   *  devuelva al mismo punto de vista. */
+  camera3d: Camera3DState = { ...DEFAULT_CAMERA_3D };
   /** Capas ordenadas de abajo (índice 0) arriba. El z global lo da este orden. */
   layers: SceneLayer[] = [];
   activeLayerId = "";
@@ -134,6 +164,13 @@ export class SceneDocument {
 
   /** Cambia con cada modificacion; los renderizadores lo usan como cache key. */
   inkRevision = 0;
+  /**
+   * Cambia con cada modificacion de lo que hay en el espacio -trazos y manchas-.
+   *
+   * Se lleva aparte de `inkRevision` porque el visor espacial y el compositor 2D
+   * son dos motores distintos: ensuciar uno no debe obligar a repintar el otro.
+   */
+  spaceRevision = 0;
 
   constructor() {
     this.resetLayers();
@@ -144,7 +181,12 @@ export class SceneDocument {
   }
 
   get isEmpty(): boolean {
-    return this.items.length === 0 && this.physics.bodies.length === 0;
+    return (
+      this.items.length === 0 &&
+      this.physics.bodies.length === 0 &&
+      this.strokes3d.length === 0 &&
+      this.fills3d.length === 0
+    );
   }
 
   // ----------------------------------------------------------------- capas
@@ -253,6 +295,126 @@ export class SceneDocument {
     return layer;
   }
 
+  // --------------------------------------------------------- capas del espacio
+
+  private makeScene3DLayer(name?: string): SceneLayer {
+    this.layerCounter++;
+    return {
+      id: uid(),
+      kind: "scene3d",
+      name: name ?? `Espacio ${this.layerCounter}`,
+      visible: true,
+      opacity: 1,
+      fill: 1,
+      blend: "source-over",
+      locked: false,
+      alphaLock: false,
+      clip: false,
+      color: "none",
+      collapsed: false,
+      parentId: null,
+    };
+  }
+
+  get scene3dLayers(): SceneLayer[] {
+    return this.layers.filter((l) => l.kind === "scene3d");
+  }
+
+  /**
+   * Capa del espacio sobre la que se dibuja, creandola si hace falta.
+   *
+   * Se crea en perezoso, igual que la materia: un documento en el que nadie ha
+   * dibujado en el espacio no debe mostrar una fila vacia. Si la capa activa ya
+   * es del espacio se usa esa, para que elegir otra en el panel signifique algo.
+   */
+  scene3dTarget(): SceneLayer {
+    const active = this.activeLayer;
+    if (active?.kind === "scene3d") return active;
+    const existing = this.scene3dLayers[0];
+    if (existing) return existing;
+    return this.addScene3DLayer();
+  }
+
+  addScene3DLayer(name?: string): SceneLayer {
+    const layer = this.makeScene3DLayer(name);
+    const active = this.activeLayer;
+    const at = active ? this.layerIndex(active.id) + 1 : this.layers.length;
+    this.layers.splice(at, 0, layer);
+    this.activeLayerId = layer.id;
+    this.spaceRevision++;
+    this.inkRevision++;
+    return layer;
+  }
+
+  /** Trazos de una capa, en orden de creacion. */
+  strokesOf(layerId: string): Stroke3D[] {
+    return this.strokes3d.filter((s) => s.layerId === layerId);
+  }
+
+  addStroke3D(stroke: Stroke3D): void {
+    this.strokes3d.push(stroke);
+    this.spaceRevision++;
+  }
+
+  /**
+   * Sustituye un trazo por otro con el mismo id, conservando su sitio.
+   *
+   * Es lo que permite que editar -suavizar, arrastrar- no traiga el trazo al
+   * frente: el orden del array es la z, y editar no es reordenar.
+   */
+  replaceStroke3D(stroke: Stroke3D): boolean {
+    const i = this.strokes3d.findIndex((s) => s.id === stroke.id);
+    if (i < 0) return false;
+    this.strokes3d[i] = stroke;
+    this.spaceRevision++;
+    return true;
+  }
+
+  removeStroke3D(id: string): boolean {
+    const i = this.strokes3d.findIndex((s) => s.id === id);
+    if (i < 0) return false;
+    this.strokes3d.splice(i, 1);
+    this.spaceRevision++;
+    return true;
+  }
+
+  /** Borra todos los trazos de una capa. Devuelve cuantos se llevo. */
+  clearStrokes3D(layerId: string): number {
+    const before = this.strokes3d.length;
+    this.strokes3d = this.strokes3d.filter((s) => s.layerId !== layerId);
+    const gone = before - this.strokes3d.length;
+    if (gone > 0) this.spaceRevision++;
+    return gone;
+  }
+
+  // ------------------------------------------------------- manchas del espacio
+
+  addFill3D(fill: Fill3D): void {
+    this.fills3d.push(fill);
+    this.spaceRevision++;
+  }
+
+  removeFill3D(id: string): boolean {
+    const i = this.fills3d.findIndex((f) => f.id === id);
+    if (i < 0) return false;
+    this.fills3d.splice(i, 1);
+    this.spaceRevision++;
+    return true;
+  }
+
+  fillsOf(layerId: string): Fill3D[] {
+    return this.fills3d.filter((f) => f.layerId === layerId);
+  }
+
+  /** Borra las manchas de una capa. Devuelve cuantas se llevo. */
+  clearFills3D(layerId: string): number {
+    const before = this.fills3d.length;
+    this.fills3d = this.fills3d.filter((f) => f.layerId !== layerId);
+    const gone = before - this.fills3d.length;
+    if (gone > 0) this.spaceRevision++;
+    return gone;
+  }
+
   /** Envuelve items planos (proyectos v1) en una capa de tinta por defecto. */
   migrateFlatItems(): void {
     this.resetLayers();
@@ -284,6 +446,26 @@ export class SceneDocument {
       }
       for (const b of orphans) b.layerId = target.id;
     }
+
+    // Trazos del espacio huérfanos: misma regla, y por el mismo motivo -una capa
+    // de espacio solo nace cuando hay algo que alojar-.
+    const spaceLayers = this.scene3dLayers;
+    const lostStrokes = this.strokes3d.filter((s) => !spaceLayers.some((l) => l.id === s.layerId));
+    const lostFills = this.fills3d.filter((f) => !spaceLayers.some((l) => l.id === f.layerId));
+    if (lostStrokes.length > 0 || lostFills.length > 0) {
+      let target = spaceLayers[0];
+      if (!target) {
+        target = this.makeScene3DLayer();
+        this.layers.push(target);
+      }
+      const home = target.id;
+      this.strokes3d = this.strokes3d.map((s) =>
+        spaceLayers.some((l) => l.id === s.layerId) ? s : { ...s, layerId: home },
+      );
+      this.fills3d = this.fills3d.map((f) =>
+        spaceLayers.some((l) => l.id === f.layerId) ? f : { ...f, layerId: home },
+      );
+    }
   }
 
   /** Quita capas de materia sin cuerpos (usado al migrar proyectos antiguos que
@@ -302,6 +484,23 @@ export class SceneDocument {
 
   get activeLayer(): SceneLayer | undefined {
     return this.layerById(this.activeLayerId);
+  }
+
+  /**
+   * ¿Se pinta esta capa? Su propio ojo y el de todos sus ancestros.
+   *
+   * Vive aqui y no en cada renderizador porque son tres los que lo necesitan -el
+   * compositor 2D, el visor espacial y la exportacion- y una regla de visibilidad
+   * duplicada es una regla que se desvia.
+   */
+  layerVisible(id: string): boolean {
+    let layer = this.layerById(id);
+    if (!layer) return false;
+    while (layer) {
+      if (!layer.visible) return false;
+      layer = layer.parentId ? this.layerById(layer.parentId) : undefined;
+    }
+    return true;
   }
 
   get matterLayers(): SceneLayer[] {
@@ -442,12 +641,20 @@ export class SceneDocument {
     const layer = this.layerById(id);
     if (!layer) return;
 
-    // Materia y acuarela no alojan items de tinta: su contenido vive en el
-    // mundo físico o en la GPU, así que basta con soltar la fila. Son capas
-    // eliminables aunque fueran las únicas de su tipo: la invariante que el
-    // documento protege es tener siempre una capa de TINTA donde dibujar.
-    if (layer.kind === "matter" || layer.kind === "aqua") {
+    // Materia, acuarela y espacio no alojan items de tinta: su contenido vive en
+    // el mundo físico, en la GPU o en el visor 3D, así que basta con soltar la
+    // fila. Son capas eliminables aunque fueran las únicas de su tipo: la
+    // invariante que el documento protege es tener siempre una capa de TINTA
+    // donde dibujar.
+    if (layer.kind === "matter" || layer.kind === "aqua" || layer.kind === "scene3d") {
       if (layer.kind === "matter") this.physics.removeByLayer(id);
+      // Quitar la capa del espacio se lleva sus trazos y sus manchas: dejarlos sin
+      // capa seria peor que borrarlos, porque `ensureLayers` los devolveria a otra
+      // capa y el dibujo cambiaria de sitio sin que nadie lo pidiera.
+      if (layer.kind === "scene3d") {
+        this.clearStrokes3D(id);
+        this.clearFills3D(id);
+      }
       this.layers = this.layers.filter((l) => l.id !== id);
       if (this.activeLayerId === id) {
         this.activeLayerId = (this.firstInkLayer() ?? this.layers[0])?.id ?? "";
@@ -815,6 +1022,11 @@ export class SceneDocument {
   snapshot(): SceneSnapshot {
     return {
       items: this.items.slice(),
+      // Los trazos del espacio se comparten por referencia, igual que la tinta:
+      // son inmutables, asi que una instantanea cuesta un array de punteros.
+      strokes3d: this.strokes3d.slice(),
+      fills3d: this.fills3d.slice(),
+      camera3d: { ...this.camera3d },
       layers: this.layers.map(cloneLayer),
       activeLayerId: this.activeLayerId,
       bodies: this.physics.bodies.map(snapshotBody),
@@ -827,6 +1039,9 @@ export class SceneDocument {
 
   restore(snap: SceneSnapshot): void {
     this.items = snap.items.slice();
+    this.strokes3d = snap.strokes3d.slice();
+    this.fills3d = snap.fills3d.slice();
+    this.camera3d = { ...snap.camera3d };
     this.layers = snap.layers.map(cloneLayer);
     this.activeLayerId = snap.activeLayerId;
     this.symmetry = normalizeSymmetry(cloneSymmetry(snap.symmetry));
@@ -837,6 +1052,9 @@ export class SceneDocument {
     for (const b of snap.bodies) this.physics.add(restoreBody(b));
     this.ensureLayers();
     this.inkRevision++;
+    // El visor espacial tiene su propio contador: deshacer un trazo del espacio
+    // no debe obligar a repintar el lienzo 2D, ni al reves.
+    this.spaceRevision++;
   }
 }
 

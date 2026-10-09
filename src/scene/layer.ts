@@ -15,8 +15,11 @@ import type { InkItem, Rect } from "./types";
 
 /** Tipo de capa. La materia es una pseudo-capa fija (plano WebGL propio); la
  *  imagen es una capa raster con un asset decodificado; la acuarela es una capa
- *  de fluido (simulacion WebGL2 propia) que SI se compone en la pila de tinta. */
-export type LayerKind = "ink" | "group" | "matter" | "image" | "aqua";
+ *  de fluido (simulacion WebGL2 propia) que SI se compone en la pila de tinta; y
+ *  la 3D es una capa de trazos espaciales, que no pasa por el compositor 2D sino
+ *  por el visor: el panel la muestra con su ojo y su orden, pero su pintura la
+ *  hace `render3d`. */
+export type LayerKind = "ink" | "group" | "matter" | "image" | "aqua" | "scene3d";
 
 /**
  * Modo de fusión. Los valores son los de `globalCompositeOperation` del canvas,

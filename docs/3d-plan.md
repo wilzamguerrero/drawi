@@ -39,8 +39,20 @@ Sin dependencia de WebGL ni del DOM, así que corre en las pruebas de Node.
 | Módulo | Qué resuelve |
 |---|---|
 | `src/render3d/ribbon.ts` | Shader que construye la cinta en la GPU |
-| `src/render3d/backend.ts` | Escena three.js, sincronizado incremental |
+| `src/render3d/backend.ts` | Escena three.js, sincronizado incremental, más la cinta provisional del trazo en curso |
 | `src/app/viewport3d.ts` | El visor: lienzo, entrada, cámara y dibujado |
+
+### Trazo, capas y documento
+
+| Módulo | Qué resuelve |
+|---|---|
+| `src/scene/document.ts` | Los trazos del espacio viven en `strokes3d`, con capas `kind: "scene3d"`; instantánea y restauración para el historial |
+| `src/scene3d/batch.ts` | Juntas sin muesca, `packSegments` compartido y `sync`, que hace de la escena una función pura del documento |
+| `src/scene3d/relax.ts` | Editar trazos ya dibujados: suavizado laplaciano y arrastre con caída |
+| `src/scene3d/fill.ts` | Manchas rellenas: contorno, triangulación por recorte de orejas y lotes |
+| `src/scene3d/tools3d.ts` | Herramienta del visor y sus ajustes |
+| `src/render3d/fill.ts` | Malla y material de las manchas |
+| `src/io/project.ts` | Los trazos viajan en el proyecto (v7) con los puntos en base64 |
 
 ### Pruebas
 
@@ -53,18 +65,16 @@ Total del proyecto: **319 comprobaciones** (68 motor 2D + 110 interfaz + 141 del
 
 ## 3. Qué NO está construido
 
-- **Persistencia**: los trazos 3D viven solo en memoria. Falta la capa
-  `scene3d` en el documento y subir `PROJECT_VERSION` a 7.
-- **Deshacer y rehacer** en las operaciones del espacio. El modelo lo permite
-  —los trazos son inmutables y los lotes son derivados— pero no está conectado.
-- **Respaldo por CPU**: solo como visor, con Canvas2D e impostores.
-- **Luces, materiales y posprocesado.**
+- **Continuación del trazo** (encadenar al anterior, ejes, anclaje).
+- **Luces, materiales, primitivas y posprocesado.**
 - **Descarte y LOD por trazo** en el bucle de dibujado. El módulo está escrito y
   probado, pero el visor dibuja el lote entero y deja el recorte a la GPU.
 - **`asMatter` y `asAqua` en 3D.** Sigue siendo la pregunta de diseño abierta.
 - **Reparto en trozos del paquete.** El `bundle` pasó de ~500 kB a 886 kB por
   three.js. Se arregla cargando el backend con `import()` dinámico la primera vez
   que se entra al modo 3D.
+- **La exportación no incluye el espacio** cuando hay trazos 3D: `renderToCanvas`
+  recorre la tinta, la materia y la acuarela, pero no el visor.
 
 ## 4. Decisiones, con su porqué
 
@@ -157,6 +167,119 @@ Los manejadores del 2D escuchan en fase de burbuja sobre el anfitrión, así que
 motor 2D no vea nada mientras el modo 3D está activo. Ni una herramienta tuvo que
 enterarse de que el 3D existe.
 
+### 4.9b El pincel es el mismo; la herramienta de retoque no
+
+Los cuatro modos del pincel —trazo, relleno, arrastre y borrador— son los de
+`BrushSettings`, compartidos con el lienzo, y en el espacio significan lo que su
+nombre dice. Lo que se añade aparte es lo que en 2D no existe: **suavizar** un
+trazo ya dibujado. Por eso hay dos cosas distintas y no una:
+
+- `BrushSettings.mode` manda cuando la herramienta es el pincel.
+- `Scene3DSettings.tool` (`pincel` | `suavizar`) es del visor, y se antepone al
+  modo. `Scene3DSettings` va en el editor y **no** en `BrushSettings`: el radio de
+  agarre y la fuerza del suavizado no significan nada en el lienzo 2D, y meterlos
+  allí sería cargar el motor compartido con opciones ajenas.
+
+El despacho es un único campo con etiqueta (`Gesture`) en vez de varios booleanos,
+porque los gestos son excluyentes y cada uno lleva sus datos: el arrastre guarda
+de dónde salió y la forma original de lo que agarró.
+
+### 4.9c Suavizar se acumula; arrastrar no
+
+Dos gestos que parecen el mismo y no lo son:
+
+- **Suavizar** aplica una pasada sobre el estado ACTUAL. Insistir con el puntero
+  sobre la misma zona suaviza más, que es como se dosifica un suavizado a mano; la
+  fuerza por fotograma es lo que lo hace controlable.
+- **Arrastrar** aplica el desplazamiento TOTAL sobre la forma ORIGINAL, guardada al
+  empezar el gesto, y no el incremento sobre lo ya movido. Si acumulara, arrastrar
+  en círculo y volver al punto de partida no devolvería el trazo a su sitio: se
+  quedaría donde lo dejó el último fotograma.
+
+Los dos abren un solo paso de historial para todo el gesto, y cancelar a mitad
+llama a `History.rollback()`, que devuelve el documento a la instantánea que se
+fotografió al empezar. Sin eso, cancelar dejaba el trazo a medio retocar.
+
+### 4.9d El trazo guarda el plano sobre el que se dibujó
+
+Editar un trazo —suavizarlo, arrastrarlo— obliga a rehacer los marcos de la cinta,
+porque están calculados para la forma vieja. Y los marcos dependen de la normal del
+plano de dibujo: sin ella, el recálculo daría una orientación distinta y la cinta
+se retorcería al retocar el trazo. Son tres floats por trazo y viajan en el
+proyecto.
+
+### 4.9e Una mancha rellena no es un trazo grueso
+
+Los cuatro modos del pincel tienen su equivalente en el espacio, pero el relleno
+no se puede construir con la cinta: la cinta es **un quad por segmento**, y un
+quad no tiene interior. Una mancha es una superficie con área, así que es una
+primitiva propia, con su modelo, su malla y su sombreado.
+
+Dos decisiones dentro de ella:
+
+- **Se guarda el contorno, no los triángulos.** El contorno es lo que se dibujó;
+  los triángulos son geometría derivada, como los segmentos lo son de los puntos
+  de un trazo. Guardarlos sería una segunda fuente de verdad que se desvía en
+  cuanto se toque el algoritmo de triangulación.
+- **Se triangula por recorte de orejas, no por abanico desde el centro.** Un
+  abanico solo rellena bien lo convexo, y un contorno trazado a mano tiene
+  entrantes con facilidad: en una ese, deja triángulos fuera y huecos dentro. Si
+  el contorno se cruza consigo mismo el recorte se atasca, y entonces se remata lo
+  que queda con un abanico en vez de no dibujar nada.
+
+El orden de dibujado dentro de una capa es fijo: **las manchas antes que los
+trazos**, para que las líneas se lean por encima de la materia. Se consigue
+numerando el `renderOrder` de la capa por dos, dejando el `+ 1` para la cinta.
+
+### 4.10 Los segmentos se prolongan en las juntas
+
+Cada segmento es un quad independiente, así que en un cambio de dirección las dos
+orillas exteriores no llegan a tocarse y queda una muesca blanca en el codo. La
+CPU —que es la única que conoce a los vecinos— prolonga cada segmento hacia el
+siguiente por `r * tan(theta/2)`, acotado a `[0.15 * r, r]`:
+
+- Sobre una recta tiende a cero, así que no se solapa nada que no haga falta.
+- En un codo de 90 grados vale exactamente el radio, que es la tapa redonda que
+  cubre la junta entera.
+- Más allá se acota al radio: la tapa redonda ya cubre.
+
+El suelo de `0.15 * r` es una **precaución**, no una cura demostrada: la medición
+sobre un trazo recto no reproduce la costura que viene a evitar. Se mantiene
+porque cuesta poco y porque la verificación corre sobre el rasterizador por
+software de Chrome, cuyo antialias no tiene por qué repartir las muestras como el
+de una GPU real.
+
+Esto cuesta dos floats por segmento (56 → 64 bytes) y obligó a subir el muestreo
+mínimo a `max(0.55 / zoom, 0.5 * r)`: con pincel grueso los segmentos quedaban
+mucho más cortos que el radio y el solape se desproporcionaba. Ese muestreo es
+**idéntico en los dos constructores**, y hay una prueba que lo comprueba punto por
+punto contra el lienzo 2D.
+
+### 4.11 El trazo se ve mientras se dibuja
+
+El trazo entraba en la escena solo al soltar el puntero: se dibujaba a ciegas, que
+es lo que hacía que dibujar se sintiera lento. Ahora `Stroke3DBuilder.preview()`
+devuelve el trazo en curso —sin decimar, y con el punto crudo bajo el cursor
+añadido como cola, porque el muestreo mínimo hace que la punta real vaya por
+detrás del lápiz— y el backend lo pinta en una cinta provisional propia, con
+`renderOrder` por encima de los lotes. Se recompone **una vez por fotograma**, no
+una por evento de puntero.
+
+### 4.12 Los trazos del espacio viven en el documento
+
+`Viewport3D` ya no es el dueño de los trazos: viven en `doc.strokes3d`, con el
+mismo modelo que `doc.items` —lista plana, cada trazo con su `layerId`, el orden
+del array como z dentro de la capa y el orden de `doc.layers` como z entre capas—.
+`StrokeScene.sync()` reconcilia los lotes con esa lista, y de ahí salen gratis
+deshacer, rehacer y editar un trazo ya dibujado, porque los tres se reducen a
+cambiar la lista.
+
+Consecuencia que conviene tener presente: reconciliar cuesta un recorrido de la
+lista, así que el visor solo lo hace cuando el documento avisa
+(`strokes3dRevision`), nunca en cada fotograma. Y como el visor conserva el buffer
+de dibujado, hay un segundo aviso (`inkRevision`) que marca sucio cuando cambia la
+pila de capas: sin él, apagar una capa dejaba el lienzo con el fotograma anterior.
+
 ## 5. Medido
 
 Con la suite de pruebas:
@@ -173,7 +296,12 @@ Con el navegador (`npm run verify:3d`, 1100×760):
 
 | Magnitud | Medición |
 |---|---|
-| 7 trazos dibujados a mano | **1 draw call**, 251 segmentos |
+| 7 trazos dibujados a mano | **1 draw call**, 248 segmentos |
+| A medio gesto, con el puntero apoyado | **2.090 píxeles** pintados y **0 trazos** en la escena (antes: 0 píxeles) |
+| Espina de un trazo, punta a punta | alfa mínimo **255**, hueco mayor **0 px** en 279 px |
+| Codos de un zigzag, ventana de 7,7 px en cada uno | **0 píxeles** sin pintar (sin prolongar los segmentos: **229**) |
+| Apagar la capa del espacio | 26.034 píxeles → **0** |
+| Ida y vuelta de 40 puntos al proyecto | desvío máximo **0** |
 | Píxeles pintados | 26.037 (3,11 % del lienzo) |
 | Borrar un trazo | −1.506 píxeles |
 | Orbitar | cambia la imagen y añade **0 trazos** |
@@ -183,13 +311,15 @@ rendimiento real está sin medir: falta presupuestar los 60 fps con 20.000 trazo
 
 ## 6. Fases pendientes
 
-1. Persistencia: capa `scene3d` y `PROJECT_VERSION` 7.
-2. Deshacer y rehacer en el espacio.
+1. El relleno en el espacio, con su propia geometría de superficie.
+2. Continuación del trazo: encadenar al anterior o al más cercano, ejes,
+   continuidad de tangente y anclaje.
 3. Conectar `cull.ts` al bucle de dibujado, con el descarte por lotes primero.
-4. Luces, materiales y posprocesado.
-5. Respaldo por CPU, solo como visor.
-6. Repartir el paquete para que three.js no pese hasta que se use.
-7. Medir el rendimiento con GPU real.
+4. Primitivas, luces, materiales y posprocesado.
+5. Incluir el espacio en la exportación.
+6. Respaldo por CPU, solo como visor.
+7. Repartir el paquete para que three.js no pese hasta que se use.
+8. Medir el rendimiento con GPU real.
 
 ## 7. Reglas que no se pueden romper
 
@@ -201,3 +331,8 @@ rendimiento real está sin medir: falta presupuestar los 60 fps con 20.000 trazo
 6. **El índice de instancia y el de datos tienen que coincidir.** Cualquier
    desplazamiento entre ellos hace que un trazo lea los puntos de otro.
 7. Navegar no dibuja; dibujar no mueve la cámara.
+8. **La escena es una función pura del documento.** Los lotes se reconcilian con
+   `doc.strokes3d`; nada se edita en la escena sin pasar por el documento.
+9. **La dinámica del pincel es idéntica en 2D y en 3D**, muestreo mínimo
+   incluido. Cualquier cambio en uno va en los dos, o la prueba de paridad lo
+   caza.

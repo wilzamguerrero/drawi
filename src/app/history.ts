@@ -63,6 +63,20 @@ export class History {
     this.pending = null;
   }
 
+  /**
+   * Vuelve al estado que se fotografio en `begin`, sin dejar rastro.
+   *
+   * Es lo que necesita un gesto que ya ha modificado el documento y se cancela a
+   * mitad -suavizar, arrastrar-: `abort` suelta la instantanea pero no deshace
+   * nada, asi que lo que ya se toco se quedaba tocado.
+   */
+  rollback(): boolean {
+    if (!this.pending) return false;
+    this.doc.restore(this.pending);
+    this.pending = null;
+    return true;
+  }
+
   /** Registra un cambio instantaneo (un boton, no un gesto). */
   record(label: string, before?: SceneSnapshot): void {
     this.push(label, before ?? this.doc.snapshot());

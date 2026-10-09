@@ -17,13 +17,18 @@ import { Stroke3DBuilder } from "../src/scene3d/builder";
 import { computeFrames } from "../src/scene3d/frames";
 import { simplifyStroke } from "../src/scene3d/simplify";
 import {
+  MIN_JOINT_RATIO,
   COMPACT_THRESHOLD,
+  IA_EXT,
   IA_POS,
   IA_RAD,
+  IB_EXT,
   IB_POS,
   IB_RAD,
   INSTANCE_FLOATS,
   StrokeScene,
+  jointExtensions,
+  packSegments,
   segmentsOf,
 } from "../src/scene3d/batch";
 import { cullBatch, frustumOf, screenRadiusPx, sphereVisible } from "../src/scene3d/cull";
@@ -63,9 +68,21 @@ import {
   POS_OFFSET,
   PRESSURE_OFFSET,
   RADIUS_OFFSET,
+  TIME_OFFSET,
   type Sample3D,
+  type Stroke3D,
 } from "../src/scene3d/types";
 import { v3, type V3 } from "../src/scene3d/vec3";
+import { falloff, pullStroke, relaxStroke, touches } from "../src/scene3d/relax";
+import {
+  FillScene,
+  makeFill,
+  outlineArea,
+  outlineNormal,
+  trianglesArea,
+  triangulateOutline,
+} from "../src/scene3d/fill";
+import { SceneDocument } from "../src/scene/document";
 
 // El tsconfig usa `"types": []` a proposito: la aplicacion se compila contra el
 // DOM y nada mas. Esta suite si corre en Node, asi que declara aqui lo unico que
@@ -673,16 +690,185 @@ const build3d = (
  * Un gesto largo y repetido no debe reasignar el buffer en cada punto: se crece
  * por duplicacion. Se comprueba que 4.000 puntos se capturan sin perder el
  * contenido por el camino.
+ *
+ * El paso entre muestras (12 unidades de mundo) es mayor que el minimo que impone
+ * el radio -`max(0.55 / zoom, 0.5 * r)`, con el pincel por defecto 2.5-, para que
+ * lo que se mida sea el crecimiento del buffer y no el muestreo.
  */
 {
   const b = new Stroke3DBuilder(settings({ streamline: 0, smoothing: 0 }));
   b.begin(sample3(0, 0, 0, 0), { brush: "ribbon", color: "#fff", layerId: "L" });
   const many: Sample3D[] = [];
-  for (let i = 1; i < 4000; i++) many.push(sample3(i * 2, Math.sin(i * 0.05) * 20, 0, i));
+  for (let i = 1; i < 4000; i++) many.push(sample3(i * 12, Math.sin(i * 0.05) * 20, 0, i));
   b.push(many, true);
   ok("el buffer crece sin perder puntos", b.length === 4000, `${b.length} puntos capturados`);
   const s = b.finalize();
   ok("el trazo largo se cierra", s !== null && s.count >= 2 && s.count <= 4000, `${s?.count} puntos`);
+}
+
+// ---------------------------------------------------------------- juntas --
+
+/**
+ * Un trazo plano en XY, con la normal del plano puesta.
+ *
+ * Plano a proposito: con la cinta tendida sobre XY los dos quads de una junta son
+ * rectangulos coplanares, asi que la comprobacion de cobertura se puede hacer con
+ * aritmetica de dos dimensiones y sin ambiguedad.
+ *
+ * Cada llamada se lleva un id distinto: el id es la identidad del trazo, y dos
+ * trazos con el mismo id son, para la escena, el mismo trazo editado.
+ */
+let planarSeq = 0;
+const planarStroke = (pts: readonly [number, number][], r: number): Stroke3D => {
+  const data = new Float32Array(pts.length * POINT_FLOATS);
+  for (let i = 0; i < pts.length; i++) {
+    const o = i * POINT_FLOATS;
+    data[o + POS_OFFSET] = pts[i][0];
+    data[o + POS_OFFSET + 1] = pts[i][1];
+    data[o + POS_OFFSET + 2] = 0;
+    data[o + RADIUS_OFFSET] = r;
+    data[o + PRESSURE_OFFSET] = 1;
+    data[o + TIME_OFFSET] = i;
+  }
+  computeFrames(data, pts.length, v3(0, 0, 1));
+  return {
+    id: `junta-${++planarSeq}`,
+    brush: "ribbon",
+    color: "#000000",
+    layerId: "L",
+    data,
+    count: pts.length,
+    bounds: boundsOf(data, pts.length),
+    seed: 1,
+    planeNormal: v3(0, 0, 1),
+  };
+};
+
+/**
+ * Replica exacta de lo que hace el vertex shader: prolonga el quad por `extA` y
+ * `extB` a lo largo de su tangente, y acota el radio al tramo original.
+ */
+const covers = (buf: Float32Array, i: number, px: number, py: number): boolean => {
+  const o = i * INSTANCE_FLOATS;
+  const ax = buf[o + IA_POS];
+  const ay = buf[o + IA_POS + 1];
+  const bx = buf[o + IB_POS];
+  const by = buf[o + IB_POS + 1];
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-9) return false;
+
+  const ux = dx / len;
+  const uy = dy / len;
+  const along = (px - ax) * ux + (py - ay) * uy;
+  const lateral = Math.abs((px - ax) * -uy + (py - ay) * ux);
+
+  if (along < -buf[o + IA_EXT] || along > len + buf[o + IB_EXT]) return false;
+  const t = Math.min(1, Math.max(0, along / len));
+  const ra = buf[o + IA_RAD];
+  const rb = buf[o + IB_RAD];
+  return lateral <= ra + (rb - ra) * t;
+};
+
+/** Puntos sin cubrir del disco de radio `r` alrededor de una junta. */
+const uncoveredAtJoint = (
+  buf: Float32Array,
+  joint: number,
+  cx: number,
+  cy: number,
+  r: number,
+): number => {
+  let miss = 0;
+  for (let a = 0; a < 360; a += 3) {
+    const rad = (a * Math.PI) / 180;
+    for (const k of [0.35, 0.7, 1]) {
+      const px = cx + Math.cos(rad) * r * k;
+      const py = cy + Math.sin(rad) * r * k;
+      if (!covers(buf, joint - 1, px, py) && !covers(buf, joint, px, py)) miss++;
+    }
+  }
+  return miss;
+};
+
+{
+  const r = 10;
+
+  // Los extremos del trazo no se prolongan: ahi no hay vecino que rellenar y
+  // hacerlo alargaria el trazo por los dos cabos.
+  const recto = jointExtensions(planarStroke([[0, 0], [100, 0], [200, 0], [300, 0]], r));
+  ok("los extremos del trazo no se prolongan", recto[0] === 0 && recto[3] === 0, `${recto[0]} / ${recto[3]}`);
+  // Un tramo recto no tiene muesca que cerrar, pero si costura de antialias: dos
+  // quads que comparten canto exacto dejan una linea clara al componerse. Por eso
+  // hay un suelo.
+  ok(
+    "un tramo recto conserva el solape minimo",
+    Math.abs(recto[1] - r * MIN_JOINT_RATIO) < 1e-6 && recto[1] > 0,
+    `${f(recto[1], 4)} = ${f(r * MIN_JOINT_RATIO, 4)}`,
+  );
+
+  // Un codo de 90 grados necesita justo el radio: es la tapa redonda que cubre la
+  // junta entera.
+  const codo = jointExtensions(planarStroke([[0, 0], [200, 0], [200, 200]], r));
+  ok("un codo de 90 grados se prolonga un radio", Math.abs(codo[1] - r) < 1e-4, f(codo[1], 4));
+
+  // Y nunca mas: prolongar mas alla del radio solo anadiria solape.
+  const agudo = jointExtensions(planarStroke([[0, 0], [200, 0], [100, 4]], r));
+  ok("una vuelta atras no se prolonga mas que el radio", agudo[1] <= r + 1e-6, f(agudo[1], 4));
+}
+
+/**
+ * La junta tiene que quedar tapada, y esta es la prueba que importa.
+ *
+ * Se barre el disco del radio alrededor de la junta y se comprueba que cada punto
+ * lo cubre alguno de los dos segmentos. Ademas se repite el barrido con la
+ * prolongacion a cero -que es como estaba antes- para dejar claro que la prueba
+ * distingue los dos casos: si no fallara sin el arreglo, no probaria nada.
+ */
+for (const [nombre, grados] of [["90 grados", 90], ["20 grados", 20]] as const) {
+  const r = 10;
+  const rad = (grados * Math.PI) / 180;
+  const stroke = planarStroke(
+    [[0, 0], [200, 0], [200 + Math.cos(rad) * 200, Math.sin(rad) * 200]],
+    r,
+  );
+  const buf = new Float32Array(segmentsOf(stroke.count) * INSTANCE_FLOATS);
+  packSegments(buf, 0, stroke);
+
+  const miss = uncoveredAtJoint(buf, 1, 200, 0, r);
+  ok(`el codo de ${nombre} queda tapado`, miss === 0, `${miss} puntos sin cubrir`);
+
+  const sinProlongar = buf.slice();
+  for (let i = 0; i < segmentsOf(stroke.count); i++) {
+    sinProlongar[i * INSTANCE_FLOATS + IA_EXT] = 0;
+    sinProlongar[i * INSTANCE_FLOATS + IB_EXT] = 0;
+  }
+  const antes = uncoveredAtJoint(sinProlongar, 1, 200, 0, r);
+  ok(
+    `sin prolongar el codo de ${nombre} dejaba hueco`,
+    antes > 0,
+    `${antes} puntos sin cubrir`,
+  );
+}
+
+/**
+ * Las dos mitades de una junta tienen que leer el MISMO numero.
+ *
+ * La junta la comparten el final de un segmento y el principio del siguiente: si
+ * cada uno calculara su prolongacion por su cuenta, un lado se estiraria y el otro
+ * no y el solape no cuadraria.
+ */
+{
+  const stroke = planarStroke([[0, 0], [120, 0], [120, 90], [40, 160]], 8);
+  const buf = new Float32Array(segmentsOf(stroke.count) * INSTANCE_FLOATS);
+  packSegments(buf, 0, stroke);
+  let worst = 0;
+  for (let i = 0; i + 1 < segmentsOf(stroke.count); i++) {
+    const fin = buf[i * INSTANCE_FLOATS + IB_EXT];
+    const inicio = buf[(i + 1) * INSTANCE_FLOATS + IA_EXT];
+    worst = Math.max(worst, Math.abs(fin - inicio));
+  }
+  ok("las dos mitades de una junta coinciden", worst < 1e-9, `desvio ${f(worst, 6)}`);
 }
 
 // ---------------------------------------------------------------- lotes --
@@ -917,6 +1103,7 @@ const build3d = (
       count: n,
       bounds: boundsOf(data, n),
       seed: k,
+      planeNormal: null,
     });
   }
   ok("20.000 trazos de tres pinceles son tres draw calls", scene.batchCount === 3,
@@ -1567,6 +1754,486 @@ const mods = (patch: Partial<Modifiers3D> = {}): Modifiers3D => ({ ...NO_MODIFIE
   const moved =
     antes && despues ? Math.hypot(antes.x - despues.x, antes.y - despues.y, antes.z - despues.z) : Infinity;
   ok("el punto bajo el cursor no se mueve al acercar", moved < 1e-6, `desvio ${f(moved, 8)}`);
+}
+
+// ------------------------------------------------- capas del espacio --
+
+/**
+ * La escena tiene que ser funcion pura de la lista de trazos del documento.
+ *
+ * De esa propiedad salen gratis deshacer, rehacer y editar un trazo ya dibujado:
+ * los tres cambian la lista, y la escena se limita a seguirla. Lo que se mide
+ * aqui es que ninguna de las tres deje el buffer mintiendo.
+ */
+{
+  const scene = new StrokeScene();
+  const s1 = planarStroke([[0, 0], [60, 0], [120, 0]], 5);
+  const s2 = planarStroke([[0, 100], [60, 100], [120, 100]], 5);
+
+  ok("sin trazos no hay lotes", scene.sync([]) === false && scene.all.length === 0);
+
+  scene.sync([s1, s2]);
+  ok("los trazos del documento entran en la escena", scene.all.length === 1, `${scene.all.length} lotes`);
+  ok("y quedan sus dos rangos", scene.instances === 4, `${scene.instances} instancias`);
+
+  scene.sync([s1]);
+  ok("quitar un trazo lo saca de la escena", scene.instances === 2 && scene.range(s2.id) === undefined);
+
+  // Editar: mismo id, otra referencia, otra forma.
+  const editado = {
+    ...planarStroke([[0, 0], [60, 30], [120, 0]], 5),
+    id: s1.id,
+    brush: s1.brush,
+    color: s1.color,
+    layerId: s1.layerId,
+  };
+  scene.sync([editado]);
+  const r = scene.range(s1.id);
+  ok("editar un trazo reescribe su hueco sin moverlo", r?.start === 0 && r?.count === 2);
+  ok("y el lote guarda la version nueva", r?.stroke === editado);
+
+  // Lo que de verdad importa de `rewrite`: que los segmentos del buffer sean los
+  // del trazo nuevo y no los del viejo.
+  const batch = scene.all[0];
+  let worst = 0;
+  for (let i = 0; i < 2; i++) {
+    const o = i * INSTANCE_FLOATS;
+    for (let k = 0; k < 3; k++) {
+      const esperado = editado.data[(i + 1) * POINT_FLOATS + k];
+      worst = Math.max(worst, Math.abs(batch.data[o + IB_POS + k] - esperado));
+    }
+  }
+  ok("los segmentos del buffer son los del trazo editado", worst < 1e-6, `desvio ${f(worst, 8)}`);
+
+  // Cambiar el numero de puntos no cabe en el hueco: se olvida y se anade.
+  const larga = {
+    ...planarStroke([[0, 0], [40, 20], [80, 0], [120, 20]], 5),
+    id: s1.id,
+    brush: s1.brush,
+    color: s1.color,
+    layerId: s1.layerId,
+  };
+  scene.sync([larga]);
+  ok("un trazo con mas puntos se recoloca entero", scene.instances === 3 && scene.range(s1.id)?.count === 3);
+
+  scene.sync([]);
+  ok("vaciar la lista deja la escena sin lotes", scene.all.length === 0);
+}
+
+/** Deshacer y rehacer pasan por la misma reconciliacion, y tienen que cuadrar. */
+{
+  const scene = new StrokeScene();
+  const a = planarStroke([[0, 0], [50, 0]], 4);
+  const b = planarStroke([[0, 50], [50, 50]], 4);
+
+  scene.sync([a]);
+  const uno = scene.instances;
+  scene.sync([a, b]);
+  const dos = scene.instances;
+  scene.sync([a]);
+  const vuelta = scene.instances;
+
+  ok(
+    "ir y volver en el historial deja el mismo dibujo",
+    uno === vuelta && dos > uno,
+    `${uno} / ${dos} / ${vuelta}`,
+  );
+}
+
+// El documento guarda los trazos del espacio, no el visor.
+{
+  const doc = new SceneDocument();
+  const capa = doc.scene3dTarget();
+  ok("la primera vez se crea la capa del espacio", capa.kind === "scene3d" && doc.scene3dLayers.length === 1);
+  ok("y no se duplica al pedirla otra vez", doc.scene3dTarget().id === capa.id && doc.scene3dLayers.length === 1);
+
+  const s = { ...planarStroke([[0, 0], [30, 0], [60, 0]], 3), layerId: capa.id };
+  doc.addStroke3D(s);
+  ok("el trazo entra en su capa", doc.strokesOf(capa.id).length === 1 && doc.strokes3d.length === 1);
+  ok("el documento deja de estar vacio", doc.isEmpty === false);
+
+  // Un trazo que apunta a una capa que no existe se reagrupa en una del espacio.
+  doc.strokes3d.push({ ...planarStroke([[0, 0], [10, 0]], 3), id: "huerfano", layerId: "no-existe" });
+  doc.ensureLayers();
+  ok(
+    "un trazo huerfano se reagrupa en una capa del espacio",
+    doc.strokes3d.every((x) => doc.scene3dLayers.some((l) => l.id === x.layerId)),
+    `${doc.scene3dLayers.length} capas del espacio`,
+  );
+
+  // Borrar la capa se lleva sus trazos: dejarlos sin capa los devolveria a otra y
+  // el dibujo cambiaria de sitio sin que nadie lo pidiera.
+  const antes = doc.strokes3d.length;
+  doc.removeLayer(capa.id);
+  ok("borrar la capa se lleva sus trazos", doc.strokes3d.length < antes && doc.strokesOf(capa.id).length === 0);
+}
+
+{
+  const doc = new SceneDocument();
+  const otra = doc.addScene3DLayer("Otra");
+  doc.addStroke3D({ ...planarStroke([[0, 0], [20, 0]], 3), layerId: otra.id });
+  const n = doc.clearStrokes3D(otra.id);
+  ok("vaciar una capa del espacio devuelve cuantos se llevo", n === 1 && doc.strokes3d.length === 0);
+  ok("y vaciar una capa ya vacia no hace nada", doc.clearStrokes3D(otra.id) === 0);
+}
+
+/**
+ * La instantanea del historial tiene que llevarse los trazos del espacio y el
+ * punto de vista. Los trazos van por REFERENCIA, que es lo que hace que 80 pasos
+ * de historial de un dibujo denso cuesten punteros y no megabytes.
+ */
+{
+  const doc = new SceneDocument();
+  const capa = doc.scene3dTarget();
+  const s = { ...planarStroke([[0, 0], [10, 0], [20, 0]], 2), layerId: capa.id };
+  doc.addStroke3D(s);
+  doc.camera3d.yaw = 1.25;
+  doc.camera3d.distance = 321;
+
+  const snap = doc.snapshot();
+  ok("la instantanea se lleva el trazo", snap.strokes3d.length === 1 && snap.strokes3d[0] === s);
+  ok("y el punto de vista", Math.abs(snap.camera3d.yaw - 1.25) < 1e-9);
+
+  doc.removeStroke3D(s.id);
+  doc.camera3d.yaw = 0;
+  ok("quitar el trazo deja el documento sin el", doc.strokes3d.length === 0);
+
+  doc.restore(snap);
+  ok("deshacer devuelve el trazo", doc.strokes3d.length === 1 && doc.strokes3d[0] === s);
+  ok(
+    "y devuelve el punto de vista",
+    Math.abs(doc.camera3d.yaw - 1.25) < 1e-9 && doc.camera3d.distance === 321,
+  );
+}
+
+/**
+ * Ojo propio y de los ancestros: es la regla que decide si una capa del espacio
+ * se dibuja, y la comparten el visor, el compositor 2D y la exportacion.
+ */
+{
+  const doc = new SceneDocument();
+  const grupo = doc.addGroup();
+  const capa = doc.addScene3DLayer();
+  doc.moveLayerTo(capa.id, grupo.id, 0);
+  const setVisible = (id: string, v: boolean): void => {
+    const l = doc.layerById(id);
+    if (l) l.visible = v;
+  };
+
+  ok("una capa visible dentro de un grupo visible se ve", doc.layerVisible(capa.id) === true);
+  setVisible(grupo.id, false);
+  ok("apagar el grupo apaga a su hija", doc.layerVisible(capa.id) === false);
+  setVisible(grupo.id, true);
+  setVisible(capa.id, false);
+  ok("y su propio ojo manda", doc.layerVisible(capa.id) === false);
+  ok("una capa que no existe no se ve", doc.layerVisible("no-existe") === false);
+}
+
+
+
+// ------------------------------------------------- suavizar y arrastrar --
+
+/** Desviacion maxima de los puntos de un trazo respecto a la recta y = 0. */
+const wobble = (s: Stroke3D): number => {
+  let worst = 0;
+  for (let i = 0; i < s.count; i++) {
+    worst = Math.max(worst, Math.abs(s.data[i * POINT_FLOATS + POS_OFFSET + 1]));
+  }
+  return worst;
+};
+
+/** Un trazo recto con ruido deterministico encima. */
+const noisyLine = (n: number, amp: number): Stroke3D => {
+  const pts: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    pts.push([i * 10, Math.sin(i * 1.7) * amp + Math.sin(i * 0.31) * amp * 0.5]);
+  }
+  return planarStroke(pts, 4);
+};
+
+{
+  const original = noisyLine(40, 3);
+  const suave = relaxStroke(original, { strength: 0.8, iterations: 3, radius: false, ends: false });
+
+  ok("suavizar devuelve un trazo nuevo", suave !== null && suave !== original);
+  ok("suavizar no cambia el numero de puntos", suave?.count === original.count, `${suave?.count}`);
+  ok(
+    "el trazo suavizado ondula menos",
+    !!suave && wobble(suave) < wobble(original) * 0.5,
+    `${f(wobble(original), 3)} -> ${f(suave ? wobble(suave) : -1, 3)}`,
+  );
+
+  // Los cabos se quedan: relajarlos los mete hacia dentro y el trazo encogeria por
+  // los dos lados en cada pasada.
+  const cabo = (s: Stroke3D, i: number): [number, number, number] => [
+    s.data[i * POINT_FLOATS + POS_OFFSET],
+    s.data[i * POINT_FLOATS + POS_OFFSET + 1],
+    s.data[i * POINT_FLOATS + POS_OFFSET + 2],
+  ];
+  const a0 = cabo(original, 0);
+  const a1 = cabo(suave as Stroke3D, 0);
+  const b0 = cabo(original, original.count - 1);
+  const b1 = cabo(suave as Stroke3D, suave!.count - 1);
+  const desplazado = Math.max(
+    Math.abs(a0[0] - a1[0]) + Math.abs(a0[1] - a1[1]) + Math.abs(a0[2] - a1[2]),
+    Math.abs(b0[0] - b1[0]) + Math.abs(b0[1] - b1[1]) + Math.abs(b0[2] - b1[2]),
+  );
+  ok("los cabos no se mueven al suavizar", desplazado < 1e-6, `desvio ${f(desplazado, 8)}`);
+
+  // El id y el plano son lo que permite reescribir el hueco del lote y rehacer los
+  // marcos sin que la cinta se retuerza.
+  ok(
+    "el trazo suavizado conserva su identidad y su plano",
+    suave?.id === original.id && suave?.planeNormal?.z === 1,
+    `${suave?.id} / ${suave?.planeNormal?.z}`,
+  );
+
+  // Los marcos se rehacen: si no, la cinta se orientaria con la forma vieja.
+  let peorNorma = 0;
+  for (let i = 0; i < (suave?.count ?? 0); i++) {
+    const o = i * POINT_FLOATS;
+    const nx = suave!.data[o + 3];
+    const ny = suave!.data[o + 4];
+    const nz = suave!.data[o + 5];
+    peorNorma = Math.max(peorNorma, Math.abs(Math.hypot(nx, ny, nz) - 1));
+  }
+  ok("y sus marcos quedan unitarios", peorNorma < 1e-6, `desvio ${f(peorNorma, 8)}`);
+
+  ok("un trazo de dos puntos no se puede suavizar", relaxStroke(planarStroke([[0, 0], [10, 0]], 4)) === null);
+  ok("fuerza cero no cambia nada", relaxStroke(original, { strength: 0, iterations: 1, radius: false, ends: false }) === null);
+}
+
+{
+  // El peso de agarre: 1 en el centro, 0 en el borde del radio.
+  ok("el centro agarra del todo", falloff(0, 50) === 1, f(falloff(0, 50), 4));
+  ok("el borde del radio no agarra nada", falloff(50, 50) === 0 && falloff(60, 50) === 0);
+  const medio = falloff(25, 50);
+  ok("y en medio agarra en medio", medio > 0 && medio < 1, f(medio, 4));
+  let monotono = true;
+  let previo = Infinity;
+  for (let d = 0; d <= 50; d += 5) {
+    const w = falloff(d, 50);
+    if (w > previo) monotono = false;
+    previo = w;
+  }
+  ok("el agarre decrece con la distancia", monotono);
+  ok("un radio nulo no agarra", falloff(0, 0) === 0);
+}
+
+{
+  const original = planarStroke([[0, 0], [50, 0], [100, 0], [150, 0]], 5);
+  ok("se sabe si un trazo cae dentro del radio", touches(original, v3(50, 0, 0), 10) === true);
+  ok("y si no cae, tambien", touches(original, v3(50, 200, 0), 10) === false);
+  ok("un radio nulo no toca nada", touches(original, v3(50, 0, 0), 0) === false);
+
+  const agarre = v3(50, 0, 0);
+  const delta = v3(0, 30, 0);
+  const movido = pullStroke(original, agarre, delta, 60);
+  ok("arrastrar devuelve un trazo nuevo", movido !== null && movido !== original);
+
+  const y = (s: Stroke3D, i: number): number => s.data[i * POINT_FLOATS + POS_OFFSET + 1];
+  // El punto del centro se mueve entero; los de los cabos, nada.
+  ok("el centro se mueve todo el desplazamiento", Math.abs(y(movido as Stroke3D, 1) - 30) < 1e-5, f(y(movido as Stroke3D, 1), 4));
+  ok("los cabos, fuera del radio, no se mueven", y(movido as Stroke3D, 0) === 0 && y(movido as Stroke3D, 3) === 0);
+  ok("el id se conserva para poder reescribir su hueco", movido?.id === original.id);
+
+  // La propiedad que importa del arrastre: se aplica el desplazamiento TOTAL sobre
+  // la forma original en cada fotograma, asi que volver al punto de partida
+  // devuelve el trazo a su sitio en vez de dejarlo a medio camino.
+  const vuelta = pullStroke(original, agarre, v3(0, 0, 0), 60);
+  ok("con desplazamiento nulo no se mueve nada", vuelta !== null);
+  let peor = 0;
+  for (let i = 0; i < original.count; i++) {
+    peor = Math.max(peor, Math.abs(y(vuelta as Stroke3D, i) - y(original, i)));
+  }
+  ok("volver al punto de partida devuelve el trazo a su sitio", peor < 1e-6, `desvio ${f(peor, 8)}`);
+
+  ok("arrastrar donde no hay nada no devuelve trazo", pullStroke(original, v3(0, 500, 0), delta, 20) === null);
+  ok("un radio nulo no agarra nada", pullStroke(original, agarre, delta, 0) === null);
+}
+
+/** El trazo editado tiene que llegar al buffer del lote, no solo al documento. */
+{
+  const scene = new StrokeScene();
+  const original = noisyLine(30, 4);
+  scene.sync([original]);
+  const antes = scene.all[0].data.slice(0, 29 * INSTANCE_FLOATS);
+
+  const suave = relaxStroke(original, { strength: 0.9, iterations: 4, radius: false, ends: false });
+  ok("editar y reconciliar acepta el trazo", !!suave && scene.sync([suave as Stroke3D]) === true);
+
+  const despues = scene.all[0].data.slice(0, 29 * INSTANCE_FLOATS);
+  let cambiado = 0;
+  for (let i = 0; i < antes.length; i++) if (Math.abs(antes[i] - despues[i]) > 1e-6) cambiado++;
+  ok("y los segmentos del buffer cambian de verdad", cambiado > 0, `${cambiado} floats distintos`);
+  ok("sin mover el trazo de sitio", scene.instances === 29, `${scene.instances} instancias`);
+}
+
+// ---------------------------------------------------------------- relleno --
+
+/** Contorno en el plano XY a partir de puntos 2D. */
+const outlineOf = (pts: readonly [number, number][]): Float32Array => {
+  const out = new Float32Array(pts.length * 3);
+  for (let i = 0; i < pts.length; i++) {
+    out[i * 3] = pts[i][0];
+    out[i * 3 + 1] = pts[i][1];
+    out[i * 3 + 2] = 0;
+  }
+  return out;
+};
+
+const PLANO_Z = v3(0, 0, 1);
+
+{
+  // Un cuadrado: dos triangulos y el area exacta.
+  const cuadrado: [number, number][] = [[0, 0], [100, 0], [100, 100], [0, 100]];
+  const outline = outlineOf(cuadrado);
+  const area = outlineArea(outline, 4, PLANO_Z);
+  ok("el area del contorno es la del cuadrado", Math.abs(area - 10000) < 1e-6, f(area, 3));
+
+  const tris = triangulateOutline(outline, 4, PLANO_Z);
+  ok("un cuadrado sale en dos triangulos", tris.length === 18, `${tris.length / 9} triangulos`);
+  const cubierto = trianglesArea(tris);
+  ok(
+    "y los triangulos cubren el contorno entero",
+    Math.abs(cubierto - area) < 1e-6,
+    `${f(cubierto, 3)} frente a ${f(area, 3)}`,
+  );
+
+  // El sentido de giro no debe importar: se dibuja como salga.
+  const alReves = outlineOf([...cuadrado].reverse() as [number, number][]);
+  const trisRev = triangulateOutline(alReves, 4, PLANO_Z);
+  ok(
+    "el sentido de giro del contorno da igual",
+    Math.abs(trianglesArea(trisRev) - area) < 1e-6,
+    f(trianglesArea(trisRev), 3),
+  );
+}
+
+/**
+ * El caso que de verdad discrimina: un contorno CONCAVO.
+ *
+ * Un abanico desde el centro solo rellena bien lo convexo; en una ese, deja
+ * triangulos fuera y huecos dentro. Es la razon de usar recorte de orejas, y por
+ * eso la comprobacion es que el area sumada sea EXACTAMENTE la del contorno: un
+ * abanico mal puesto sumaria de mas.
+ */
+{
+  // Una ese: barra de 100x40 abajo y columna de 40x60 encima. Area 6400.
+  const ese: [number, number][] = [
+    [0, 0],
+    [100, 0],
+    [100, 40],
+    [40, 40],
+    [40, 100],
+    [0, 100],
+  ];
+  const outline = outlineOf(ese);
+  const area = outlineArea(outline, ese.length, PLANO_Z);
+  ok("el area de la ese es la esperada", Math.abs(area - 6400) < 1e-6, f(area, 3));
+
+  const tris = triangulateOutline(outline, ese.length, PLANO_Z);
+  ok("una ese sale en n-2 triangulos", tris.length === (ese.length - 2) * 9, `${tris.length / 9}`);
+  const cubierto = trianglesArea(tris);
+  ok(
+    "y la cubren sin salirse ni solaparse",
+    Math.abs(cubierto - area) < 1e-6,
+    `${f(cubierto, 3)} frente a ${f(area, 3)}`,
+  );
+}
+
+{
+  // Un contorno degenerado no produce geometria: no hay nada que rellenar.
+  ok("dos puntos no son un contorno", triangulateOutline(outlineOf([[0, 0], [10, 0]]), 2, PLANO_Z).length === 0);
+  const linea = outlineOf([[0, 0], [50, 0], [100, 0]]);
+  ok("un contorno sin area no rellena", triangulateOutline(linea, 3, PLANO_Z).length === 0);
+  ok("y su area es cero", outlineArea(linea, 3, PLANO_Z) === 0);
+}
+
+/** Newell: la normal del contorno, para cuando se dibujo en el aire. */
+{
+  const cuadrado = outlineOf([[0, 0], [100, 0], [100, 100], [0, 100]]);
+  const n = outlineNormal(cuadrado, 4);
+  ok("Newell da una normal unitaria", Math.abs(Math.hypot(n.x, n.y, n.z) - 1) < 1e-6);
+  ok("y perpendicular al plano del contorno", Math.abs(n.z) > 0.999, f(n.z, 4));
+}
+
+/** Los lotes de manchas: una malla por (capa, color), rehecha cuando cambia. */
+{
+  const scene = new FillScene();
+  const cuadro: [number, number][] = [[0, 0], [100, 0], [100, 100], [0, 100]];
+  const a = makeFill("f1", outlineOf(cuadro), 4, {
+    color: "#ff0000",
+    layerId: "L",
+    planeNormal: PLANO_Z,
+  });
+  const b = makeFill("f2", outlineOf(cuadro.map(([x, y]) => [x + 200, y] as [number, number])), 4, {
+    color: "#ff0000",
+    layerId: "L",
+    planeNormal: PLANO_Z,
+  });
+
+  ok("sin manchas no hay mallas", scene.sync([]) === false && scene.all.length === 0);
+  scene.sync([a, b]);
+  ok("dos manchas del mismo color comparten malla", scene.all.length === 1, `${scene.all.length} mallas`);
+  ok("y suman sus vertices", scene.vertices === 12, `${scene.vertices} vertices`);
+
+  const malla = scene.all[0];
+  ok("las normales van por vertice", malla.normals.length === malla.positions.length && malla.vertices > 0);
+  ok(
+    "y son las del plano de la mancha",
+    Math.abs(malla.normals[2] - 1) < 1e-6 && Math.abs(malla.normals[0]) < 1e-6,
+    `(${f(malla.normals[0], 3)}, ${f(malla.normals[1], 3)}, ${f(malla.normals[2], 3)})`,
+  );
+
+  // Colores distintos, mallas distintas: el color es constante del material.
+  const c = makeFill("f3", outlineOf(cuadro), 4, {
+    color: "#00ff00",
+    layerId: "L",
+    planeNormal: PLANO_Z,
+  });
+  scene.sync([a, b, c]);
+  ok("otro color estrena malla", scene.all.length === 2, `${scene.all.length} mallas`);
+
+  scene.sync([a]);
+  ok("quitar una mancha rehace su malla", scene.vertices === 6, `${scene.vertices} vertices`);
+
+  // El gasto se detecta por referencia: si nada cambio, no se retriangula.
+  const antes = scene.all[0].revision;
+  ok("una lista identica no rehace nada", scene.sync([a]) === false && scene.all[0].revision === antes);
+
+  scene.sync([]);
+  ok("vaciar deja la escena sin mallas", scene.all.length === 0);
+}
+
+/** Las manchas tienen que llegar tambien al documento y al proyecto. */
+{
+  const doc = new SceneDocument();
+  const capa = doc.scene3dTarget();
+  const f = makeFill("f1", outlineOf([[0, 0], [50, 0], [50, 50], [0, 50]]), 4, {
+    color: "#123456",
+    layerId: capa.id,
+    planeNormal: PLANO_Z,
+  });
+  doc.addFill3D(f);
+  ok("la mancha entra en el documento", doc.fills3d.length === 1 && doc.fillsOf(capa.id).length === 1);
+  ok("y el documento deja de estar vacio", doc.isEmpty === false);
+
+  const snap = doc.snapshot();
+  doc.removeFill3D(f.id);
+  ok("quitarla deja el documento sin ella", doc.fills3d.length === 0);
+  doc.restore(snap);
+  ok("deshacer la devuelve por referencia", doc.fills3d[0] === f);
+
+  // Huerfana: se reagrupa en una capa del espacio, igual que los trazos.
+  doc.fills3d.push({ ...f, id: "huerfana", layerId: "no-existe" });
+  doc.ensureLayers();
+  ok(
+    "una mancha huerfana se reagrupa",
+    doc.fills3d.every((x) => doc.scene3dLayers.some((l) => l.id === x.layerId)),
+  );
+
+  ok("borrar la capa se lleva sus manchas", (doc.removeLayer(capa.id), doc.fills3d.length === 0));
 }
 
 console.log(out.join("\n"));

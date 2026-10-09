@@ -141,13 +141,9 @@ export class Compositor {
 
   /** ¿Se pinta esta capa? (ojo propio, ojo de ancestros y modo foco). */
   private isVisible(layer: SceneLayer, doc: SceneDocument, opts: CompositeOptions): boolean {
-    if (!layer.visible) return false;
-    let p = layer.parentId;
-    while (p) {
-      const parent = doc.layerById(p);
-      if (!parent || !parent.visible) return false;
-      p = parent.parentId;
-    }
+    // El ojo propio y el de los ancestros lo resuelve el documento: es la misma
+    // regla que necesitan el visor espacial y la exportacion.
+    if (!doc.layerVisible(layer.id)) return false;
     if (opts.soloId) return this.inSoloScope(layer, doc, opts.soloId);
     return true;
   }

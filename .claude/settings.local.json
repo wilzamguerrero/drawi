@@ -11,7 +11,17 @@
       "Bash(echo \"EXIT: $?\")",
       "WebSearch",
       "Bash(grep -rn \"from \\\\\"\\\\\\(\\\\.\\\\.\\\\/\\\\\\)*tools\\\\/types\\\\\"\\\\|from \\\\\"\\\\.\\\\/types\\\\\"\" src --include=*.ts)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(sed 's/^ *//')",
+      "Bash(sed 's/^\\\\\\( *[0-9]*\\\\\\)/\\\\1/')",
+      "Bash(awk '{printf \"%d\\\\t%s\\\\n\", NR+119, substr\\($0, index\\($0,$2\\)\\)}')",
+      "Bash(awk '{printf \"%d\\\\t%s\\\\n\", NR+199, substr\\($0, index\\($0,$2\\)\\)}')",
+      "Bash(awk 'NR>=260 && NR<=500 {printf \"%d\\\\t%s\\\\n\", NR, $0}' src/ui/layers-panel.ts)",
+      "Bash(awk 'NR>=500 && NR<=748 {printf \"%d\\\\t%s\\\\n\", NR, $0}' src/ui/layers-panel.ts)",
+      "Bash(cd \"e:/escrito 2026/documentos/drawi\" && grep -n \"reload\\(\\\\|clearAll\\\\b\" src/app/editor.ts src/scene/document.ts && echo \"=== editor reload ===\" && sed -n '/reload\\(/,/^  }/p' src/app/editor.ts | head -40)"
+    ],
+    "additionalDirectories": [
+      "e:\\escrito 2026\\documentos\\drawi\\src\\app"
     ]
   }
 }

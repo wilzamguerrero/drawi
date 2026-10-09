@@ -268,6 +268,62 @@ function scheduleIOSBanner(delayMs = 2800): void {
 
 // ------------------------------------------------------------ registro
 
+/**
+ * Retira el service worker en desarrollo, y borra sus caches.
+ *
+ * Hace falta porque `sw.js` sirve los scripts con cache-first: en produccion eso
+ * es correcto, porque el bundle lleva hash en el nombre y un build nuevo es una
+ * URL nueva. En desarrollo las URLs de los modulos son ESTABLES, asi que el
+ * service worker devolvia siempre la copia cacheada y **ningun cambio en el
+ * codigo se veia**, por mucho que se recargara. Es un fallo que cuesta horas
+ * porque no se parece a un fallo: la aplicacion funciona, solo que es la de ayer.
+ *
+ * Se retira solo, sin que nadie tenga que abrir las herramientas del navegador.
+ */
+async function dropServiceWorkerInDev(): Promise<void> {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    if (regs.length > 0) {
+      await Promise.all(regs.map((r) => r.unregister()));
+      console.warn(
+        "[drawi] Service worker retirado: su cache servia modulos viejos en desarrollo.",
+      );
+    }
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+    // Mientras el service worker siga CONTROLANDO esta pagina, sus manejadores
+    // siguen en pie aunque ya no este registrado. Una recarga lo suelta; el
+    // centinela de sesion impide que eso se convierta en un bucle de recargas.
+    if (navigator.serviceWorker.controller && !devReloaded()) {
+      markDevReloaded();
+      window.location.reload();
+    }
+  } catch (err) {
+    console.warn("[drawi] no se pudo retirar el service worker:", err);
+  }
+}
+
+const LS_DEV_RELOAD = "zence.pwa.dev-reload";
+
+function devReloaded(): boolean {
+  try {
+    return window.sessionStorage.getItem(LS_DEV_RELOAD) === "1";
+  } catch {
+    // Sin sessionStorage no se puede garantizar que no haya bucle: se prefiere no
+    // recargar y dejar que la limpieza de caches haga el trabajo.
+    return true;
+  }
+}
+
+function markDevReloaded(): void {
+  try {
+    window.sessionStorage.setItem(LS_DEV_RELOAD, "1");
+  } catch {}
+}
+
 async function registerSW(): Promise<void> {
   if (!("serviceWorker" in navigator)) return;
   // Evita registrar dos veces en HMR
@@ -334,6 +390,14 @@ async function registerSW(): Promise<void> {
 }
 
 export function initPWA(): void {
+  // En desarrollo NO se registra, y ademas se retira el que hubiera. Ver
+  // `dropServiceWorkerInDev`: su cache convertia cada cambio en invisible.
+  if (import.meta.env.DEV) {
+    void dropServiceWorkerInDev();
+    if (canShowIOS()) scheduleIOSBanner(3200);
+    return;
+  }
+
   // No registrar en contextos inseguros salvo localhost (el navegador ya lo bloquea)
   if (!("serviceWorker" in navigator)) {
     // Aun sin SW, muestra guía iOS si aplica

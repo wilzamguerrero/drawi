@@ -59,6 +59,8 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
       ["Rueda", "Acercar y alejar"],
       ["[ / ]", "Profundidad del plano de dibujo"],
       ["F", "Encuadrar todo lo dibujado"],
+      ["1 / 3 / 4", "Trazo, arrastre y borrador en el espacio"],
+      ["Suavizar (panel)", "Relaja los trazos que toca; insiste para suavizar más"],
       ["Alt + clic", "Borrar un trazo del espacio"],
     ],
   },

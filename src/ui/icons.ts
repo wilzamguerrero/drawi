@@ -48,6 +48,11 @@ export const ICONS: Record<string, string> = {
   ),
   grid: svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16M15 4v16"/>`),
   layers: svg(`<path d="m12 4 8 4-8 4-8-4Z"/><path d="m4 13 8 4 8-4"/>`),
+  cube: svg(
+    `<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4 7.5 8 4.5 8-4.5"/><path d="M12 12v9"/>`,
+  ),
+  smooth: svg(`<path d="M3 15c3-6 6-6 9 0s6 6 9 0"/>`),
+  circle: svg(`<circle cx="12" cy="12" r="7"/>`),
   save: svg(
     `<path d="M5 4h11l3 3v13H5Z"/><path d="M9 4v5h6V4"/><rect x="8" y="13" width="8" height="7"/>`,
   ),

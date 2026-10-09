@@ -27,9 +27,11 @@
 import * as THREE from "three";
 import { radiusAt, type Stroke3D } from "../scene3d/types";
 import {
+  IA_EXT,
   IA_NRM,
   IA_POS,
   IA_RAD,
+  IB_EXT,
   IB_NRM,
   IB_POS,
   IB_RAD,
@@ -55,6 +57,8 @@ attribute float aRadA;
 attribute vec3 aPosB;
 attribute vec3 aNrmB;
 attribute float aRadB;
+attribute float aExtA;
+attribute float aExtB;
 
 uniform mat4 uViewProjection;
 
@@ -64,7 +68,6 @@ varying vec3 vWorld;
 varying float vSide;
 
 void main() {
-  float t = position.x;
   float side = position.y;
 
   vec3 pa = aPosA;
@@ -73,9 +76,16 @@ void main() {
   float segLen = length(seg);
   vec3 tangent = segLen > 1e-6 ? seg / segLen : vec3(1.0, 0.0, 0.0);
 
+  // El quad se prolonga por los dos extremos para solaparse con los segmentos
+  // vecinos: sin eso, en cada cambio de direccion las dos orillas exteriores no
+  // llegan a tocarse y queda una muesca, y en los tramos rectos queda la costura
+  // de dos quads que comparten canto exacto. Cuanto prolongar lo decide la CPU,
+  // que es la unica que conoce a los vecinos.
+  float t = mix(-aExtA / max(segLen, 1e-6), 1.0 + aExtB / max(segLen, 1e-6), position.x);
+
   // La normal guardada se ortogonaliza contra la tangente: el trazo puede curvarse
   // despues de que el marco se calculara, y sin esto la cinta se retuerce.
-  vec3 nrm = mix(aNrmA, aNrmB, t);
+  vec3 nrm = mix(aNrmA, aNrmB, clamp(t, 0.0, 1.0));
   vec3 perp = nrm - tangent * dot(tangent, nrm);
   float pl = length(perp);
   vec3 facing = pl > 1e-5 ? perp / pl : vec3(0.0, 1.0, 0.0);
@@ -84,7 +94,10 @@ void main() {
   float wl = length(width);
   width = wl > 1e-5 ? width / wl : vec3(1.0, 0.0, 0.0);
 
-  float radius = mix(aRadA, aRadB, t);
+  // El radio se lee con t acotado: extrapolarlo en el tramo prolongado daria
+  // radios negativos con el afilado puesto, y un radio negativo da la vuelta al
+  // quad. La posicion si se extrapola, que es justo lo que se busca.
+  float radius = mix(aRadA, aRadB, clamp(t, 0.0, 1.0));
   vec3 center = mix(pa, pb, t);
   vec3 world = center + width * (side * radius);
 
@@ -149,6 +162,20 @@ export interface RibbonMaterialOptions {
   gloss: number;
 }
 
+/**
+ * Luz de la escena, compartida por todo lo que se sombrea en el visor.
+ *
+ * Vive aqui y no en cada material porque una escena con dos luces distintas se
+ * nota en seguida: un trazo y una mancha del mismo color saldrian de tonos
+ * diferentes. Cuando haya luces de verdad en el documento, este es el sitio del
+ * que tiraran las dos.
+ */
+export const SCENE_LIGHT = {
+  dir: new THREE.Vector3(0.4, -0.85, -0.35).normalize(),
+  color: new THREE.Color(1, 1, 1),
+  ambient: new THREE.Color(0.34, 0.35, 0.4),
+};
+
 export const createRibbonMaterial = (opts: RibbonMaterialOptions): THREE.ShaderMaterial =>
   new THREE.ShaderMaterial({
     vertexShader: VERT,
@@ -157,9 +184,9 @@ export const createRibbonMaterial = (opts: RibbonMaterialOptions): THREE.ShaderM
       uViewProjection: { value: new THREE.Matrix4() },
       uColor: { value: new THREE.Color(opts.color) },
       uCameraPos: { value: new THREE.Vector3() },
-      uLightDir: { value: new THREE.Vector3(0.4, -0.85, -0.35).normalize() },
-      uLightColor: { value: new THREE.Color(1, 1, 1) },
-      uAmbient: { value: new THREE.Color(0.34, 0.35, 0.4) },
+      uLightDir: { value: SCENE_LIGHT.dir },
+      uLightColor: { value: SCENE_LIGHT.color },
+      uAmbient: { value: SCENE_LIGHT.ambient },
       uOpacity: { value: opts.opacity },
       uGloss: { value: opts.gloss },
     },
@@ -190,33 +217,46 @@ export interface RibbonGeometry {
 }
 
 /**
- * Crea la geometria instanciada de un lote.
+ * Enlaza un array de segmentos a la geometria como una sola vista intercalada.
  *
- * Las dos vistas intercaladas apuntan al MISMO array, la segunda un punto mas
- * adelante, asi que la instancia `i` lee el punto `i` por `a*A` y el `i+1` por
- * `a*B` sin duplicar un solo byte.
+ * La instancia `i` es el segmento `i`, y sus dos extremos salen del mismo array:
+ * sin vistas desplazadas y sin indices que puedan desincronizarse. Es la misma
+ * funcion la que sirve al lote y a la cinta provisional del trazo en curso, para
+ * que las dos se lean exactamente igual.
  */
-export const createRibbonGeometry = (batch: StrokeBatch): RibbonGeometry => {
-  const geometry = new THREE.InstancedBufferGeometry();
-
-  geometry.setAttribute("position", new THREE.BufferAttribute(QUAD, 3));
-  geometry.setIndex(new THREE.BufferAttribute(QUAD_INDEX, 1));
-
-  // Una sola vista intercalada: la instancia `i` es el segmento `i`. Sin vistas
-  // desplazadas y sin indices que puedan desincronizarse.
-  const buf = new THREE.InstancedInterleavedBuffer(batch.data, INSTANCE_FLOATS, 1);
+export const bindInstances = (
+  geometry: THREE.InstancedBufferGeometry,
+  data: Float32Array,
+): THREE.InstancedInterleavedBuffer => {
+  const buf = new THREE.InstancedInterleavedBuffer(data, INSTANCE_FLOATS, 1);
   geometry.setAttribute("aPosA", new THREE.InterleavedBufferAttribute(buf, 3, IA_POS));
   geometry.setAttribute("aNrmA", new THREE.InterleavedBufferAttribute(buf, 3, IA_NRM));
   geometry.setAttribute("aRadA", new THREE.InterleavedBufferAttribute(buf, 1, IA_RAD));
+  geometry.setAttribute("aExtA", new THREE.InterleavedBufferAttribute(buf, 1, IA_EXT));
   geometry.setAttribute("aPosB", new THREE.InterleavedBufferAttribute(buf, 3, IB_POS));
   geometry.setAttribute("aNrmB", new THREE.InterleavedBufferAttribute(buf, 3, IB_NRM));
   geometry.setAttribute("aRadB", new THREE.InterleavedBufferAttribute(buf, 1, IB_RAD));
+  geometry.setAttribute("aExtB", new THREE.InterleavedBufferAttribute(buf, 1, IB_EXT));
+  return buf;
+};
 
-  geometry.instanceCount = batch.instancesLaid;
+/** Geometria instanciada vacia: el quad patron y su indice, sin instancias. */
+export const emptyRibbonGeometry = (): THREE.InstancedBufferGeometry => {
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(QUAD, 3));
+  geometry.setIndex(new THREE.BufferAttribute(QUAD_INDEX, 1));
   // La esfera envolvente se calcula por lote en el culling; dejar que three la
   // recalcule recorriendo las instancias costaria mas que el propio dibujado.
   geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+  geometry.instanceCount = 0;
+  return geometry;
+};
 
+/** Crea la geometria instanciada de un lote. */
+export const createRibbonGeometry = (batch: StrokeBatch): RibbonGeometry => {
+  const geometry = emptyRibbonGeometry();
+  bindInstances(geometry, batch.data);
+  geometry.instanceCount = batch.instancesLaid;
   return { geometry, revision: batch.revision, source: batch.data };
 };
 

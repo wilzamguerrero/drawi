@@ -45,6 +45,8 @@ export class StrokeBuilder {
   private smoothPressure = 0;
   private arcLen = 0;
   private started = false;
+  /** Radio del ultimo punto aceptado. Gobierna el muestreo minimo. */
+  private lastR = 0;
   // Rumbo (direccion unitaria) suavizado del trazo. La prediccion se sintetiza
   // a partir de aqui, nunca de los puntos crudos del navegador: por eso la punta
   // no puede temblar ni "saltar" cuando cambia la presion o el boton del lapiz.
@@ -233,10 +235,21 @@ export class StrokeBuilder {
     const dx = x - this.lastX;
     const dy = y - this.lastY;
     const dWorld = Math.hypot(dx, dy);
-    const dScreen = dWorld * this.zoom;
     this.lastT = s.t;
 
-    if (!force && dScreen < 0.55) return false;
+    // Muestreo minimo, con dos umbrales y gana el mas exigente.
+    //
+    // El primero es el de siempre, en pixeles de pantalla: por debajo de medio
+    // pixel la muestra no aporta nada. El segundo es relativo al radio: dos puntos
+    // mas juntos que medio radio dejan segmentos mucho mas cortos que el ancho del
+    // trazo, y como en 3D las juntas se prolongan hasta un radio, todos los
+    // segmentos acabarian conteniendose unos a otros.
+    //
+    // Tiene que ser IDENTICO en los dos constructores: la dinamica del pincel es
+    // la misma en el lienzo y en el espacio, y hay una prueba que lo comprueba
+    // punto por punto.
+    const minStep = Math.max(0.55 / this.zoom, 0.5 * this.lastR);
+    if (!force && dWorld < minStep) return false;
 
     this.lastX = x;
     this.lastY = y;
@@ -286,6 +299,7 @@ export class StrokeBuilder {
       a,
       t: s.t,
     });
+    this.lastR = r;
     return true;
   }
 

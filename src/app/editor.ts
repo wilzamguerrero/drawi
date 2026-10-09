@@ -38,6 +38,7 @@ import type { PullFamily } from "../tools/pull-shapes";
 import { DEFAULT_TOOL, HELD_TOOL, TOOL_KEYS, TOOL_LABELS, TOOLS } from "../tools/manifest";
 import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
 import { Viewport3D } from "./viewport3d";
+import { DEFAULT_SCENE3D, type Scene3DSettings } from "../scene3d/tools3d";
 
 /** Operacion activa de la herramienta Materia. */
 export type MatterOp = "move" | "rotate" | "scale" | "pivot";
@@ -133,6 +134,8 @@ export interface EditorState {
   scene3dAvailable: boolean;
   /** Lotes, instancias y trazos del espacio. Los lotes son las draw calls. */
   scene3d: { drawCalls: number; instances: number; strokes: number };
+  /** Herramienta del visor espacial y sus ajustes de retoque. */
+  scene3dSettings: Scene3DSettings;
 }
 
 interface EditorEvents extends Record<string, unknown> {
@@ -177,6 +180,14 @@ export class Editor {
   running = true;
   /** El visor de dibujo espacial esta activo. */
   mode3d = false;
+  /**
+   * Herramienta y ajustes del visor espacial.
+   *
+   * Van aqui y no en `BrushSettings` a proposito: `BrushSettings` lo comparte el
+   * motor 2D, y ni el suavizado ni el radio de agarre significan nada en el
+   * lienzo. Lo que SI comparten los dos espacios es el modo del pincel.
+   */
+  scene3dSettings: Scene3DSettings = { ...DEFAULT_SCENE3D };
   showWalls = false;
   debugColliders = false;
   showBridgeReach = false;
@@ -381,6 +392,7 @@ export class Editor {
       mode3d: this.mode3d,
       scene3dAvailable: this.scene3dAvailable,
       scene3d: this.scene3dStats(),
+      scene3dSettings: this.scene3dSettings,
     };
   }
 
@@ -409,6 +421,10 @@ export class Editor {
       this.viewport3dInstance = new Viewport3D(this.host, {
         color: () => this.color,
         brush: () => this.brush,
+        doc: () => this.doc,
+        history: () => this.history,
+        settings: () => this.scene3dSettings,
+        status: (m) => this.status(m),
         changed: () => {
           this.events.emit("dirty", undefined);
           this.emitState();
@@ -455,6 +471,12 @@ export class Editor {
 
   toggleMode3D(): void {
     this.setMode3D(!this.mode3d);
+  }
+
+  /** Cambia la herramienta o los ajustes del visor espacial. */
+  setScene3D(patch: Partial<Scene3DSettings>): void {
+    this.scene3dSettings = { ...this.scene3dSettings, ...patch };
+    this.emitState();
   }
 
   private scene3dStats(): { drawCalls: number; instances: number; strokes: number } {
@@ -1190,6 +1212,51 @@ export class Editor {
     this.doc.clearAll();
     this.history.record("Limpiar todo", before);
     this.afterHistory("Lienzo limpio");
+  }
+
+  /** Vacía los trazos de una capa del espacio (sin borrar la capa). */
+  clearStrokes3D(layerId: string): void {
+    if (this.doc.strokesOf(layerId).length === 0) return;
+    const before = this.doc.snapshot();
+    this.doc.clearStrokes3D(layerId);
+    this.history.record("Vaciar trazos del espacio", before);
+    this.afterHistory("Trazos del espacio vaciados");
+  }
+
+  /** Vacía una capa del espacio entera: trazos y manchas. */
+  clearSpaceLayer(layerId: string): void {
+    if (this.doc.strokesOf(layerId).length === 0 && this.doc.fillsOf(layerId).length === 0) return;
+    const before = this.doc.snapshot();
+    this.doc.clearStrokes3D(layerId);
+    this.doc.clearFills3D(layerId);
+    this.history.record("Vaciar la capa del espacio", before);
+    this.afterHistory("Capa del espacio vaciada");
+  }
+
+  /** Vacía el espacio entero, en todas sus capas. */
+  clearScene3D(): void {
+    if (this.doc.strokes3d.length === 0 && this.doc.fills3d.length === 0) return;
+    const before = this.doc.snapshot();
+    for (const l of this.doc.scene3dLayers) {
+      this.doc.clearStrokes3D(l.id);
+      this.doc.clearFills3D(l.id);
+    }
+    this.history.record("Vaciar el espacio", before);
+    this.afterHistory("Espacio vaciado");
+  }
+
+  /**
+   * Entra al espacio y encuadra lo dibujado.
+   *
+   * Entra si hace falta: encuadrar algo que no se esta viendo no se nota, y desde
+   * el panel de capas es razonable esperar que la vista vaya al objeto.
+   */
+  frame3D(): void {
+    if (!this.mode3d) {
+      this.setMode3D(true);
+      return;
+    }
+    this.viewport3dInstance?.frameAll();
   }
 
   /** Convierte los trazos de la capa de tinta activa en capsulas fisicas. */

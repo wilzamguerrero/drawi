@@ -124,6 +124,79 @@ try {
   const settle = () =>
     page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
+  /**
+   * Recorre la ESPINA del trazo -la fila central de lo pintado- y devuelve el alfa
+   * minimo y el hueco mas largo que encuentra.
+   *
+   * La fila se elige por el centro de la caja de lo pintado, no por la que mas
+   * tinta tiene: esa es la del borde, donde el propio antialias del contorno baja
+   * el alfa y la medida dejaria de hablar de las juntas. Se mira solo el 80 %
+   * central, porque en los cabos el trazo se afila y lo que se mide ahi es el
+   * afilado.
+   */
+  const scanSpine = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              const c = document.querySelector("canvas.layer-3d");
+              const tmp = document.createElement("canvas");
+              tmp.width = c.width;
+              tmp.height = c.height;
+              const ctx = tmp.getContext("2d");
+              ctx.drawImage(c, 0, 0);
+              const { width, height } = tmp;
+              const d = ctx.getImageData(0, 0, width, height).data;
+              const a = (x, y) => d[(y * width + x) * 4 + 3];
+
+              let top = -1;
+              let bottom = -1;
+              for (let y = 0; y < height; y++) {
+                let any = false;
+                for (let x = 0; x < width; x++) {
+                  if (a(x, y) > 8) {
+                    any = true;
+                    break;
+                  }
+                }
+                if (any) {
+                  if (top < 0) top = y;
+                  bottom = y;
+                }
+              }
+              if (top < 0) return resolve({ min: 0, gap: 0, span: 0 });
+
+              const y = Math.round((top + bottom) / 2);
+              let first = -1;
+              let last = -1;
+              for (let x = 0; x < width; x++) {
+                if (a(x, y) > 8) {
+                  if (first < 0) first = x;
+                  last = x;
+                }
+              }
+              const from = Math.round(first + (last - first) * 0.1);
+              const to = Math.round(first + (last - first) * 0.9);
+              let min = 255;
+              let run = 0;
+              let gap = 0;
+              for (let x = from; x <= to; x++) {
+                const v = a(x, y);
+                if (v < min) min = v;
+                if (v < 200) {
+                  run++;
+                  if (run > gap) gap = run;
+                } else {
+                  run = 0;
+                }
+              }
+              resolve({ min, gap, span: last - first });
+            }),
+          );
+        }),
+    );
+
   // --- 1. El modo 3D se activa y hay contexto ---------------------------------
   const activation = await page.evaluate(() => {
     const ed = window.__drawiEditor;
@@ -151,6 +224,200 @@ try {
 
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
+
+  // --- 2b. El trazo se ve MIENTRAS se dibuja ---------------------------------
+  //
+  // Es la comprobacion que decide si dibujar se siente o no: con el puntero
+  // apoyado y a medio gesto, la escena todavia no tiene ningun trazo -no se ha
+  // soltado- pero el lienzo ya tiene que estar pintado. Antes de la cinta
+  // provisional esta medida daba cero pixeles: se dibujaba a ciegas.
+  //
+  // Y de paso se mide su espina. La vista previa NO esta decimada, asi que un
+  // tramo recto lleva muchas juntas colineales: es justo el caso en el que dos
+  // quads que comparten canto exacto dejan una costura clara al componerse.
+  await page.mouse.move(cx - 150, cy - 60);
+  await page.mouse.down();
+  for (let i = 1; i <= 20; i++) await page.mouse.move(cx - 150 + i * 14, cy - 60);
+
+  const midGesture = await readStats();
+  const midPixels = await readPixels();
+  const previewSpine = await scanSpine();
+
+  ok(
+    "a medio gesto la escena todavia no tiene el trazo",
+    midGesture.strokes === 0,
+    `trazos ${midGesture.strokes}, lotes ${midGesture.drawCalls}`,
+  );
+  ok(
+    "pero el lienzo ya lo esta pintando",
+    midPixels.opaque > 300,
+    `${midPixels.opaque} pixeles con el puntero apoyado`,
+  );
+  ok(
+    "la vista previa no tiene costura en su espina",
+    previewSpine.min >= 250 && previewSpine.gap === 0,
+    `alfa minimo ${previewSpine.min}, hueco mayor ${previewSpine.gap} px en ${previewSpine.span} px`,
+  );
+
+  await page.mouse.up();
+  const afterRelease = await readStats();
+  ok(
+    "al soltar, el trazo entra en la escena",
+    afterRelease.strokes === 1,
+    `trazos ${afterRelease.strokes}`,
+  );
+
+  // Se vacia para que lo que sigue parta de un lienzo limpio.
+  await page.evaluate(() => window.__drawiEditor.viewport3d.clear());
+  await settle();
+
+  // --- 2c. Los codos de un zigzag no dejan muesca ----------------------------
+  //
+  // Con la camara de frente, un zigzag de codos rectos. En cada vertice interior
+  // se mira el disco de radio mitad del ancho del trazo: es exactamente el trozo
+  // que tiene que cubrir la union de los dos segmentos que concurren ahi. Sin
+  // prolongarlos, el lado exterior del codo se queda sin pintar.
+  await page.evaluate(() => {
+    const cam = window.__drawiEditor.viewport3d.camera;
+    cam.yaw = 0;
+    cam.pitch = 0;
+  });
+  await settle();
+
+  // El pincel se fija para que la geometria sea determinista: con el arrastre tipo
+  // lazo y el suavizado por defecto la punta persigue al cursor y CORTA la esquina,
+  // asi que el vertice del raton deja de estar dentro del trazo y lo que se mediria
+  // es ese recorte, no la junta. Sin afilado ni ruido, el ancho es el mismo en todo
+  // el recorrido, que es lo que permite deducir el radio a partir de la imagen.
+  const brushBefore = await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    const before = { ...ed.brush };
+    ed.setBrush({
+      size: 24,
+      dynamics: "constant",
+      smoothing: 0,
+      streamline: 0,
+      jitter: 0,
+      taperIn: 0,
+      taperOut: 0,
+    });
+    return before;
+  });
+
+  const zig = [
+    [cx - 260, cy - 130],
+    [cx - 90, cy - 130],
+    [cx - 90, cy + 40],
+    [cx + 70, cy + 40],
+    [cx + 70, cy - 130],
+    [cx + 230, cy - 130],
+  ];
+  await page.mouse.move(zig[0][0], zig[0][1]);
+  await page.mouse.down();
+  for (let v = 1; v < zig.length; v++) {
+    const [ax, ay] = zig[v - 1];
+    const [bx, by] = zig[v];
+    const steps = Math.max(8, Math.round(Math.hypot(bx - ax, by - ay) / 10));
+    for (let i = 1; i <= steps; i++) {
+      await page.mouse.move(ax + (bx - ax) * (i / steps), ay + (by - ay) * (i / steps));
+    }
+  }
+  await page.mouse.up();
+
+  const corners = await page.evaluate(
+    ({ zig }) =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const c = document.querySelector("canvas.layer-3d");
+            // El rectangulo se lee AQUI y no se recibe de fuera: las coordenadas de
+            // `zig` son absolutas de la pagina, y el lienzo puede haberse movido
+            // desde que empezo la verificacion. Con un rectangulo viejo los indices
+            // salen fuera de rango y la medida pasa en falso.
+            const r = c.getBoundingClientRect();
+            const kx = c.width / Math.max(1, r.width);
+            const ky = c.height / Math.max(1, r.height);
+            const cx0 = (x) => (x - r.left) * kx;
+            const cy0 = (y) => (y - r.top) * ky;
+
+            const tmp = document.createElement("canvas");
+            tmp.width = c.width;
+            tmp.height = c.height;
+            const ctx = tmp.getContext("2d");
+            ctx.drawImage(c, 0, 0);
+            const { width, height } = tmp;
+            const d = ctx.getImageData(0, 0, width, height).data;
+            const a = (x, y) => d[(y * width + x) * 4 + 3];
+
+            // El grosor se mide en el primer tramo horizontal, lejos de los codos
+            // y del cabo afilado, para que el radio de la ventana salga de la
+            // propia imagen y no de suponer una escala.
+            const col = Math.round(cx0(zig[0][0] + (zig[1][0] - zig[0][0]) * 0.45));
+            let thick = 0;
+            for (let y = 0; y < height; y++) {
+              if (!(a(col, y) > 8)) continue;
+              let run = 0;
+              while (y < height && a(col, y) > 8) {
+                run++;
+                y++;
+              }
+              if (run > thick) thick = run;
+            }
+            // El borde del disco esta a medio cubrir, y ademas el codo dibujado
+            // nunca cae exactamente sobre el vertice del raton: el filtro del
+            // pincel lo redondea una fraccion de pixel. Se muestrea al 70 % del
+            // radio, que sigue siendo una ventana enorme comparada con la muesca
+            // que se persigue -que sin prolongar los segmentos se come el lado
+            // exterior entero del codo- y deja ese margen fuera de la cuenta.
+            const rad = Math.max(2, thick * 0.35);
+
+            let holes = 0;
+            let worst = 0;
+            for (let v = 1; v < zig.length - 1; v++) {
+              const jx = cx0(zig[v][0]);
+              const jy = cy0(zig[v][1]);
+              let bad = 0;
+              const n = Math.ceil(rad);
+              for (let dy = -n; dy <= n; dy++) {
+                for (let dx = -n; dx <= n; dx++) {
+                  if (dx * dx + dy * dy > rad * rad) continue;
+                  const x = Math.round(jx + dx);
+                  const y = Math.round(jy + dy);
+                  if (x < 0 || y < 0 || x >= width || y >= height) continue;
+                  // `!(v >= 200)` y no `v < 200`: un indice fuera de rango devuelve
+                  // `undefined`, y `undefined < 200` es falso. Asi una coordenada
+                  // mal calculada cuenta como agujero en vez de colarse.
+                  if (!(a(x, y) >= 200)) bad++;
+                }
+              }
+              holes += bad;
+              if (bad > worst) worst = bad;
+            }
+            resolve({ thick, rad, holes, worst });
+          }),
+        );
+      }),
+    { zig },
+  );
+
+  ok(
+    "los codos del zigzag quedan tapados",
+    // El grosor entra en la condicion a proposito: sin el, medir sobre un lienzo
+    // vacio daria cero agujeros y la comprobacion pasaria sin probar nada.
+    corners.thick > 2 && corners.holes === 0,
+    `groso ${corners.thick} px, radio ${corners.rad.toFixed(1)}, ` +
+      `${corners.holes} pixeles sin pintar (peor codo ${corners.worst})`,
+  );
+
+  await page.evaluate(() => {
+    const vp = window.__drawiEditor.viewport3d;
+    vp.clear();
+    vp.camera.yaw = 0.6;
+    vp.camera.pitch = 0.35;
+    vp.frameAll();
+  });
+  await page.evaluate((b) => window.__drawiEditor.setBrush(b), brushBefore);
+  await settle();
 
   const drawArc = async (index) => {
     const radius = 40 + index * 26;
@@ -189,6 +456,53 @@ try {
     pixels.opaque > 2000,
     `${pixels.opaque} de ${pixels.total} (${((pixels.opaque / pixels.total) * 100).toFixed(2)}%), ` +
       `luminancia media ${pixels.avgLuma}`,
+  );
+
+  // --- 3b. Las capas del espacio existen, y su ojo manda ---------------------
+  //
+  // Lo que se comprueba es el contrato entero: los trazos caen en una capa de
+  // verdad -no en un identificador escrito a mano-, esa capa sale en el panel con
+  // su ojo, y apagarla quita la pintura de la pantalla.
+  const capas = await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    const space = ed.doc.layers.filter((l) => l.kind === "scene3d");
+    return {
+      space: space.length,
+      nombre: space[0] ? space[0].name : null,
+      id: space[0] ? space[0].id : null,
+      todosDentro: space[0] ? ed.doc.strokes3d.every((s) => s.layerId === space[0].id) : false,
+      filas: document.querySelectorAll(".layers-panel .layer-kind").length,
+    };
+  });
+  ok(
+    "los trazos caen en una capa del espacio",
+    capas.space === 1 && capas.todosDentro,
+    JSON.stringify(capas),
+  );
+  ok("y la capa se ve en el panel", capas.filas > 0, `${capas.filas} filas con glifo de tipo`);
+
+  const apagada = await page.evaluate((id) => {
+    window.__drawiEditor.setLayer(id, { visible: false });
+    return window.__drawiEditor.doc.layerVisible(id);
+  }, capas.id);
+  await settle();
+  const pixelsApagado = await readPixels();
+  ok(
+    "apagar la capa quita el dibujo de la pantalla",
+    apagada === false && pixelsApagado.opaque < pixels.opaque * 0.1,
+    `${pixels.opaque} -> ${pixelsApagado.opaque} pixeles`,
+  );
+
+  const encendida = await page.evaluate((id) => {
+    window.__drawiEditor.setLayer(id, { visible: true });
+    return window.__drawiEditor.doc.layerVisible(id);
+  }, capas.id);
+  await settle();
+  const pixelsEncendido = await readPixels();
+  ok(
+    "y volver a encenderla lo devuelve",
+    encendida === true && Math.abs(pixelsEncendido.opaque - pixels.opaque) < pixels.opaque * 0.1,
+    `${pixelsEncendido.opaque} pixeles frente a ${pixels.opaque}`,
   );
 
   // --- 4. Borrar con Alt, antes de mover la camara ---------------------------
