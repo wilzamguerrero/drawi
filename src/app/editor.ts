@@ -132,8 +132,15 @@ export interface EditorState {
   mode3d: boolean;
   /** WebGL2 esta disponible para el visor 3D. */
   scene3dAvailable: boolean;
-  /** Lotes, instancias y trazos del espacio. Los lotes son las draw calls. */
-  scene3d: { drawCalls: number; instances: number; strokes: number };
+  /** Lotes, instancias y contenido del espacio. Los lotes son las draw calls. */
+  scene3d: {
+    drawCalls: number;
+    instances: number;
+    strokes: number;
+    fills: number;
+    /** Profundidad del plano de dibujo, en unidades de mundo. 0 = centro de la vista. */
+    plane: number;
+  };
   /** Herramienta del visor espacial y sus ajustes de retoque. */
   scene3dSettings: Scene3DSettings;
 }
@@ -430,6 +437,7 @@ export class Editor {
           this.events.emit("dirty", undefined);
           this.emitState();
         },
+        refresh: () => this.emitState(),
       });
       this.viewport3dInstance.resize(this.inkLayer.width, this.inkLayer.height, this.dpr);
     }
@@ -492,11 +500,19 @@ export class Editor {
     this.emitState();
   }
 
-  private scene3dStats(): { drawCalls: number; instances: number; strokes: number } {
+  private scene3dStats(): EditorState["scene3d"] {
     const vp = this.viewport3dInstance;
-    if (!vp) return { drawCalls: 0, instances: 0, strokes: 0 };
+    if (!vp) return { drawCalls: 0, instances: 0, strokes: 0, fills: 0, plane: 0 };
     const s = vp.stats();
-    return { drawCalls: s.drawCalls, instances: s.instances, strokes: s.strokes };
+    return {
+      drawCalls: s.drawCalls,
+      instances: s.instances,
+      strokes: s.strokes,
+      fills: s.fills,
+      // La profundidad del plano de dibujo: se cambia con [ y ] y es lo unico que
+      // dice donde van a caer los trazos nuevos, asi que tiene que verse.
+      plane: vp.planeDepth,
+    };
   }
 
   emitState(): void {

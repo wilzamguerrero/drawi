@@ -144,6 +144,10 @@ export interface Viewport3DHost {
   status(message: string): void;
   /** Avisa de que el estado cambio (para refrescar la interfaz). */
   changed(): void;
+  /** La barra de estado tiene que releer el estado, sin marcar el documento como
+   *  sucio: la profundidad del plano o el modo del puntero no son cambios del
+   *  dibujo. */
+  refresh(): void;
 }
 
 export class Viewport3D {
@@ -177,7 +181,6 @@ export class Viewport3D {
   });
   private readonly rng = new Rng();
   private readonly api: Viewport3DHost;
-  private readonly hud: HTMLDivElement;
 
   /**
    * El espacio recibe el puntero.
@@ -228,13 +231,8 @@ export class Viewport3D {
 
     this.backend = new Scene3DBackend(this.canvas);
 
-    this.hud = document.createElement("div");
-    this.hud.className = "hud-3d";
-    host.appendChild(this.hud);
-
     this.attach(host);
     this.setActive(false);
-    this.updateHud();
   }
 
   get available(): boolean {
@@ -266,7 +264,6 @@ export class Viewport3D {
   setActive(on: boolean): void {
     this.live = on && this.backend.available;
     this.canvas.classList.toggle("is-active", this.live);
-    this.hud.style.display = this.live ? "" : "none";
     if (this.live) {
       // El punto de vista viaja con el documento: al volver al espacio se vuelve
       // a donde se estaba mirando, no a un encuadre por defecto.
@@ -274,7 +271,7 @@ export class Viewport3D {
       this.controls.viewportHeight = this.canvas.clientHeight || 800;
       this.resetDepth();
       this.dirty = true;
-      this.updateHud();
+      this.refreshState();
     } else {
       this.saveCamera();
       this.cancelGesture();
@@ -378,7 +375,7 @@ export class Viewport3D {
     this.resetDepth();
     this.dirty = true;
     this.saveCamera();
-    this.updateHud();
+    this.refreshState();
   }
 
   /** Devuelve el estado de dibujado al plano por defecto, delante del punto de mira. */
@@ -388,7 +385,7 @@ export class Viewport3D {
 
   adjustDepth(steps: number): void {
     this.depth = snapDepth(this.depth + steps * DEPTH_STEP, DEPTH_STEP);
-    this.updateHud();
+    this.refreshState();
   }
 
   /**
@@ -479,7 +476,7 @@ export class Viewport3D {
     }
     this.api.history().commit("Borrar el espacio");
     this.dirty = true;
-    this.updateHud();
+    this.refreshState();
     this.api.changed();
   }
 
@@ -488,7 +485,6 @@ export class Viewport3D {
     this.disposers = [];
     this.backend.dispose();
     this.canvas.remove();
-    this.hud.remove();
   }
 
   // ------------------------------------------------------------- entrada
@@ -531,7 +527,7 @@ export class Viewport3D {
         this.space = true;
         e.stopPropagation();
         e.preventDefault();
-        this.updateHud();
+        this.refreshState();
       } else if (e.code === "BracketLeft") {
         this.adjustDepth(1);
       } else if (e.code === "BracketRight") {
@@ -545,7 +541,7 @@ export class Viewport3D {
         this.space = false;
         if (this.live) {
           e.stopPropagation();
-          this.updateHud();
+          this.refreshState();
         }
       }
     };
@@ -582,7 +578,7 @@ export class Viewport3D {
 
     if (this.controls.begin(e.button, this.mods(e), e.clientX - r.left, e.clientY - r.top)) {
       e.preventDefault();
-      this.updateHud();
+      this.refreshState();
       return;
     }
 
@@ -618,7 +614,7 @@ export class Viewport3D {
     }
     if (this.controls.navigating) {
       this.controls.end();
-      this.updateHud();
+      this.refreshState();
       return;
     }
     this.endGesture();
@@ -632,7 +628,7 @@ export class Viewport3D {
     const factor = clampZoomFactor(Math.exp(-e.deltaY * 0.0018));
     this.controls.zoomAt(factor, ndcX, ndcY, r.width / Math.max(1, r.height));
     this.dirty = true;
-    this.updateHud();
+    this.refreshState();
   }
 
   // --------------------------------------------------------------- gestos
@@ -710,7 +706,7 @@ export class Viewport3D {
       this.api.doc().addStroke3D(this.refine(stroke));
       history.commit("Trazo en el espacio");
       this.dirty = true;
-      this.updateHud();
+      this.refreshState();
       this.api.changed();
       return;
     }
@@ -719,7 +715,7 @@ export class Viewport3D {
       this.outline.cancel();
       this.tail = null;
       this.closeFill(g);
-      this.updateHud();
+      this.refreshState();
       return;
     }
 
@@ -727,7 +723,7 @@ export class Viewport3D {
       this.outline.cancel();
       this.tail = null;
       this.closePull(g);
-      this.updateHud();
+      this.refreshState();
       return;
     }
 
@@ -740,7 +736,7 @@ export class Viewport3D {
       history.commit("Suavizar trazos");
       this.api.changed();
     }
-    this.updateHud();
+    this.refreshState();
   }
 
   private cancelGesture(): void {
@@ -757,7 +753,7 @@ export class Viewport3D {
     if (g && g.kind === "smooth") {
       this.api.history().rollback();
       this.dirty = true;
-      this.updateHud();
+      this.refreshState();
     }
   }
 
@@ -1178,7 +1174,7 @@ export class Viewport3D {
     this.eraseFrom = to;
     if (g.erasing) {
       this.dirty = true;
-      this.updateHud();
+      this.refreshState();
       this.api.changed();
     }
   }
@@ -1240,7 +1236,7 @@ export class Viewport3D {
     this.api.doc().removeStroke3D(id);
     history.commit(label);
     this.dirty = true;
-    this.updateHud();
+    this.refreshState();
     this.api.changed();
   }
 
@@ -1281,25 +1277,18 @@ export class Viewport3D {
     return this.canvas.getBoundingClientRect();
   }
 
-  private updateHud(): void {
-    const s = this.stats();
-    const depth = this.depth === 0 ? "auto" : `${this.depth}`;
-    this.hud.textContent =
-      `3D · ${this.toolLabel()} · ${s.strokes} trazos · ${s.drawCalls} lotes · ` +
-      `${s.instances} instancias · plano ${depth}` +
-      (this.depth === 0 ? " (centro de la vista)" : "") +
-      (this.controls.navigating ? " · moviendo la vista" : "");
+  /**
+   * Avisa a la interfaz de que el estado del visor cambio.
+   *
+   * El visor ya no tiene HUD propio. Lo que hay que saber -el modo del puntero,
+   * cuantos trazos y manchas hay, las llamadas de dibujado y la profundidad del
+   * plano- va en la barra de estado, con el resto de la informacion del editor:
+   * dos sitios diciendo lo mismo es ruido, y ademas el de abajo tapaba el dibujo.
+   */
+  private refreshState(): void {
+    this.api.refresh();
   }
-
-  /** Que hace el puntero ahora mismo, en una palabra. */
-  private toolLabel(): string {
-    if (this.api.settings().tool === "smooth") return "suavizar";
-    const mode = this.api.brush().mode;
-    if (mode === "erase") return "borrador";
-    if (mode === "pull") return "arrastre";
-    if (mode === "fill") return "relleno";
-    return "trazo";
-  }}
+}
 
 /** Radio del trazo en su punto medio, para pruebas y depuracion. */
 export const midRadius = (stroke: Stroke3D): number =>

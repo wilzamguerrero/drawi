@@ -286,6 +286,13 @@ activa, para que el panel no mienta sobre dónde va a caer el trazo.
 Ahora que entrar y salir es cambiar de capa, eso movería la vista cada vez que se
 toca el panel. Encuadrar es `F`, el botón del panel y el menú de la capa.
 
+**El visor no tiene HUD propio.** Decía el modo del puntero, los trazos, los lotes,
+las instancias y la profundidad del plano, en un recuadro flotante abajo a la
+izquierda que tapaba justo lo que se estaba dibujando. Ahora eso vive en la barra
+de estado, con el resto de la información del editor, y los dos chips de siempre
+—herramienta y recuento— pasan a hablar del espacio cuando el espacio tiene el
+puntero. Un solo sitio donde mirar.
+
 Consecuencia que conviene tener presente: **el lienzo del espacio va encima de la
 pila 2D**, así que su contenido tapa la tinta donde se solapen. Lo correcto es
 componerlo en su sitio de la pila —el backend ya se escribió pensando en eso, y la

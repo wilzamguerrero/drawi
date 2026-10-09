@@ -11,6 +11,8 @@
  * trazo ya dibujado, y el radio con el que se agarra.
  */
 
+import type { BrushMode } from "../stroke/types";
+
 /** Herramientas del visor. */
 export type Tool3D = "brush" | "smooth";
 
@@ -51,4 +53,18 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
   strength: 0.35,
   refineOnRelease: false,
   refineStrength: 0.5,
+};
+
+/**
+ * Que hace el puntero en el espacio ahora mismo, en una palabra.
+ *
+ * Vive aqui y no en el visor porque lo dicen dos sitios -el propio visor y la
+ * barra de estado-, y dos listas de palabras para lo mismo se desvian.
+ */
+export const spaceToolLabel = (settings: Scene3DSettings, mode: BrushMode): string => {
+  if (settings.tool === "smooth") return "suavizar";
+  if (mode === "erase") return "borrador";
+  if (mode === "pull") return "arrastre";
+  if (mode === "fill") return "relleno";
+  return "trazo";
 };

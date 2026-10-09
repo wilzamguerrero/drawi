@@ -1,4 +1,5 @@
 import type { EditorState, PenReadout } from "../app/editor";
+import { spaceToolLabel } from "../scene3d/tools3d";
 import { TOOL_LABELS } from "../tools/manifest";
 import { button } from "./controls";
 import { el, num, setClass } from "./dom";
@@ -31,6 +32,7 @@ export class StatusBar {
   private message: HTMLElement;
   private toolName: HTMLElement;
   private counts: HTMLElement;
+  private space: HTMLElement;
   private zoom: HTMLElement;
   private fps: HTMLElement;
   private penKind: HTMLElement;
@@ -63,6 +65,10 @@ export class StatusBar {
     this.message = el("span", { class: "status-message is-fresh", text: "Listo" });
     this.toolName = el("span", { class: "status-chip" });
     this.counts = el("span", { class: "status-chip" });
+    // Chip del espacio: solo aparece cuando el espacio esta en juego. Los numeros
+    // tecnicos -lotes, instancias, profundidad del plano- viven aqui y no en un
+    // HUD flotante sobre el lienzo, que tapaba justo lo que se estaba dibujando.
+    this.space = el("span", { class: "status-chip status-space" });
     this.zoom = el("span", { class: "status-chip" });
     this.fps = el("span", { class: "status-chip" });
     this.engine = el("span", { class: "status-chip status-engine" });
@@ -92,6 +98,7 @@ export class StatusBar {
       this.penBox,
       this.toolName,
       this.counts,
+      this.space,
       this.fps,
       this.engine,
     ]);
@@ -144,8 +151,37 @@ export class StatusBar {
   }
 
   update(state: EditorState): void {
-    this.toolName.textContent = TOOL_LABELS[state.tool];
-    this.counts.textContent = `${state.items} trazos · ${state.bodies} cuerpos`;
+    // Con el espacio delante, los dos chips de siempre pasan a hablar del espacio
+    // en vez del lienzo: asi la linea dice donde esta el puntero y que hay alli,
+    // sin anadir un segundo sitio donde mirar.
+    const s3 = state.scene3d;
+    const enEspacio = state.mode3d;
+    this.toolName.textContent = enEspacio
+      ? `Espacio · ${spaceToolLabel(state.scene3dSettings, state.brush.mode)}`
+      : TOOL_LABELS[state.tool];
+    this.counts.textContent = enEspacio
+      ? `${s3.strokes} ${s3.strokes === 1 ? "trazo" : "trazos"} · ${s3.fills} ${
+          s3.fills === 1 ? "mancha" : "manchas"
+        }`
+      : `${state.items} trazos · ${state.bodies} cuerpos`;
+
+    const hayEspacio = enEspacio || s3.strokes > 0 || s3.fills > 0;
+    setClass(this.space, "is-hidden", !hayEspacio);
+    if (hayEspacio) {
+      const partes: string[] = [];
+      if (!enEspacio) partes.push("espacio en la pila");
+      // Las llamadas de dibujado y las instancias solo se enseñan cuando hay
+      // algo: en un espacio vacio son dos ceros que no dicen nada.
+      if (s3.drawCalls > 0) {
+        partes.push(`${s3.drawCalls} ${s3.drawCalls === 1 ? "lote" : "lotes"} · ${s3.instances} inst`);
+      }
+      if (enEspacio) partes.push(`plano ${s3.plane === 0 ? "auto" : num(s3.plane, 0)}`);
+      this.space.textContent = partes.join(" · ");
+      this.space.title = enEspacio
+        ? "Corchetes [ y ] mueven el plano de dibujo; F encuadra"
+        : "El espacio se esta viendo compuesto sobre el lienzo";
+    }
+
     this.zoom.textContent = `${num(state.zoom * 100, 0)}%`;
     this.fps.textContent = `${num(state.fps, 0)} fps`;
     setClass(this.fps, "is-warn", state.fps < 45);

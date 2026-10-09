@@ -1580,6 +1580,17 @@ body {
   color: var(--hot);
 }
 
+/* Chip del espacio: los números técnicos del visor. Se apaga cuando el espacio no
+   está en juego, en vez de mostrar dos ceros. */
+.status-space.is-hidden {
+  display: none;
+}
+
+.status-space {
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+}
+
 .status-engine {
   letter-spacing: 0.06em;
 }
@@ -2607,18 +2618,7 @@ body {
   pointer-events: auto;
 }
 
-.hud-3d {
-  position: absolute;
-  left: 16px;
-  bottom: 16px;
-  font: 500 11px/1.4 var(--font);
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.84);
-  background: rgba(10, 12, 18, 0.66);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  padding: 6px 10px;
-  white-space: nowrap;
-  pointer-events: none;
-  backdrop-filter: blur(6px);
-}
+/* El HUD flotante del visor ya no existe: lo que decia -modo del puntero, trazos,
+   lotes, instancias y profundidad del plano- vive en la barra de estado, con el
+   resto de la informacion del editor. Alli no tapa el dibujo, y no hay dos sitios
+   diciendo lo mismo. */
