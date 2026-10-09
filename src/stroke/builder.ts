@@ -1,5 +1,6 @@
 import { clamp01, damp, lerp, shapeCurve, smoothstep } from "../core/math";
 import { Rng } from "../core/rng";
+import { resolveRadius, taperFactor } from "./dynamics";
 import { OneEuroVec2 } from "./filter";
 import type { BrushSettings, StrokePoint } from "./types";
 
@@ -267,7 +268,14 @@ export class StrokeBuilder {
     const target = shapeCurve(rawPressure, st.pressureCurve);
     this.smoothPressure = damp(this.smoothPressure, target, hasPressure ? 45 : 16, dt);
 
-    const { r, a } = this.resolveRadius(s, this.smoothPressure);
+    const { r, a } = resolveRadius(
+      st,
+      this.smoothPressure,
+      this.speed,
+      s.tilt,
+      s.azimuth,
+      this.rng,
+    );
 
     this.pts.push({
       x,
@@ -281,41 +289,6 @@ export class StrokeBuilder {
     return true;
   }
 
-  private resolveRadius(s: WorldSample, pressure: number): { r: number; a: number } {
-    const st = this.settings;
-    const base = Math.max(0.05, st.size * 0.5);
-    const min = base * clamp01(st.minRatio);
-    const vn = clamp01(this.speed / Math.max(0.05, st.velocityScale));
-    const velFactor = st.velocityInvert ? vn : 1 - vn;
-    let r = base;
-    let a = 0;
-
-    switch (st.dynamics) {
-      case "constant":
-        r = base;
-        break;
-      case "pressure":
-        r = lerp(min, base, pressure);
-        break;
-      case "velocity":
-        r = lerp(min, base, smoothstep(velFactor));
-        break;
-      case "pressure-velocity":
-        // La presion manda, la velocidad modula: es el comportamiento de un pincel real.
-        r = lerp(min, base, pressure * lerp(0.55, 1, smoothstep(velFactor)));
-        break;
-      case "tilt": {
-        // Punta de cincel: tumbar el lapiz ensancha, y el trazo sigue el azimut.
-        const flat = clamp01(s.tilt / (Math.PI / 2.2));
-        r = lerp(min, base, lerp(pressure, 1, 0.35)) * lerp(0.65, 1.55, flat);
-        a = s.azimuth;
-        break;
-      }
-    }
-
-    if (st.jitter > 0) r *= 1 + this.rng.gauss() * st.jitter * 0.35;
-    return { r: Math.max(0.03, r), a };
-  }
 }
 
 /** Afilado de entrada/salida en funcion de la longitud de arco real del trazo. */
@@ -331,12 +304,7 @@ export function applyTaper(points: StrokePoint[], st: BrushSettings): void {
   const total = cum[n - 1];
   if (total <= 1e-6) return;
 
-  const inLen = st.taperIn * total;
-  const outLen = st.taperOut * total;
   for (let i = 0; i < n; i++) {
-    let k = 1;
-    if (inLen > 1e-6) k = Math.min(k, smoothstep(cum[i] / inLen));
-    if (outLen > 1e-6) k = Math.min(k, smoothstep((total - cum[i]) / outLen));
-    points[i].r *= lerp(0.06, 1, k);
+    points[i].r *= taperFactor(cum[i], total, st.taperIn, st.taperOut);
   }
 }

@@ -10,10 +10,16 @@
     "preview": "vite preview",
     "check": "tsc --noEmit",
     "smoke": "node scripts/run-smoke.mjs",
-    "test": "npm run check && npm run smoke"
+    "test": "npm run check && npm run smoke",
+    "verify:3d": "npm run build && node scripts/verify-render3d.mjs"
   },
   "devDependencies": {
+    "@types/three": "^0.170.0",
+    "puppeteer": "^25.13.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
   }
 }

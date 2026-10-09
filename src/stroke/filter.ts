@@ -95,3 +95,39 @@ export class OneEuroVec2 {
     this.fy.reset();
   }
 }
+
+/** Terna de filtros One-Euro para una posicion 3D del puntero en el espacio. */
+export class OneEuroVec3 {
+  readonly fx: OneEuroFilter;
+  readonly fy: OneEuroFilter;
+  readonly fz: OneEuroFilter;
+
+  constructor(minCutoff = 1.4, beta = 0.035, dCutoff = 1) {
+    this.fx = new OneEuroFilter(minCutoff, beta, dCutoff);
+    this.fy = new OneEuroFilter(minCutoff, beta, dCutoff);
+    this.fz = new OneEuroFilter(minCutoff, beta, dCutoff);
+  }
+
+  configure(minCutoff: number, beta: number): void {
+    this.fx.minCutoff = minCutoff;
+    this.fx.beta = beta;
+    this.fy.minCutoff = minCutoff;
+    this.fy.beta = beta;
+    this.fz.minCutoff = minCutoff;
+    this.fz.beta = beta;
+  }
+
+  filter(x: number, y: number, z: number, dt: number): { x: number; y: number; z: number } {
+    return {
+      x: this.fx.filter(x, dt),
+      y: this.fy.filter(y, dt),
+      z: this.fz.filter(z, dt),
+    };
+  }
+
+  reset(): void {
+    this.fx.reset();
+    this.fy.reset();
+    this.fz.reset();
+  }
+}

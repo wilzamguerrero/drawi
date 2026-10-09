@@ -10,7 +10,8 @@
       "Bash(npx tsc *)",
       "Bash(echo \"EXIT: $?\")",
       "WebSearch",
-      "Bash(grep -rn \"from \\\\\"\\\\\\(\\\\.\\\\.\\\\/\\\\\\)*tools\\\\/types\\\\\"\\\\|from \\\\\"\\\\.\\\\/types\\\\\"\" src --include=*.ts)"
+      "Bash(grep -rn \"from \\\\\"\\\\\\(\\\\.\\\\.\\\\/\\\\\\)*tools\\\\/types\\\\\"\\\\|from \\\\\"\\\\.\\\\/types\\\\\"\" src --include=*.ts)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

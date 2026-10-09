@@ -50,6 +50,19 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
     ],
   },
   {
+    title: "Modo 3D",
+    icon: "shape",
+    rows: [
+      ["Ctrl+3", "Entrar y salir del espacio"],
+      ["Botón central o derecho", "Orbitar la cámara"],
+      ["Shift + arrastrar", "Desplazar la vista"],
+      ["Rueda", "Acercar y alejar"],
+      ["[ / ]", "Profundidad del plano de dibujo"],
+      ["F", "Encuadrar todo lo dibujado"],
+      ["Alt + clic", "Borrar un trazo del espacio"],
+    ],
+  },
+  {
     title: "Pincel",
     icon: "brush",
     rows: [

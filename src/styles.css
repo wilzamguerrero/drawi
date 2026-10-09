@@ -2583,3 +2583,34 @@ body {
     font: 600 12px/1.1 var(--font);
   }
 }
+
+/* --------------------------------------------------------------------- 3D */
+
+/* Lienzo del visor espacial. Va el ultimo en el anfitrion, asi que queda por
+   encima de todas las capas 2D, y a diferencia de ellas SI recibe el puntero:
+   mientras el modo 3D esta activo, sus manejadores capturan el evento antes de
+   que llegue al editor y el motor 2D no ve nada. */
+.layer-3d {
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+  /* Lo sustituye el editor con el fondo del documento al entrar; este es
+     solo el valor de partida. */
+  background: #f4f1ea;
+}
+
+.hud-3d {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  font: 500 11px/1.4 var(--font);
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.84);
+  background: rgba(10, 12, 18, 0.66);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 6px 10px;
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+}

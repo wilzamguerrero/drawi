@@ -19,6 +19,7 @@ export class TopBar {
   private undoBtn: ReturnType<typeof button>;
   private redoBtn: ReturnType<typeof button>;
   private zoomLabel: HTMLButtonElement;
+  private threeBtn: ReturnType<typeof button>;
   private onHelp: () => void;
 
   constructor(editor: Editor, onHelp: () => void) {
@@ -56,6 +57,12 @@ export class TopBar {
       blurSoon(this.zoomLabel);
     });
 
+    this.threeBtn = button({
+      label: "3D",
+      title: "Dibujar en el espacio (Ctrl+3)",
+      onClick: () => editor.toggleMode3D(),
+    });
+
     this.helpBtn = button({ iconName: "help", title: "Atajos y ayuda", onClick: () => this.onHelp() }).el;
 
     this.el = el("header", { class: "topbar" }, [
@@ -63,7 +70,7 @@ export class TopBar {
         this.nameInput,
       ]),
       el("div", { class: "topbar-group" }, [this.undoBtn.el, this.redoBtn.el]),
-      el("div", { class: "topbar-group" }, [this.zoomLabel]),
+      el("div", { class: "topbar-group" }, [this.zoomLabel, this.threeBtn.el]),
     ]);
   }
 
@@ -80,6 +87,13 @@ export class TopBar {
       ? `Rehacer ${state.history.redoLabel} (Ctrl+Shift+Z)`
       : "Rehacer (Ctrl+Shift+Z)";
     this.zoomLabel.textContent = `${num(state.zoom * 100, 0)}%`;
+    this.threeBtn.setActive(state.mode3d);
+    // Sin WebGL2 el boton queda inerte en vez de desaparecer: asi se ve que la
+    // funcion existe y por que no esta disponible.
+    this.threeBtn.set(state.scene3dAvailable);
+    this.threeBtn.el.title = state.scene3dAvailable
+      ? "Dibujar en el espacio (Ctrl+3)"
+      : "Dibujar en el espacio: necesita WebGL2";
   }
 
   dispose(): void {

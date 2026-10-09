@@ -37,6 +37,7 @@ import { bakeAqua } from "../aqua/aqua-bake";
 import type { PullFamily } from "../tools/pull-shapes";
 import { DEFAULT_TOOL, HELD_TOOL, TOOL_KEYS, TOOL_LABELS, TOOLS } from "../tools/manifest";
 import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
+import { Viewport3D } from "./viewport3d";
 
 /** Operacion activa de la herramienta Materia. */
 export type MatterOp = "move" | "rotate" | "scale" | "pivot";
@@ -126,6 +127,12 @@ export interface EditorState {
   aquaLayerOpacity: number;
   /** Parametros vivos de la acuarela (0..1). */
   aquaParams: import("../aqua/aqua-field").AquaParams;
+  /** El visor de dibujo espacial esta activo. */
+  mode3d: boolean;
+  /** WebGL2 esta disponible para el visor 3D. */
+  scene3dAvailable: boolean;
+  /** Lotes, instancias y trazos del espacio. Los lotes son las draw calls. */
+  scene3d: { drawCalls: number; instances: number; strokes: number };
 }
 
 interface EditorEvents extends Record<string, unknown> {
@@ -168,6 +175,8 @@ export class Editor {
   recentColors: string[] = [...RECENT_SEED];
   pullFamily: PullFamily | "random" = "random";
   running = true;
+  /** El visor de dibujo espacial esta activo. */
+  mode3d = false;
   showWalls = false;
   debugColliders = false;
   showBridgeReach = false;
@@ -198,6 +207,16 @@ export class Editor {
   private aquaFields = new Map<string, AquaField>();
   /** Sondeo de WebGL2 cacheado: no se crea un motor solo para saber si se puede. */
   private aquaSupport: boolean | null = null;
+  /** Sondeo propio del visor 3D, por el mismo motivo. */
+  private scene3dSupport: boolean | null = null;
+  /**
+   * Visor 3D, creado en perezoso.
+   *
+   * En perezoso y no en el constructor porque cada visor abre un contexto WebGL2
+   * propio, y el navegador solo tolera unos pocos a la vez: ademas de la materia
+   * y de la acuarela, que ya gastan los suyos.
+   */
+  private viewport3dInstance: Viewport3D | null = null;
   /** Modo del pincel de acuarela: pluma (pigmento) o agua. */
   private aquaModeValue: "pen" | "brush" = "pen";
   /** Parámetros vivos, compartidos por todas las capas: son ajustes del PINCEL
@@ -359,7 +378,90 @@ export class Editor {
       aquaLayerVisible: this.aquaLayerVisible,
       aquaLayerOpacity: this.aquaLayerOpacity,
       aquaParams: this.aquaParamsValue,
+      mode3d: this.mode3d,
+      scene3dAvailable: this.scene3dAvailable,
+      scene3d: this.scene3dStats(),
     };
+  }
+
+  // ------------------------------------------------------------------ 3D
+
+  /** ¿Se puede dibujar en el espacio (WebGL2 disponible)? Se sondea una sola vez. */
+  get scene3dAvailable(): boolean {
+    if (this.scene3dSupport === null) {
+      try {
+        const probe = document.createElement("canvas");
+        probe.width = 1;
+        probe.height = 1;
+        this.scene3dSupport = probe.getContext("webgl2") !== null;
+      } catch {
+        this.scene3dSupport = false;
+      }
+      if (!this.scene3dSupport) console.warn("[drawi] Modo 3D no disponible: sin WebGL2");
+    }
+    return this.scene3dSupport;
+  }
+
+  /** El visor 3D, creandolo la primera vez. `null` si no hay WebGL2. */
+  get viewport3d(): Viewport3D | null {
+    if (!this.scene3dAvailable) return null;
+    if (!this.viewport3dInstance) {
+      this.viewport3dInstance = new Viewport3D(this.host, {
+        color: () => this.color,
+        brush: () => this.brush,
+        changed: () => {
+          this.events.emit("dirty", undefined);
+          this.emitState();
+        },
+      });
+      this.viewport3dInstance.resize(this.inkLayer.width, this.inkLayer.height, this.dpr);
+      this.viewport3dInstance.setBackground(this.doc.meta.background);
+    }
+    return this.viewport3dInstance;
+  }
+
+  /**
+   * Entra o sale del modo 3D.
+   *
+   * Al entrar se encuadra lo dibujado: aparecer mirando a un punto vacio del
+   * espacio, sin nada a la vista, hace pensar que el modo no funciona.
+   */
+  setMode3D(on: boolean): void {
+    const vp = on ? this.viewport3d : this.viewport3dInstance;
+    if (on && !vp) {
+      this.status("El modo 3D necesita WebGL2");
+      return;
+    }
+
+    this.mode3d = on && vp !== null;
+    if (vp) {
+      if (this.mode3d) {
+        vp.resize(this.inkLayer.width, this.inkLayer.height, this.dpr);
+        vp.setBackground(this.doc.meta.background);
+        vp.setActive(true);
+        vp.frameAll();
+        this.status(
+          "Modo 3D: dibuja con el lapiz · orbita con el boton central o el derecho · " +
+            "corchetes ajustan la profundidad · F encuadra",
+        );
+      } else {
+        vp.setActive(false);
+        this.status("Vuelta al lienzo 2D");
+      }
+    }
+    this.invalidateAll();
+    this.emitState();
+  }
+
+  toggleMode3D(): void {
+    this.setMode3D(!this.mode3d);
+  }
+
+  private scene3dStats(): { drawCalls: number; instances: number; strokes: number } {
+    const vp = this.viewport3dInstance;
+    if (!vp) return { drawCalls: 0, instances: 0, strokes: 0 };
+    const s = vp.stats();
+    return { drawCalls: s.drawCalls, instances: s.instances, strokes: s.strokes };
   }
 
   emitState(): void {
@@ -816,6 +918,7 @@ export class Editor {
     const before = this.doc.snapshot();
     this.doc.meta.background = hex;
     this.host.style.background = hex;
+    this.viewport3dInstance?.setBackground(hex);
     this.history.record("Fondo", before);
     this.emitState();
   }
@@ -1678,6 +1781,15 @@ export class Editor {
         return;
       }
 
+      // Entrar y salir del espacio. Lleva Ctrl a proposito: el 3 a secas ya
+      // selecciona el modo arrastre del pincel, y robar esa tecla habria sido una
+      // regresion silenciosa.
+      if (mod && !editingText && e.key === "3") {
+        e.preventDefault();
+        this.toggleMode3D();
+        return;
+      }
+
       // Atajos de capas (todos con Ctrl/Cmd). No deben dispararse tecleando.
       if (mod && !editingText) {
         const k = e.key.toLowerCase();
@@ -1843,6 +1955,7 @@ export class Editor {
     this.fieldRenderer.resize(w, h, dpr);
     this.matter.resize(w, h, dpr);
     for (const field of this.aquaFields.values()) field.resize(w, h, dpr);
+    this.viewport3dInstance?.resize(w, h, dpr);
     this.pointer.refreshRect();
     this.invalidateAll();
     this.needsResize = false;
@@ -1870,6 +1983,14 @@ export class Editor {
     this.fps = this.fps * 0.9 + (dt > 0 ? 1 / dt : 60) * 0.1;
 
     if (this.needsResize) this.resize();
+
+    // En modo 3D no se dibuja el lienzo 2D. Dos renderizadores a plena frecuencia
+    // cuando solo se ve uno es justo el desperdicio que hay que evitar, y de paso
+    // congela la fisica y el fluido mientras se dibuja en el espacio.
+    if (this.mode3d && this.viewport3dInstance) {
+      this.viewport3dInstance.frame();
+      return;
+    }
 
     if (this.running && this.doc.bodies.length > 0) {
       const walls = this.doc.physics.settings.walls;
@@ -2011,6 +2132,10 @@ export class Editor {
     this.stop();
     this.pointer.dispose();
     this.fieldRenderer.dispose();
+    // El visor 3D abre su propio contexto WebGL2: hay que soltarlo o el
+    // navegador se queda sin cupo al abrir y cerrar el editor varias veces.
+    this.viewport3dInstance?.dispose();
+    this.viewport3dInstance = null;
     this.resizeObserver?.disconnect();
     if (this.keyHandler) window.removeEventListener("keydown", this.keyHandler);
     if (this.keyUpHandler) window.removeEventListener("keyup", this.keyUpHandler);

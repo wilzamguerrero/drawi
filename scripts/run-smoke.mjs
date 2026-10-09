@@ -22,6 +22,7 @@ const outDir = path.join(root, "node_modules", ".drawi-smoke");
 const SUITES = [
   { name: "motor", entry: "scripts/smoke-engine.ts", file: "engine.mjs", shim: false },
   { name: "interfaz", entry: "scripts/smoke-ui.ts", file: "ui.mjs", shim: true },
+  { name: "3d", entry: "scripts/smoke-3d.ts", file: "3d.mjs", shim: false },
 ];
 
 const only = process.argv[2];
