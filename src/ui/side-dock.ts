@@ -3,6 +3,7 @@ import { DEFAULT_PALETTES } from "../core/color";
 import { DYNAMICS_INFO } from "../stroke/types";
 import { symmetryCopies } from "../symmetry/symmetry";
 import type { ToolId } from "../tools/types";
+import { TOOL_TABS } from "../tools/manifest";
 import { ColorPicker } from "./color-picker";
 import { button, fieldLabel, section, segmented, swatches } from "./controls";
 import { blurSoon, el, setClass } from "./dom";
@@ -43,15 +44,13 @@ export const DOCK_TAB_DOMAINS: string[] = DOCK_TABS.map((t) => t.domain);
 /**
  * Qué pestaña corresponde a cada herramienta. Al cambiar de herramienta el dock
  * resalta la pestaña relacionada (no la abre: solo la marca como "en uso"). Las
- * herramientas sin ajustes propios —cuentagotas y mano— no resaltan ninguna.
+ * herramientas sin ajustes propios —cuentagotas, puente y mano— no resaltan
+ * ninguna, porque no tienen panel.
+ *
+ * Sale del `dockTab` del manifiesto, NO del dominio de su accion radial:
+ * derivarlo del radial haria que el cuentagotas resaltara la pestaña Color y el
+ * puente la de Materia — cambios de comportamiento escondidos en un refactor.
  */
-const TOOL_TO_CAT: Partial<Record<ToolId, string>> = {
-  select: "select",
-  brush: "brush",
-  shape: "matter-cfg",
-  matter: "matter-cfg",
-  symmetry: "symmetry",
-};
 
 /**
  * El dock no consume los puertos de archivo/rueda (esos dominios/campos son
@@ -551,7 +550,7 @@ export class SideDock {
    * sin ajustes (cuentagotas, mano) no resaltan ninguna.
    */
   focusTool(tool: ToolId): void {
-    this.activeTool = TOOL_TO_CAT[tool] ?? null;
+    this.activeTool = TOOL_TABS[tool] ?? null;
     this.renderState();
   }
   /** Pinta el estado de pestañas/cajón: abierta, en-uso y qué página se ve. */

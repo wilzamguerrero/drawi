@@ -526,6 +526,52 @@ ok("todos los controles aceptan cambios", inputErr === "", inputErr || `${fired}
 // --- Paletas ---
 noThrow("cambiar de paleta", () => { for (let i = 0; i < 6; i++) ed.setPalette(i); });
 
+// --- Los nodos de herramienta del radial conservan su posicion ---
+// Los chips del radial se persisten en localStorage (`zence.radialChips.v3`)
+// como {path, nodeId}, y `resolveNode` resuelve por AMBOS. Un nodo que cambie de
+// sitio no rompe nada de forma visible: el chip del usuario deja de resolverse y
+// desaparece en silencio. Y desde que se retiro el rail, el radial es el UNICO
+// conmutador de herramientas de la aplicacion.
+ed.setTool("matter"); // fija la poda de matter-op: sin esto las rutas no son deterministas
+const toolPaths = (): Map<string, string> => {
+  const tree = buildRoot(ed, ed.state, {
+    toggleWheel: () => {},
+    help: () => {},
+    newDoc: () => {},
+    openFile: () => {},
+    importImage: () => {},
+    save: () => {},
+    exportPng: () => {},
+    exportSvg: () => {},
+  });
+  const map = new Map<string, string>();
+  const visit = (nodes: any[], prefix: number[]): void => {
+    nodes.forEach((n, i) => {
+      const path = [...prefix, i];
+      if (!map.has(n.id)) map.set(n.id, path.join("."));
+      if (n.kind === "submenu") visit(n.children, path);
+    });
+  };
+  visit(tree, []);
+  return map;
+};
+const RUTAS_ESPERADAS: [string, string][] = [
+  ["tool-select", "1.0"],
+  ["tool-picker", "3.1"],
+  ["tool-shape", "4.0"],
+  ["tool-matter", "4.1"],
+  ["tool-bridge", "4.3"],
+  ["tool-symmetry", "5.0"],
+  ["tool-hand", "6.4"],
+];
+const rutas = toolPaths();
+const desviados = RUTAS_ESPERADAS.filter(([id, p]) => rutas.get(id) !== p);
+ok(
+  "los siete nodos de herramienta conservan su ruta en el radial",
+  desviados.length === 0,
+  desviados.map(([id, p]) => `${id}: ${rutas.get(id) ?? "(ausente)"} != ${p}`).join(" · "),
+);
+
 setTimeout(() => {
   noThrow("dispose", () => app.dispose());
   console.log(out.join("\n"));

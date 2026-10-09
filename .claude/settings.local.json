@@ -8,7 +8,9 @@
       "Bash(git --no-pager diff --stat)",
       "Bash(git --no-pager diff --stat HEAD)",
       "Bash(npx tsc *)",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "WebSearch",
+      "Bash(grep -rn \"from \\\\\"\\\\\\(\\\\.\\\\.\\\\/\\\\\\)*tools\\\\/types\\\\\"\\\\|from \\\\\"\\\\.\\\\/types\\\\\"\" src --include=*.ts)"
     ]
   }
 }

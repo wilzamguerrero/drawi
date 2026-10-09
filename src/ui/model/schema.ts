@@ -4,6 +4,7 @@ import { SHAPE_LABELS, type ShapeKind } from "../../physics/shapes";
 import { DYNAMICS_INFO, ERASE_MODE_LABELS, type BrushMode, type EraseMode, type StrokeDynamics } from "../../stroke/types";
 import { SYMMETRY_LABELS, type SymmetryMode } from "../../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../../tools/pull-shapes";
+import { TOOL_BY_ID, type ToolId } from "../../tools/manifest";
 import type { BridgeStyle } from "../../render/field-gl";
 import type { HotNode, MenuHooks } from "../hotbox/menu";
 
@@ -171,6 +172,35 @@ const usesPressure = (d: StrokeDynamics): boolean => d === "pressure" || d === "
 const usesVelocity = (d: StrokeDynamics): boolean => d === "velocity" || d === "pressure-velocity";
 
 /**
+ * Accion de herramienta derivada del manifiesto.
+ *
+ * Se ESPARCE en su sitio dentro del dominio en vez de inyectarse al final del
+ * arbol: la posicion de cada herramienta en el radial es una decision de diseno,
+ * y `buildSchema` es el documento de orden. Un inyector guiado por un ancla
+ * fallaria en silencio si alguien renombrara ese campo — y el radial, tras
+ * retirar el rail, es el UNICO conmutador de herramientas de la aplicacion.
+ *
+ * El `id` del nodo lo manda el manifiesto y es CONTRATO: los chips del radial lo
+ * persisten en localStorage y `resolveNode` resuelve por `{path, nodeId}`.
+ */
+function toolAction(id: ToolId, editor: Editor): ActionField {
+  const spec = TOOL_BY_ID[id];
+  const radial = spec.radial;
+  if (!radial) throw new Error(`La herramienta "${id}" no declara accion radial`);
+
+  const field: ActionField = {
+    kind: "action",
+    id: radial.nodeId,
+    label: radial.label,
+    icon: radial.icon ?? spec.icon,
+    run: () => editor.setTool(id),
+    toggled: (s) => s.tool === id,
+  };
+  if (radial.surfaces) field.surfaces = [...radial.surfaces];
+  return field;
+}
+
+/**
  * Construye el esquema completo a partir del editor. Las lecturas (`get`,
  * `visible`, `toggled`…) se hacen sobre el `state` que cada superficie pasa al
  * renderizar; las escrituras van al editor. Las relecturas cruzadas (p. ej. la
@@ -325,7 +355,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
         // sincronía con las muestras); aquí solo se declara su lugar.
       },
       { kind: "action", id: "wheel", label: "Rueda", icon: "wheel", surfaces: ["radial"], run: () => hooks.toggleWheel() },
-      { kind: "action", id: "tool-picker", label: "Cuentagotas", icon: "picker", surfaces: ["radial"], toggled: (s) => s.tool === "picker", run: () => editor.setTool("picker") },
+      toolAction("picker", editor),
       // Paletas fijas: submenú de paletas → colores en el radial; pestañas +
       // pozos en el dock. Elegir un color marca la paleta y aplica el color.
       {
@@ -450,8 +480,8 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     label: "Materia",
     icon: "matter",
     children: [
-      { kind: "action", id: "tool-shape", label: "Crear", icon: "shape", surfaces: ["radial"], toggled: (s) => s.tool === "shape", run: () => editor.setTool("shape") },
-      { kind: "action", id: "tool-matter", label: "Mover", icon: "matter", surfaces: ["radial"], toggled: (s) => s.tool === "matter", run: () => editor.setTool("matter") },
+      toolAction("shape", editor),
+      toolAction("matter", editor),
       {
         kind: "choice",
         id: "matter-op",
@@ -469,7 +499,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
         get: (s) => s.matterOp,
         set: (v) => editor.setMatterOp(v as MatterOp),
       },
-      { kind: "action", id: "tool-bridge", label: "Puente", icon: "layers", surfaces: ["radial"], toggled: (s) => s.tool === "bridge", run: () => editor.setTool("bridge") },
+      toolAction("bridge", editor),
       { kind: "action", id: "run", label: (s) => (s.running ? "Pausar" : "Reanudar"), icon: (s) => (s.running ? "pause" : "play"), surfaces: ["radial"], keepOpen: true, toggled: (s) => s.running, run: () => editor.setRunning(!editor.state.running) },
       { kind: "action", id: "seed", label: "Sembrar", icon: "seed", surfaces: ["radial"], run: () => editor.seedMatter(8) },
       { kind: "action", id: "bake", label: "Hornear", icon: "bake", surfaces: ["radial"], run: () => editor.bakeMatter() },
@@ -518,7 +548,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     label: "Simetria",
     icon: "symmetry",
     children: [
-      { kind: "action", id: "tool-symmetry", label: "Mover eje", icon: "symmetry", surfaces: ["radial"], toggled: (s) => s.tool === "symmetry", run: () => editor.setTool("symmetry") },
+      toolAction("symmetry", editor),
       {
         kind: "toggle",
         id: "sym-active",
@@ -606,7 +636,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       { kind: "action", id: "zoom-out", label: "Alejar", icon: "zoomOut", keepOpen: true, run: () => editor.zoomBy(1 / 1.25) },
       { kind: "action", id: "fit", label: "Encajar", icon: "fit", run: () => editor.fitView() },
       { kind: "action", id: "reset-view", label: "Reiniciar", icon: "grid", run: () => editor.resetView() },
-      { kind: "action", id: "tool-hand", label: "Mano", icon: "hand", surfaces: ["radial"], toggled: (s) => s.tool === "hand", run: () => editor.setTool("hand") },
+      toolAction("hand", editor),
     ],
   };
 
@@ -616,7 +646,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     label: "Seleccion",
     icon: "select",
     children: [
-      { kind: "action", id: "tool-select", label: "Flecha (V)", icon: "select", toggled: (s) => s.tool === "select", run: () => editor.setTool("select") },
+      toolAction("select", editor),
       {
         kind: "choice", id: "select-op", label: "Transformar", icon: "move", chooser: "segmented",
         hint: "Mover / Escalar / Rotar / Pivote: el pivote por defecto es el centro; Pivote lo desplaza. Respeta capas bloqueadas.",

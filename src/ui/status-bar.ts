@@ -1,5 +1,5 @@
 import type { EditorState, PenReadout } from "../app/editor";
-import { TOOL_LABELS } from "../tools/types";
+import { TOOL_LABELS } from "../tools/manifest";
 import { button } from "./controls";
 import { el, num, setClass } from "./dom";
 

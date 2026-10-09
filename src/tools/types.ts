@@ -9,19 +9,18 @@ import type { BrushSettings, Polygon, StrokePoint } from "../stroke/types";
 import type { Body } from "../physics/world";
 import type { MatterOp } from "../app/editor";
 import type { PullFamily } from "./pull-shapes";
+import type { ToolId } from "./manifest";
 
-export type ToolId = "select" | "brush" | "shape" | "matter" | "bridge" | "symmetry" | "picker" | "hand";
-
-export const TOOL_LABELS: Record<ToolId, string> = {
-  select: "Selección",
-  brush: "Pincel",
-  shape: "Forma",
-  matter: "Materia",
-  bridge: "Puente",
-  symmetry: "Simetria",
-  picker: "Cuentagotas",
-  hand: "Mano",
-};
+/**
+ * El `ToolId` vive en el manifiesto; aqui solo se reexporta el tipo para no
+ * tocar los imports existentes.
+ *
+ * Este modulo debe seguir SIN un solo import de runtime: lo importan todas las
+ * herramientas, asi que un valor de `./manifest` aqui cerraria el ciclo
+ * (manifest -> herramienta -> types -> manifest) y `TOOLS` se evaluaria en
+ * orden indeterminado — fallo en produccion, no en desarrollo.
+ */
+export type { ToolId };
 
 /** Trazo humedo: lo que se pinta mientras el gesto sigue vivo. */
 export interface WetStroke {
@@ -88,7 +87,15 @@ export interface ToolContext {
 }
 
 export interface Tool {
-  readonly id: ToolId;
+  /**
+   * Literal que la propia clase declara. NO es `ToolId` a proposito: `ToolId` se
+   * deriva del manifiesto, cuyas entradas declaran `create: () => Tool`, asi que
+   * anotarlo como `ToolId` cerraria un ciclo de tipos
+   * (ToolId -> TOOLS -> ToolSpec -> Tool -> ToolId).
+   *
+   * La identidad la manda el manifiesto; nadie lee este campo.
+   */
+  readonly id: string;
   /** Cursor CSS mientras la herramienta esta activa. */
   readonly cursor: string;
   /** Dibujar el anillo del pincel bajo el puntero. */

@@ -30,18 +30,12 @@ import { unionRect } from "../scene/types";
 export type SelectOp = "move" | "scale" | "rotate" | "pivot";
 export type SelectPivotMode = "center" | "custom";
 import { Selection } from "./selection";
-import { SelectTool } from "../tools/select-tool";
-import { BrushTool } from "../tools/brush-tool";
-import { BridgeTool } from "../tools/bridge-tool";
-import { MatterTool } from "../tools/matter-tool";
-import { HandTool, PickerTool } from "../tools/picker-tool";
-import { ShapeTool } from "../tools/shape-tool";
 import { SymmetryTool } from "../tools/symmetry-tool";
 import { AquaField } from "../aqua/aqua-field";
 import { DEFAULT_AQUA_PARAMS, type AquaParams } from "../aqua/aqua-field";
 import { bakeAqua } from "../aqua/aqua-bake";
 import type { PullFamily } from "../tools/pull-shapes";
-import { TOOL_LABELS } from "../tools/types";
+import { DEFAULT_TOOL, HELD_TOOL, TOOL_KEYS, TOOL_LABELS, TOOLS } from "../tools/manifest";
 import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
 
 /** Operacion activa de la herramienta Materia. */
@@ -218,7 +212,7 @@ export class Editor {
 
   private pointer: PointerInput;
   private tools: Record<ToolId, Tool>;
-  private toolId: ToolId = "brush";
+  private toolId: ToolId = DEFAULT_TOOL;
   private tempTool: ToolId | null = null;
 
   private wet: WetStroke | null = null;
@@ -283,16 +277,12 @@ export class Editor {
     this.doc.shape = { ...DEFAULT_SHAPE };
     this.color = DEFAULT_PALETTES[0].colors[0];
 
-    this.tools = {
-      select: new SelectTool(),
-      brush: new BrushTool(),
-      shape: new ShapeTool(),
-      matter: new MatterTool(),
-      bridge: new BridgeTool(),
-      symmetry: new SymmetryTool(),
-      picker: new PickerTool(),
-      hand: new HandTool(),
-    };
+    // Las instancias salen del manifiesto: ya no hay una segunda lista de clases
+    // que mantener en sincronia con la union `ToolId`. `TOOLS` es la definicion
+    // del conjunto, asi que el registro queda total por construccion.
+    const tools = {} as Record<ToolId, Tool>;
+    for (const spec of TOOLS) tools[spec.id] = spec.create();
+    this.tools = tools;
 
     this.pointer = new PointerInput(host, {
       onStart: (s) => this.onStart(s),
@@ -1650,15 +1640,16 @@ export class Editor {
   // ------------------------------------------------------------- teclado
 
   private bindKeyboard(): void {
-    const keys: Record<string, ToolId> = {
-      v: "select",
-      b: "brush",
-      f: "shape",
-      m: "matter",
-      p: "bridge",
-      i: "picker",
-      h: "hand",
-    };
+    // Los atajos salen del manifiesto. `shift` los separa porque la simetria usa
+    // Shift+S: la `S` a secas es un INTERRUPTOR (toggleSymmetry), no un cambio de
+    // herramienta, y su bloque corre antes que este despacho.
+    //
+    // `plain` NO consulta e.shiftKey a proposito: hoy Shift+V tambien selecciona
+    // la flecha. Endurecerlo haria que Shift+B/F/M/P dejaran de cambiar de
+    // herramienta — seria un cambio de comportamiento, no un refactor.
+    const plain: Record<string, ToolId> = {};
+    const shifted: Record<string, ToolId> = {};
+    for (const k of TOOL_KEYS) (k.shift ? shifted : plain)[k.key] = k.id;
 
     this.keyHandler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -1723,9 +1714,9 @@ export class Editor {
         return;
       }
 
-      if (e.code === "Space" && this.tempTool !== "hand") {
+      if (HELD_TOOL && e.code === "Space" && this.tempTool !== HELD_TOOL) {
         e.preventDefault();
-        this.tempTool = "hand";
+        this.tempTool = HELD_TOOL;
         this.host.style.cursor = "grab";
         return;
       }
@@ -1733,10 +1724,13 @@ export class Editor {
       // S: toggle de simetria (activa/desactiva recordando el ultimo tipo) SIN
       // cambiar de herramienta: sigues con el pincel y dibujas con simetria al
       // instante. Shift+S abre la herramienta Simetria para arrastrar el eje.
+      // Es la unica entrada de `shifted`: la `S` a secas no cambia de herramienta,
+      // asi que no puede vivir en `plain`.
       if (key === "s") {
         e.preventDefault();
-        if (e.shiftKey) {
-          this.setTool("symmetry");
+        const sym = shifted[key];
+        if (e.shiftKey && sym) {
+          this.setTool(sym);
           this.status("Herramienta Simetria — arrastra el eje");
         } else {
           this.toggleSymmetry();
@@ -1745,9 +1739,9 @@ export class Editor {
         }
         return;
       }
-      if (keys[key]) {
-        this.setTool(keys[key]);
-        this.status(TOOL_LABELS[keys[key]]);
+      if (plain[key]) {
+        this.setTool(plain[key]);
+        this.status(TOOL_LABELS[plain[key]]);
         return;
       }
       switch (key) {
@@ -1812,7 +1806,7 @@ export class Editor {
     };
 
     this.keyUpHandler = (e: KeyboardEvent) => {
-      if (e.code === "Space" && this.tempTool === "hand") {
+      if (HELD_TOOL && e.code === "Space" && this.tempTool === HELD_TOOL) {
         this.tempTool = null;
         this.host.style.cursor =
           this.tools[this.toolId].cursor === "none" ? "none" : this.tools[this.toolId].cursor;

@@ -2,6 +2,7 @@ import { el } from "./dom";
 import { MateriaEdge } from "./fx/materia-edge";
 import { MateriaFx, prefersReducedMotion } from "./fx/materia";
 import { icon } from "./icons";
+import { TOOL_HELP_ROWS } from "../tools/manifest";
 
 /* ==========================================================================
    Panel de ayuda.
@@ -41,12 +42,10 @@ const COMMAND_GROUPS: { title: string; icon: string; rows: [string, string][] }[
     icon: "compass",
     rows: [
       ["Tab", "Buscar (paleton)"],
-      ["B", "Pincel"],
-      ["F", "Forma fisica"],
-      ["M", "Mover materia"],
-      ["S", "Eje de simetria"],
-      ["I", "Cuentagotas"],
-      ["H / Espacio", "Mano"],
+      // Las filas de herramienta salen del manifiesto. Antes esta lista se
+      // mantenia a mano y ya se habia desviado: faltaban V (seleccion) y P
+      // (puente). El orden es el canonico del manifiesto, no el historico.
+      ...TOOL_HELP_ROWS,
       ["R", "Rueda de color"],
     ],
   },
