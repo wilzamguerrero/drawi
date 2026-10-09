@@ -38,8 +38,8 @@ import { HandTool, PickerTool } from "../tools/picker-tool";
 import { ShapeTool } from "../tools/shape-tool";
 import { SymmetryTool } from "../tools/symmetry-tool";
 import { AquaField } from "../aqua/aqua-field";
-import { DEFAULT_AQUA_PARAMS } from "../aqua/aqua-field";
-import { AquaStroker } from "../aqua/aqua-stroker";
+import { DEFAULT_AQUA_PARAMS, type AquaParams } from "../aqua/aqua-field";
+import { bakeAqua } from "../aqua/aqua-bake";
 import type { PullFamily } from "../tools/pull-shapes";
 import { TOOL_LABELS } from "../tools/types";
 import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
@@ -50,6 +50,17 @@ export type MatterOp = "move" | "rotate" | "scale" | "pivot";
 /** Semilla del historial de colores: la escala de grises de la paleta Tinta.
     Se va sustituyendo por los colores que el usuario elige. */
 const RECENT_SEED = ["#000000", "#1b1b1f", "#3d3d46", "#6e6e78", "#a8a8b3", "#d6d6dd", "#ffffff"];
+
+/**
+ * Cupo de motores de acuarela vivos a la vez.
+ *
+ * Cada uno es un contexto WebGL2 con varias rejillas de punto flotante a
+ * resolución de pantalla: tres ya son decenas de megas de VRAM, y los
+ * navegadores empiezan a tirar contextos antiguos pasados unos pocos. Se pueden
+ * tener más capas de acuarela que esto; las que pasen del cupo conservan lo que
+ * tengan horneado pero no reciben fluido nuevo hasta que se libere una.
+ */
+const MAX_AQUA_FIELDS = 3;
 
 export interface PenReadout {
   kind: "pen" | "touch" | "mouse";
@@ -181,15 +192,25 @@ export class Editor {
   private fieldRenderer: FieldRenderer;
   private matter: MatterCompositor;
 
-  /** Plano de acuarela (fluidos WebGL2); null si WebGL2 no esta disponible. */
-  private aquaField: AquaField | null = null;
-  private aquaStroker: AquaStroker | null = null;
-  /** Canvas del plano de acuarela (para visibilidad/opacidad). */
-  private aquaCanvas: HTMLCanvasElement | null = null;
-  /** El plano de acuarela esta visible. */
-  private aquaVisible = true;
-  /** Opacidad del plano de acuarela (0..1). */
-  private aquaOpacity = 1;
+  /**
+   * Motores de acuarela, uno por capa de acuarela (`kind === "aqua"`).
+   *
+   * Se crean en perezoso —solo al pintar de verdad en la capa— y se sueltan al
+   * borrarla: cada motor es un contexto WebGL2 con rejillas de punto flotante
+   * grandes, y el navegador solo tolera unos pocos a la vez. De ahí el cupo de
+   * `MAX_AQUA_FIELDS`: una capa por encima del cupo existe y conserva lo que
+   * tenga horneado, pero no recibe simulación nueva.
+   */
+  private aquaFields = new Map<string, AquaField>();
+  /** Sondeo de WebGL2 cacheado: no se crea un motor solo para saber si se puede. */
+  private aquaSupport: boolean | null = null;
+  /** Modo del pincel de acuarela: pluma (pigmento) o agua. */
+  private aquaModeValue: "pen" | "brush" = "pen";
+  /** Parámetros vivos, compartidos por todas las capas: son ajustes del PINCEL
+      (el papel, el sangrado, el secado), no propiedades de cada capa. */
+  private aquaParamsValue: AquaParams = { ...DEFAULT_AQUA_PARAMS };
+  /** Tinta blanca (gouache) en vez de pigmento oscuro. */
+  private aquaWhite = false;
   /** Tamaños propios de la acuarela por modo (px mundo), independientes del
       pincel vectorial y entre si: pluma fina, agua ancha. */
   private aquaSizePen = 10;
@@ -244,20 +265,10 @@ export class Editor {
 
     host.appendChild(this.inkLayer.canvas);
     host.appendChild(this.matter.output.canvas);
-    // Plano de acuarela: su propio canvas WebGL encima de tinta+materia y debajo
-    // del trazo humedo/overlay. Si WebGL2 falla, se queda en null y la
-    // herramienta simplemente no hace nada (el resto de la app sigue igual).
-    try {
-      const aquaCanvas = document.createElement("canvas");
-      aquaCanvas.className = "layer layer-aqua";
-      this.aquaField = new AquaField(aquaCanvas);
-      this.aquaField.asLayer = true;
-      this.aquaStroker = new AquaStroker(this.aquaField);
-      this.aquaCanvas = aquaCanvas;
-      host.appendChild(aquaCanvas);
-    } catch (err) {
-      console.warn("[drawi] Acuarela no disponible:", err);
-    }
+    // La acuarela ya NO tiene un plano propio en el DOM: cada capa de acuarela
+    // se compone dentro de la pila de tinta (ver `Compositor`), que es lo que
+    // hace que su orden en el panel cuente de verdad y que herede opacidad,
+    // fusión y máscara. Sus lienzos WebGL viven fuera de pantalla.
     host.appendChild(this.wetLayer.canvas);
     host.appendChild(this.overlayLayer.canvas);
     host.style.background = this.doc.meta.background;
@@ -352,12 +363,12 @@ export class Editor {
       activeLayerId: this.doc.activeLayerId,
       soloLayerId: this.soloLayerId,
       maskMode: this.maskMode,
-      aquaAvailable: this.aquaField !== null,
-      aquaMode: this.aquaStroker?.mode ?? "pen",
+      aquaAvailable: this.aquaAvailable,
+      aquaMode: this.aquaMode,
       aquaSize: this.aquaMode === "brush" ? this.aquaSizeBrush : this.aquaSizePen,
-      aquaLayerVisible: this.aquaVisible,
-      aquaLayerOpacity: this.aquaOpacity,
-      aquaParams: this.aquaField?.params ?? DEFAULT_AQUA_PARAMS,
+      aquaLayerVisible: this.aquaLayerVisible,
+      aquaLayerOpacity: this.aquaLayerOpacity,
+      aquaParams: this.aquaParamsValue,
     };
   }
 
@@ -371,18 +382,113 @@ export class Editor {
 
   // ------------------------------------------------------------- acuarela
 
-  /** ¿El plano de acuarela existe (WebGL2 disponible)? */
+  /** ¿Se puede hacer acuarela (WebGL2 disponible)? Se sondea una sola vez. */
   get aquaAvailable(): boolean {
-    return this.aquaField !== null;
+    if (this.aquaSupport === null) {
+      try {
+        const probe = document.createElement("canvas");
+        probe.width = 1;
+        probe.height = 1;
+        this.aquaSupport = probe.getContext("webgl2") !== null;
+      } catch {
+        this.aquaSupport = false;
+      }
+      if (!this.aquaSupport) console.warn("[drawi] Acuarela no disponible: sin WebGL2");
+    }
+    return this.aquaSupport;
+  }
+
+  /**
+   * Motor de la capa `layerId`, creándolo si hace falta y si queda cupo.
+   *
+   * Devuelve null cuando la capa no es de acuarela, cuando no hay WebGL2 o
+   * cuando ya hay `MAX_AQUA_FIELDS` motores vivos. Quien pinta avisa al usuario;
+   * quien solo dibuja (compositor, miniaturas) se limita a no pintar nada.
+   */
+  private aquaFieldFor(layerId: string, create = false): AquaField | null {
+    const existing = this.aquaFields.get(layerId);
+    if (existing) return existing;
+    if (!create) return null;
+    if (this.doc.layerById(layerId)?.kind !== "aqua") return null;
+    if (!this.aquaAvailable) return null;
+    if (this.aquaFields.size >= MAX_AQUA_FIELDS) {
+      this.status(`Máximo ${MAX_AQUA_FIELDS} capas de acuarela con fluido a la vez`);
+      return null;
+    }
+    try {
+      const field = new AquaField();
+      field.asLayer = true;
+      // Los parámetros son del pincel, no de la capa: el motor nuevo arranca
+      // con los que el usuario tiene puestos ahora mismo.
+      Object.assign(field.params, this.aquaParamsValue);
+      field.setWhite(this.aquaWhite);
+      field.resize(this.camera.width, this.camera.height, this.dpr);
+      this.aquaFields.set(layerId, field);
+      return field;
+    } catch (err) {
+      console.warn("[drawi] No se pudo crear el fluido de acuarela:", err);
+      this.aquaSupport = false;
+      return null;
+    }
+  }
+
+  /** Lienzo del fluido vivo de una capa (lo consulta el compositor). */
+  aquaCanvasFor(layerId: string): HTMLCanvasElement | null {
+    return this.aquaFields.get(layerId)?.canvas ?? null;
+  }
+
+  /** Capa de acuarela donde cae lo que se pinta ahora (la crea si no hay). */
+  private aquaTargetLayer(): SceneLayer | null {
+    if (!this.aquaAvailable) return null;
+    const active = this.doc.activeLayer;
+    if (active?.kind === "aqua") return active;
+    const existing = this.doc.aquaLayers[this.doc.aquaLayers.length - 1];
+    if (existing) return existing;
+    // Primera pincelada de acuarela del documento: nace su capa, como la materia.
+    // La instantánea va ANTES de crearla, o deshacer no la quitaría.
+    const before = this.doc.snapshot();
+    const layer = this.doc.addAquaLayer();
+    this.history.record("Nueva capa de acuarela", before);
+    this.invalidateAll();
+    this.emitState();
+    return layer;
+  }
+
+  /** Motor donde cae lo que se pinta ahora (crea capa y motor si hace falta). */
+  private aquaTargetField(): AquaField | null {
+    const layer = this.aquaTargetLayer();
+    return layer ? this.aquaFieldFor(layer.id, true) : null;
+  }
+
+  /** Motor de la capa activa si es de acuarela; si no, el del último destino.
+   *  Lo usan los ajustes del panel (hornear, limpiar) para saber a quién tocar. */
+  private aquaCurrent(): { layer: SceneLayer; field: AquaField | null } | null {
+    const active = this.doc.activeLayer;
+    const layer =
+      active?.kind === "aqua"
+        ? active
+        : this.doc.aquaLayers[this.doc.aquaLayers.length - 1];
+    if (!layer) return null;
+    return { layer, field: this.aquaFields.get(layer.id) ?? null };
+  }
+
+  /** Crea una capa de acuarela a mano (botón del panel de capas). */
+  addAquaLayer(): void {
+    if (!this.aquaAvailable) {
+      this.status("Acuarela no disponible: hace falta WebGL2");
+      return;
+    }
+    this.layerEdit("Nueva capa de acuarela", () => this.doc.addAquaLayer());
+    this.status("Nueva capa de acuarela creada");
   }
 
   /** Modo del pincel de acuarela: pluma (pigmento) o agua. */
   get aquaMode(): "pen" | "brush" {
-    return this.aquaStroker?.mode ?? "pen";
+    return this.aquaModeValue;
   }
 
   setAquaMode(mode: "pen" | "brush"): void {
-    if (this.aquaStroker) this.aquaStroker.mode = mode;
+    this.aquaModeValue = mode;
     this.emitState();
   }
 
@@ -399,73 +505,150 @@ export class Editor {
   }
 
   /** Lee un parametro vivo de la acuarela (0..1). */
-  aquaParam(key: keyof import("../aqua/aqua-field").AquaParams): number {
-    return this.aquaField?.params[key] ?? 0;
+  aquaParam(key: keyof AquaParams): number {
+    return this.aquaParamsValue[key];
   }
 
-  /** Fija un parametro vivo de la acuarela (0..1). */
-  setAquaParam(key: keyof import("../aqua/aqua-field").AquaParams, value: number): void {
-    if (this.aquaField) this.aquaField.params[key] = value;
+  /** Fija un parametro vivo de la acuarela (0..1) en todas las capas. */
+  setAquaParam(key: keyof AquaParams, value: number): void {
+    this.aquaParamsValue[key] = value;
+    for (const field of this.aquaFields.values()) field.params[key] = value;
     this.emitState();
   }
 
   /** Tinta blanca (gouache) para la acuarela. */
   setAquaWhite(on: boolean): void {
-    this.aquaField?.setWhite(on);
-  }
-
-  /** Hornea (fija) el pigmento movil de la acuarela en el papel. */
-  aquaFix(): void {
-    this.aquaField?.fix();
-    this.status("Acuarela horneada");
-  }
-
-  /** Vacia el plano de acuarela. */
-  aquaClear(): void {
-    this.aquaField?.clear();
-    this.status("Acuarela limpiada");
-  }
-
-  /** ¿El plano de acuarela esta visible? */
-  get aquaLayerVisible(): boolean {
-    return this.aquaVisible;
-  }
-
-  /** Muestra u oculta el plano de acuarela (como una capa). */
-  setAquaVisible(on: boolean): void {
-    this.aquaVisible = on;
-    if (this.aquaCanvas) this.aquaCanvas.style.display = on ? "" : "none";
-    this.status(on ? "Capa acuarela visible" : "Capa acuarela oculta");
-    this.emitState();
-  }
-
-  /** Opacidad del plano de acuarela (0..1). */
-  get aquaLayerOpacity(): number {
-    return this.aquaOpacity;
-  }
-
-  setAquaOpacity(v: number): void {
-    this.aquaOpacity = clamp01(v);
-    if (this.aquaCanvas) this.aquaCanvas.style.opacity = String(this.aquaOpacity);
-    this.emitState();
-  }
-
-  /** ¿El pincel esta en modo acuarela y el plano existe? */
-  get aquaBrushActive(): boolean {
-    return this.brush.asAqua && this.aquaField !== null;
+    this.aquaWhite = on;
+    for (const field of this.aquaFields.values()) field.setWhite(on);
   }
 
   /**
-   * Siembra un TRAZO (linea central con radios, en mundo) en el plano de
-   * acuarela. Convierte cada punto a UV de pantalla y su radio (px mundo) a la
-   * escala Y-normalizada del fluido. Asi el trazo humedo sigue exactamente la
-   * geometria del pincel vectorial (presion/afilado incluidos).
+   * Hornea la capa de acuarela: el pigmento móvil se asienta en el papel.
+   *
+   * Hace las dos cosas que "seco" significa aquí: el fluido deja de correr
+   * (`field.fix()`) y lo que ya hay se pasa a un ráster de MUNDO, así que a
+   * partir de ahora acompaña al paneo y al zoom, se guarda y se exporta.
+   */
+  aquaFix(): void {
+    const current = this.aquaCurrent();
+    if (!current) {
+      this.status("No hay ninguna capa de acuarela");
+      return;
+    }
+    current.field?.fix();
+    void this.bakeAquaLayer(current.layer.id, "Acuarela horneada");
+  }
+
+  /** Vacia la capa de acuarela: el fluido vivo y lo ya horneado. */
+  aquaClear(): void {
+    const current = this.aquaCurrent();
+    if (!current) {
+      this.status("No hay ninguna capa de acuarela");
+      return;
+    }
+    this.clearAquaLayer(current.layer.id);
+  }
+
+  /** Vacia una capa de acuarela concreta (fluido y ráster horneado). */
+  clearAquaLayer(id: string): void {
+    const layer = this.doc.layerById(id);
+    if (!layer || layer.kind !== "aqua") return;
+    const field = this.aquaFields.get(id);
+    if (!field?.hasContent && !layer.aquaBaked) return;
+    const before = this.doc.snapshot();
+    field?.clear();
+    this.doc.setLayer(id, { aquaBaked: undefined, aquaRect: undefined });
+    this.history.record("Limpiar acuarela", before);
+    this.afterHistory("Acuarela limpiada");
+  }
+
+  /**
+   * Pasa el fluido de una capa a su ráster de mundo (horneado).
+   *
+   * Es lo que hace que la acuarela se pueda guardar y exportar: `toDataURL` es
+   * lento (décimas con un lienzo grande), así que esto se llama a mano, al
+   * guardar y al exportar, nunca por fotograma ni en el autoguardado.
+   */
+  bakeAquaLayer(id: string, message?: string): boolean {
+    const layer = this.doc.layerById(id);
+    if (!layer || layer.kind !== "aqua") return false;
+    const field = this.aquaFields.get(id);
+    if (!field?.hasContent) return false;
+    // El ráster anterior ya está decodificado en la caché del compositor; si no
+    // lo estuviera todavía, se hornea solo el fluido y el viejo se respeta en el
+    // siguiente horneado (nunca se pierde: `bakeAqua` compone los dos).
+    const previous = layer.aquaBaked ? this.compositor.cachedImage(layer.aquaBaked) : null;
+    const baked = bakeAqua(layer, field.canvas, previous, this.camera);
+    if (!baked) return false;
+    const before = this.doc.snapshot();
+    this.doc.setLayer(id, {
+      aquaBaked: baked.canvas.toDataURL("image/png"),
+      aquaRect: baked.rect,
+    });
+    // Lo horneado ya está en el ráster: el fluido se vacía para no pintarlo dos
+    // veces (el compositor dibuja ráster + fluido, uno encima del otro).
+    field.clear();
+    this.history.record("Hornear acuarela", before);
+    this.afterHistory(message ?? "Acuarela horneada");
+    return true;
+  }
+
+  /** Hornea todas las capas de acuarela con fluido vivo. Lo llama el guardado
+   *  y la exportación, que necesitan la acuarela en coordenadas de mundo. */
+  bakeAllAquaLayers(): number {
+    let n = 0;
+    for (const layer of this.doc.aquaLayers) if (this.bakeAquaLayer(layer.id)) n++;
+    return n;
+  }
+
+  /** ¿Alguna capa de acuarela tiene fluido vivo sin hornear? */
+  get hasLiveAqua(): boolean {
+    for (const layer of this.doc.aquaLayers) {
+      if (this.aquaFields.get(layer.id)?.hasContent) return true;
+    }
+    return false;
+  }
+
+  /** ¿La capa de acuarela de destino está visible? (compatibilidad del dock). */
+  get aquaLayerVisible(): boolean {
+    return this.aquaCurrent()?.layer.visible ?? true;
+  }
+
+  /** Muestra u oculta la capa de acuarela de destino. */
+  setAquaVisible(on: boolean): void {
+    const current = this.aquaCurrent();
+    if (!current) return;
+    this.setLayer(current.layer.id, { visible: on });
+    this.status(on ? "Capa acuarela visible" : "Capa acuarela oculta");
+  }
+
+  /** Opacidad de la capa de acuarela de destino (0..1). */
+  get aquaLayerOpacity(): number {
+    return this.aquaCurrent()?.layer.opacity ?? 1;
+  }
+
+  setAquaOpacity(v: number): void {
+    const current = this.aquaCurrent();
+    if (!current) return;
+    this.setLayer(current.layer.id, { opacity: clamp01(v) });
+  }
+
+  /** ¿El pincel esta en modo acuarela y se puede simular? */
+  get aquaBrushActive(): boolean {
+    return this.brush.asAqua && this.aquaAvailable;
+  }
+
+  /**
+   * Siembra un TRAZO (linea central con radios, en mundo) en la capa de
+   * acuarela de destino. Convierte cada punto a UV de pantalla y su radio (px
+   * mundo) a la escala Y-normalizada del fluido. Asi el trazo humedo sigue
+   * exactamente la geometria del pincel vectorial (presion/afilado incluidos).
    */
   stampAquaStroke(points: readonly import("../stroke/types").StrokePoint[], color: string): void {
-    const field = this.aquaField;
+    const field = this.aquaTargetField();
     if (!field || points.length === 0) return;
     field.setPigment(color);
-    const dens = this.aquaStroker?.mode === "brush" ? 0 : 0.9;
+    const dens = this.aquaMode === "brush" ? 0 : 0.9;
     const w = Math.max(1, this.host.clientWidth);
     const h = Math.max(1, this.host.clientHeight);
     const p: Vec2 = { x: 0, y: 0 };
@@ -480,18 +663,20 @@ export class Editor {
       return { x: p.x / w, y: 1 - p.y / h, r: Math.max(rScreen / h, 0.002) };
     });
     field.stampStroke(uvPts, dens);
+    this.inkLayer.invalidate();
     this.status(dens === 0 ? "Agua" : "Acuarela");
   }
 
   /**
-   * Siembra AREAS rellenas (poligonos en mundo) en el plano de acuarela: para el
-   * modo Relleno y las formas de Arrastre. Cada poligono se rasteriza como mancha.
+   * Siembra AREAS rellenas (poligonos en mundo) en la capa de acuarela de
+   * destino: para el modo Relleno y las formas de Arrastre. Cada poligono se
+   * rasteriza como mancha.
    */
   stampAquaArea(polys: readonly import("../stroke/types").Polygon[], color: string): void {
-    const field = this.aquaField;
+    const field = this.aquaTargetField();
     if (!field || polys.length === 0) return;
     field.setPigment(color);
-    const dens = this.aquaStroker?.mode === "brush" ? 0 : 0.9;
+    const dens = this.aquaMode === "brush" ? 0 : 0.9;
     const w = Math.max(1, this.host.clientWidth);
     const h = Math.max(1, this.host.clientHeight);
     const p: Vec2 = { x: 0, y: 0 };
@@ -503,7 +688,22 @@ export class Editor {
       });
       field.stampArea(uv, dens);
     }
+    this.inkLayer.invalidate();
     this.status(dens === 0 ? "Agua" : "Acuarela");
+  }
+
+  /** Suelta los motores de capas que ya no existen (borradas, deshechas o de un
+   *  documento anterior). Devuelve cuántos ha soltado. */
+  private pruneAquaFields(): number {
+    const live = new Set(this.doc.aquaLayers.map((l) => l.id));
+    let n = 0;
+    for (const [id, field] of [...this.aquaFields]) {
+      if (live.has(id)) continue;
+      field.dispose();
+      this.aquaFields.delete(id);
+      n++;
+    }
+    return n;
   }
 
   // ------------------------------------------------------------- comandos
@@ -637,6 +837,10 @@ export class Editor {
     const before = this.doc.snapshot();
     run();
     this.history.record(label, before);
+    // Una capa puede haber desaparecido (borrado, aplanado): sus motores de
+    // acuarela sueltan el contexto WebGL2 aquí, que es el único sitio por donde
+    // pasan todas las mutaciones de capas.
+    this.pruneAquaFields();
     this.inkLayer.invalidate();
     this.emitState();
   }
@@ -670,8 +874,11 @@ export class Editor {
     this.layerEdit("Aplanar", () => this.doc.flatten());
   }
 
-  moveLayer(id: string, beforeId: string | null, parentId: string | null): void {
-    this.layerEdit("Reordenar capa", () => this.doc.moveLayer(id, beforeId, parentId));
+  /** Reubica una capa: a `parentId` (null = raíz), en la posición `index` entre
+   *  sus hermanas contando de abajo arriba (0 = la más baja). */
+  moveLayerTo(id: string, parentId: string | null, index: number): void {
+    this.layerEdit("Reordenar capa", () => this.doc.moveLayerTo(id, parentId, index));
+    this.matter.invalidate();
   }
 
   /** Cambios de propiedad de capa (opacidad, fusión, ojo, bloqueos, nombre…). */
@@ -848,6 +1055,9 @@ export class Editor {
 
   private afterHistory(message: string): void {
     this.inkRenderer.prune(this.doc.items);
+    // Deshacer puede haber borrado capas de acuarela (o resucitado otras): los
+    // motores de las que ya no están tienen que soltar su contexto WebGL2.
+    this.pruneAquaFields();
     this.inkLayer.invalidate();
     this.matter.invalidate();
     this.overlayLayer.invalidate();
@@ -1169,6 +1379,9 @@ export class Editor {
    */
   reload(message?: string): void {
     this.inkRenderer.clearCache();
+    // El documento es otro: los motores de acuarela del anterior ya no valen
+    // (sus capas no existen) y hay que devolver sus contextos WebGL2.
+    this.pruneAquaFields();
     this.host.style.background = this.doc.meta.background;
     this.invalidateAll();
     if (message) this.status(message);
@@ -1635,7 +1848,7 @@ export class Editor {
     this.overlayLayer.resize(w, h, dpr);
     this.fieldRenderer.resize(w, h, dpr);
     this.matter.resize(w, h, dpr);
-    this.aquaField?.resize(w, h, dpr);
+    for (const field of this.aquaFields.values()) field.resize(w, h, dpr);
     this.pointer.refreshRect();
     this.invalidateAll();
     this.needsResize = false;
@@ -1677,13 +1890,20 @@ export class Editor {
       }
     }
 
-    // Acuarela: el fluido avanza y se repinta mientras siga vivo (unos segundos
-    // tras el ultimo deposito). Dormido no consume GPU. Los trazos se siembran
-    // al soltar el pincel (ver stampAqua), no aqui.
-    if (this.aquaField && this.aquaField.active) {
-      this.aquaField.step(dt);
-      this.aquaField.render();
+    // Acuarela: cada capa con fluido avanza y se repinta mientras siga viva
+    // (unos segundos tras el ultimo deposito). Dormida no consume GPU. Los
+    // trazos se siembran al soltar el pincel (ver stampAqua), no aqui.
+    // Como la acuarela se compone DENTRO de la pila de tinta, mientras el fluido
+    // se mueve hay que recomponerla: es el precio de que su orden Z cuente.
+    let aquaMoving = false;
+    for (const [id, field] of this.aquaFields) {
+      if (!field.active) continue;
+      if (!this.doc.layerById(id)) continue; // capa borrada: se suelta abajo
+      field.step(dt);
+      field.render();
+      aquaMoving = true;
     }
+    if (aquaMoving) this.inkLayer.invalidate();
 
     if (this.inkLayer.dirty) {
       // El compositor compone todas las capas (orden, opacidad, relleno, fusión,
@@ -1696,6 +1916,7 @@ export class Editor {
         maskMode: this.maskMode,
         soloId: this.soloLayerId,
         wetAsOverlay: this.wetIsOverlay,
+        aquaCanvas: (id) => this.aquaCanvasFor(id),
       });
       this.inkLayer.dirty = false;
     }

@@ -24,6 +24,15 @@ export interface ExportOptions {
   matter: boolean;
   /** Resolucion del contorno del campo: menor es mas fiel. */
   fieldCell: number;
+  /**
+   * Rásteres de acuarela ya decodificados, por id de capa.
+   *
+   * La acuarela se guarda como dataURL y decodificar es asíncrono, pero el
+   * rasterizado es sincrono: quien exporta los decodifica antes (ver
+   * `decodeAquaImages`) y los pasa aquí. Sin este mapa, las capas de acuarela
+   * se omiten en vez de salir a medias.
+   */
+  aquaImages?: ReadonlyMap<string, CanvasImageSource>;
 }
 
 export const DEFAULT_EXPORT: ExportOptions = {
@@ -177,15 +186,33 @@ function applyExportMask(buf: CanvasRenderingContext2D, layer: SceneLayer, box: 
   buf.globalCompositeOperation = "source-over";
 }
 
-/** Pinta el contenido de una capa (tinta o grupo) en un lienzo nuevo, o null. */
-function renderExportLayer(layer: SceneLayer, doc: SceneDocument, box: Rect, scale: number): CanvasRenderingContext2D | null {
+/** Pinta el contenido de una capa (tinta, grupo o acuarela) en un lienzo nuevo. */
+function renderExportLayer(
+  layer: SceneLayer,
+  doc: SceneDocument,
+  box: Rect,
+  scale: number,
+  aquaImages?: ReadonlyMap<string, CanvasImageSource>,
+): CanvasRenderingContext2D | null {
   const w = Math.max(1, Math.round(box.w * scale));
   const h = Math.max(1, Math.round(box.h * scale));
   const buf = makeBuffer(w, h);
   if (layer.kind === "group") {
     const children = doc.childLayers(layer.id);
     if (children.length === 0) return null;
-    compositeExportList(buf, children, doc, box, scale);
+    compositeExportList(buf, children, doc, box, scale, aquaImages);
+    return buf;
+  }
+  if (layer.kind === "aqua") {
+    // Solo sale lo horneado: es lo único que vive en coordenadas de mundo. El
+    // editor hornea antes de exportar, así que a esta altura ya está.
+    const img = aquaImages?.get(layer.id);
+    const rect = layer.aquaRect;
+    if (!img || !rect) return null;
+    setExportTransform(buf, box, scale);
+    buf.drawImage(img, rect.x, rect.y, rect.w, rect.h);
+    buf.setTransform(1, 0, 0, 1, 0, 0);
+    applyExportMask(buf, layer, box, scale);
     return buf;
   }
   setExportTransform(buf, box, scale);
@@ -203,10 +230,11 @@ function compositeExportUnit(
   doc: SceneDocument,
   box: Rect,
   scale: number,
+  aquaImages?: ReadonlyMap<string, CanvasImageSource>,
 ): void {
   if (base.kind === "matter") return; // plano propio, se pinta aparte
   if (!layerVisible(base, doc)) return;
-  const content = renderExportLayer(base, doc, box, scale);
+  const content = renderExportLayer(base, doc, box, scale, aquaImages);
   if (!content) return;
 
   let final = content;
@@ -215,7 +243,7 @@ function compositeExportUnit(
     const stack = makeBuffer(content.canvas.width, content.canvas.height);
     stack.drawImage(content.canvas, 0, 0);
     for (const clip of visibleClips) {
-      const cc = renderExportLayer(clip, doc, box, scale);
+      const cc = renderExportLayer(clip, doc, box, scale, aquaImages);
       if (!cc) continue;
       // Recorta el contenido del clip a la silueta acumulada de la base.
       cc.globalCompositeOperation = "destination-in";
@@ -245,6 +273,7 @@ function compositeExportList(
   doc: SceneDocument,
   box: Rect,
   scale: number,
+  aquaImages?: ReadonlyMap<string, CanvasImageSource>,
 ): void {
   let i = 0;
   while (i < list.length) {
@@ -255,14 +284,46 @@ function compositeExportList(
     }
     let j = i + 1;
     while (j < list.length && list[j].clip) j++;
-    compositeExportUnit(out, layer, list.slice(i + 1, j), doc, box, scale);
+    compositeExportUnit(out, layer, list.slice(i + 1, j), doc, box, scale, aquaImages);
     i = j;
   }
 }
 
-/** Compone toda la tinta (capas ink/group) sobre `out`, respetando el orden. */
-function compositeExportInk(out: CanvasRenderingContext2D, doc: SceneDocument, box: Rect, scale: number): void {
-  compositeExportList(out, doc.childLayers(null), doc, box, scale);
+/** Compone toda la tinta (capas ink/group/aqua) sobre `out`, en orden. */
+function compositeExportInk(
+  out: CanvasRenderingContext2D,
+  doc: SceneDocument,
+  box: Rect,
+  scale: number,
+  aquaImages?: ReadonlyMap<string, CanvasImageSource>,
+): void {
+  compositeExportList(out, doc.childLayers(null), doc, box, scale, aquaImages);
+}
+
+/**
+ * Decodifica los rásteres de acuarela del documento.
+ *
+ * Decodificar un dataURL es asíncrono y el rasterizado no, así que esto se hace
+ * antes y el resultado se pasa en `ExportOptions.aquaImages`. Las capas que no
+ * se puedan decodificar se omiten en silencio en vez de abortar la exportación.
+ */
+export async function decodeAquaImages(
+  doc: SceneDocument,
+): Promise<Map<string, CanvasImageSource>> {
+  const out = new Map<string, CanvasImageSource>();
+  await Promise.all(
+    doc.aquaLayers.map(async (layer) => {
+      if (!layer.aquaBaked || !layer.aquaRect) return;
+      const img = await new Promise<HTMLImageElement | null>((resolve) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => resolve(null);
+        el.src = layer.aquaBaked as string;
+      });
+      if (img) out.set(layer.id, img);
+    }),
+  );
+  return out;
 }
 
 /** Rasteriza el documento completo a un canvas nuevo. */
@@ -284,7 +345,7 @@ export function renderToCanvas(
   }
 
   // Tinta: se compone por capas (orden, opacidad, fusión, máscara, recorte).
-  compositeExportInk(ctx, doc, box, opt.scale);
+  compositeExportInk(ctx, doc, box, opt.scale, opt.aquaImages);
 
   ctx.setTransform(opt.scale, 0, 0, opt.scale, -box.x * opt.scale, -box.y * opt.scale);
   ctx.lineJoin = "round";
@@ -334,7 +395,10 @@ export async function exportPng(
   doc: SceneDocument,
   options: Partial<ExportOptions> = {},
 ): Promise<Blob> {
-  const canvas = renderToCanvas(doc, options);
+  // La acuarela se decodifica aquí (es asíncrono) y entra ya lista al
+  // rasterizado, que es sincrono.
+  const aquaImages = options.aquaImages ?? (await decodeAquaImages(doc));
+  const canvas = renderToCanvas(doc, { ...options, aquaImages });
   return await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob);
@@ -503,7 +567,9 @@ export function exportSvg(doc: SceneDocument, options: Partial<ExportOptions> = 
   // Una capa base y sus recortes: la base marca opacidad/fusión de todo el grupo;
   // cada recorte va con su propia opacidad/fusión y recortado a la base.
   function unitSvg(base: SceneLayer, clips: readonly SceneLayer[]): string[] {
-    if (base.kind === "matter" || !svgVisible(base)) return [];
+    // La materia y la acuarela son rásteres (campo y fluido): no tienen trazos
+    // que emitir, así que no generan ni un grupo vacío. Para incluirlas, PNG.
+    if (base.kind === "matter" || base.kind === "aqua" || !svgVisible(base)) return [];
     const content = layerContentSvg(base);
     const visibleClips = clips.filter(svgVisible);
     if (content.length === 0 && visibleClips.length === 0) return [];

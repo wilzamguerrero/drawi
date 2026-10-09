@@ -1,4 +1,4 @@
-import type { InkItem } from "./types";
+import type { InkItem, Rect } from "./types";
 
 /**
  * Modelo de capas estilo Photoshop.
@@ -14,8 +14,9 @@ import type { InkItem } from "./types";
  */
 
 /** Tipo de capa. La materia es una pseudo-capa fija (plano WebGL propio); la
- *  imagen es una capa raster con un asset decodificado. */
-export type LayerKind = "ink" | "group" | "matter" | "image";
+ *  imagen es una capa raster con un asset decodificado; la acuarela es una capa
+ *  de fluido (simulacion WebGL2 propia) que SI se compone en la pila de tinta. */
+export type LayerKind = "ink" | "group" | "matter" | "image" | "aqua";
 
 /**
  * Modo de fusión. Los valores son los de `globalCompositeOperation` del canvas,
@@ -165,6 +166,18 @@ export interface SceneLayer {
   imageH?: number;
   /** Rotación en radianes (solo image). */
   imageAngle?: number;
+  /**
+   * Acuarela horneada (kind === "aqua"): el pigmento ya seco, guardado como
+   * dataURL PNG, y el rectángulo de MUNDO que ocupa.
+   *
+   * El fluido vivo vive en la GPU y está anclado al viewport (no acompaña al
+   * paneo); al hornear —al guardar, al exportar o a mano— se convierte en este
+   * raster, que sí vive en coordenadas de mundo y por tanto se puede guardar,
+   * reabrir y exportar. Una capa de acuarela puede tener raster, fluido vivo o
+   * ambos: el compositor pinta primero el raster y encima el fluido.
+   */
+  aquaBaked?: string;
+  aquaRect?: Rect;
 }
 
 export const makeMask = (): LayerMask => ({ enabled: true, inverted: false, items: [] });
@@ -173,4 +186,5 @@ export const makeMask = (): LayerMask => ({ enabled: true, inverted: false, item
 export const cloneLayer = (l: SceneLayer): SceneLayer => ({
   ...l,
   mask: l.mask ? { ...l.mask, items: l.mask.items.slice() } : undefined,
+  aquaRect: l.aquaRect ? { ...l.aquaRect } : undefined,
 });

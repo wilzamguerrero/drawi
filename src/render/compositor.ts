@@ -22,6 +22,10 @@ import { InkRenderer, buildGradient } from "./ink-renderer";
  * La materia es una pseudo-capa: NO se compone aquí (vive en su plano WebGL/2D
  * propio); su fila del panel solo controla la visibilidad/opacidad de ese plano.
  *
+ * La acuarela SÍ se compone aquí, y por eso su orden en el panel cuenta de
+ * verdad: su lienzo de fluido se vuelca como contenido de la capa, de modo que
+ * hereda opacidad, relleno, fusión, máscara y recorte como cualquier otra.
+ *
  * Reutiliza los primitivos de `InkRenderer` (`drawItem`/`pathsFor`) y su caché
  * de `Path2D`, así que no reconstruye geometría: el coste extra frente al render
  * de una pasada es el de los lienzos intermedios, que se reciclan entre frames.
@@ -41,6 +45,12 @@ export interface CompositeOptions {
    * de materia en vez de dentro de una capa de tinta.
    */
   wetAsOverlay: boolean;
+  /**
+   * Lienzo del fluido vivo de una capa de acuarela, o null si esa capa no tiene
+   * simulación (nunca se pintó en ella, o se agotó el cupo de contextos WebGL).
+   * Lo resuelve el editor, que es quien posee los motores.
+   */
+  aquaCanvas?: (layerId: string) => HTMLCanvasElement | null;
 }
 
 /** Lienzo fuera de pantalla con su contexto, redimensionable al vuelo. */
@@ -268,6 +278,27 @@ export class Compositor {
       return true;
     }
 
+    if (layer.kind === "aqua") {
+      const ctx = buf.ctx;
+      // 1. El pigmento ya horneado vive en MUNDO: acompaña al paneo y al zoom.
+      const baked = layer.aquaBaked ? this.getImage(layer.aquaBaked) : null;
+      const rect = layer.aquaRect;
+      if (baked && rect && baked.complete && baked.naturalWidth > 0) {
+        camera.applyTo(ctx, dpr);
+        ctx.drawImage(baked, rect.x, rect.y, rect.w, rect.h);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+      // 2. El fluido vivo está anclado al VIEWPORT (sus coordenadas son UV de
+      //    pantalla), así que se vuelca 1:1 estirándolo al tamaño del lienzo:
+      //    su DPR puede no coincidir con el de la tinta.
+      const live = opts.aquaCanvas?.(layer.id) ?? null;
+      if (live && live.width > 0) {
+        ctx.drawImage(live, 0, 0, buf.canvas.width, buf.canvas.height);
+      }
+      this.applyMask(buf, layer, camera, dpr, opts, depth, layer.id === opts.activeLayerId);
+      return true;
+    }
+
     const ctx = buf.ctx;
     const items = doc.layerItems(layer.id);
     const isActive = layer.id === opts.activeLayerId;
@@ -286,6 +317,18 @@ export class Compositor {
   }
 
     private imageCache = new Map<string, HTMLImageElement>();
+
+  /**
+   * Imagen ya decodificada de un dataURL, o null si aún no está lista.
+   *
+   * La usa el horneado de la acuarela: necesita el ráster anterior de la capa
+   * para componerlo con el fluido nuevo, y el compositor ya lo tiene decodificado
+   * porque lo pinta cada fotograma. Es una lectura de la caché, nunca decodifica.
+   */
+  cachedImage(src: string): HTMLImageElement | null {
+    const img = this.imageCache.get(src);
+    return img && img.complete && img.naturalWidth > 0 ? img : null;
+  }
 
   private getImage(src: string): HTMLImageElement | null {
     if (!src) return null;

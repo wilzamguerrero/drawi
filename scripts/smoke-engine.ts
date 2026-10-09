@@ -18,6 +18,8 @@ import { DEFAULT_SHAPE, boundingRadius, colliderVerts, outlinePolygon, type Shap
 import { sampleFieldDistance } from "../src/physics/sdf";
 import { fieldContours } from "../src/physics/marching";
 import { PhysicsWorld, createBody, type Body } from "../src/physics/world";
+import { SceneDocument } from "../src/scene/document";
+import type { SceneLayer } from "../src/scene/layer";
 
 // El tsconfig usa `"types": []` a proposito: la aplicacion se compila contra el
 // DOM y nada mas. Las suites si corren en Node, asi que declaran aqui lo unico
@@ -265,6 +267,106 @@ const gesture = (dynamics: StrokeDynamics, speedPxPerMs: number): ReturnType<Str
   const d1 = Math.hypot(b.pos.x - a.pos.x, b.pos.y - a.pos.y);
   ok("la cohesion junta los cuerpos", d1 < d0 * 0.75, `${f(d0, 1)}px -> ${f(d1, 1)}px`);
   ok("la cohesion no los superpone", d1 > 40, `${f(d1, 1)}px (radios suman 52)`);
+}
+
+{
+  // ------------------------------------------------- capas: orden y jerarquia --
+  //
+  // El modelo de capas es un arbol (`parentId`) guardado en un array plano, y el
+  // z lo decide el orden RELATIVO entre hermanas. Es facil escribir un
+  // reordenado que parezca correcto y que, segun donde sueltes, no mueva nada o
+  // mueva otra capa: estas pruebas fijan la semantica del gesto de arrastrar.
+  const doc = new SceneDocument();
+
+  /** La lista que ve el usuario, de delante hacia atras (igual que el panel). */
+  const shown = (): string[] => {
+    const out: string[] = [];
+    const walk = (parentId: string | null): void => {
+      const kids = doc.layers.filter((l) => l.parentId === parentId);
+      for (let i = kids.length - 1; i >= 0; i--) {
+        out.push(kids[i].name);
+        if (kids[i].kind === "group" && !kids[i].collapsed) walk(kids[i].id);
+      }
+    };
+    walk(null);
+    return out;
+  };
+  const byName = (name: string): SceneLayer =>
+    doc.layers.find((l) => l.name === name) as SceneLayer;
+
+  // Tres capas de tinta en la raiz: "Capa 1" es la de `resetLayers`.
+  doc.addLayer();
+  doc.addLayer();
+  ok("tres capas en la raiz", shown().join(">") === "Capa 3>Capa 2>Capa 1", shown().join(" > "));
+
+  // Bajar la de delante hasta el fondo: indice 0 entre hermanas.
+  doc.moveLayerTo(byName("Capa 3").id, null, 0);
+  ok("bajar al fondo", shown().join(">") === "Capa 2>Capa 1>Capa 3", shown().join(" > "));
+
+  // Y subirla del todo: indice = numero de hermanas.
+  doc.moveLayerTo(byName("Capa 3").id, null, 2);
+  ok("subir al frente", shown().join(">") === "Capa 3>Capa 2>Capa 1", shown().join(" > "));
+
+  // Un salto intermedio: entre las otras dos.
+  doc.moveLayerTo(byName("Capa 1").id, null, 1);
+  ok("insertar en medio", shown().join(">") === "Capa 3>Capa 1>Capa 2", shown().join(" > "));
+
+  // Meter una capa DENTRO de un grupo. Este era el caso roto: el calculo por
+  // indice absoluto dejaba la capa fuera del grupo y a la vista no pasaba nada.
+  const group = doc.addGroup("Grupo");
+  doc.moveLayerTo(group.id, null, 3);
+  doc.moveLayerTo(byName("Capa 1").id, group.id, 0);
+  ok("soltar dentro de un grupo", byName("Capa 1").parentId === group.id,
+     `parentId ${byName("Capa 1").parentId === group.id ? "correcto" : "fuera del grupo"}`);
+  ok("el grupo la muestra anidada", shown().join(">") === "Grupo>Capa 1>Capa 3>Capa 2", shown().join(" > "));
+
+  // Una segunda hija, encima de la primera dentro del grupo.
+  doc.moveLayerTo(byName("Capa 2").id, group.id, 1);
+  ok("dos hijas en orden", shown().join(">") === "Grupo>Capa 2>Capa 1>Capa 3", shown().join(" > "));
+
+  // Sacar una hija de vuelta a la raiz.
+  doc.moveLayerTo(byName("Capa 2").id, null, 0);
+  ok("sacar del grupo", byName("Capa 2").parentId === null);
+  ok("vuelve al fondo de la raiz", shown().join(">") === "Grupo>Capa 1>Capa 3>Capa 2", shown().join(" > "));
+
+  // Un grupo no puede caer dentro de si mismo ni de sus descendientes: seria un
+  // ciclo y el recorrido del compositor no terminaria.
+  const inner = doc.addGroup("Interno");
+  doc.moveLayerTo(inner.id, group.id, 0);
+  const before = shown().join(">");
+  doc.moveLayerTo(group.id, inner.id, 0);
+  ok("un grupo no entra en su propia hija", shown().join(">") === before, shown().join(" > "));
+  ok("el ciclo no se formo", byName("Grupo").parentId === null);
+
+  // Borrar un grupo se lleva TODO su subarbol, no solo las hijas directas.
+  doc.moveLayerTo(byName("Capa 1").id, inner.id, 0);
+  const deepId = byName("Capa 1").id;
+  doc.removeLayer(group.id);
+  ok("borrar el grupo borra el subarbol entero",
+     !doc.layerById(group.id) && !doc.layerById(inner.id) && !doc.layerById(deepId),
+     `${doc.layers.length} capas restantes`);
+
+  // Materia y acuarela son planos propios: no se anidan en grupos ni aunque se
+  // suelten dentro de uno.
+  const home = doc.addGroup("Casa");
+  const matter = doc.addMatterLayer("Materia");
+  doc.moveLayerTo(matter.id, home.id, 0);
+  ok("la materia no se anida en un grupo", matter.parentId === null);
+  const aqua = doc.addAquaLayer("Acuarela");
+  doc.moveLayerTo(aqua.id, home.id, 0);
+  ok("la acuarela no se anida en un grupo", aqua.parentId === null);
+
+  // La acuarela es una capa eliminable como la materia, y borrarla no puede
+  // dejar el documento sin una capa de tinta donde dibujar.
+  doc.removeLayer(aqua.id);
+  ok("la acuarela se borra", !doc.layerById(aqua.id));
+  ok("siempre queda una capa de tinta", doc.layers.some((l) => l.kind === "ink"));
+  ok("el destino de tinta sigue siendo valido", doc.inkTarget().kind === "ink");
+
+  // Reordenar no debe perder ni duplicar capas nunca.
+  const ids = doc.layers.map((l) => l.id);
+  ok("ningun id duplicado tras reordenar", new Set(ids).size === ids.length,
+     `${ids.length} capas`);
 }
 
 console.log(out.join("\n"));

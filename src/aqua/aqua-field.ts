@@ -386,6 +386,32 @@ export class AquaField {
     return this.touched;
   }
 
+  /**
+   * Suelta el contexto WebGL2 y sus texturas.
+   *
+   * Cada capa de acuarela es un contexto propio con rejillas de punto flotante
+   * grandes, y el navegador solo tolera unos pocos a la vez: al borrar la capa
+   * hay que devolverlos de verdad, no esperar al recolector. Tras llamarlo el
+   * motor queda inservible.
+   */
+  dispose(): void {
+    const gl = this.gl;
+    for (const d of [this.velocity, this.pressure, this.ink, this.fixed, this.wet]) {
+      for (const f of [d.read, d.write]) {
+        gl.deleteFramebuffer(f.fbo);
+        gl.deleteTexture(f.tex);
+      }
+    }
+    for (const f of [this.divergence, this.curl]) {
+      gl.deleteFramebuffer(f.fbo);
+      gl.deleteTexture(f.tex);
+    }
+    gl.deleteVertexArray(this.vao);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    this.touched = false;
+    this.aliveTimer = 0;
+  }
+
   /** Mantiene el motor despierto el tiempo indicado (segundos). */
   keepAlive(seconds = 2.5): void {
     this.aliveTimer = Math.max(this.aliveTimer, seconds);

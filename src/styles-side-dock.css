@@ -491,7 +491,8 @@
   cursor: grabbing;
 }
 
-/* Cada fila: franja de color · ojo · miniatura · nombre · máscara · asa. */
+/* Cada fila: franja de color · ojo · miniatura · nombre · máscara · asa.
+   Toda la barra arrastra (como en Photoshop), de ahí el cursor de agarre. */
 .layer-row {
   display: flex;
   align-items: center;
@@ -500,8 +501,9 @@
   border-radius: 7px;
   background: #1b1b1f;
   border: 1px solid transparent;
-  cursor: pointer;
+  cursor: grab;
   user-select: none;
+  touch-action: none;
 }
 
 .layer-row:hover {
@@ -511,6 +513,19 @@
 .layer-row.is-active {
   background: #2a3f57;
   border-color: #5a9fd4;
+}
+
+/* Los controles de la fila no arrastran: ahí el gesto es un clic. */
+.layer-row .layer-eye,
+.layer-row .layer-kind,
+.layer-row .layer-mask-thumb {
+  cursor: pointer;
+}
+
+/* La fila que se está moviendo: se atenúa y deja ver la línea de destino. */
+.layer-row.is-drag-source {
+  opacity: 0.4;
+  cursor: grabbing;
 }
 
 /* Anidamiento en grupos: sangría por nivel. */
@@ -671,7 +686,8 @@
   border-color: #ffcf5a;
 }
 
-/* Asa de arrastre. */
+/* Asa de arrastre: ya solo es la PISTA de que la fila se puede mover; el gesto
+   se coge desde cualquier punto de la barra. */
 .layer-grip {
   flex: none;
   display: grid;
@@ -681,9 +697,10 @@
   color: #6a6a72;
   cursor: grab;
   touch-action: none;
+  pointer-events: none;
 }
 
-.layer-grip:hover {
+.layer-row:hover .layer-grip {
   color: #b7bcc6;
 }
 

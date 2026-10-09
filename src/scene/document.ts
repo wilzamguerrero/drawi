@@ -200,6 +200,25 @@ export class SceneDocument {
     };
   }
 
+  private makeAquaLayer(name?: string): SceneLayer {
+    this.layerCounter++;
+    return {
+      id: uid(),
+      kind: "aqua",
+      name: name ?? `Acuarela ${this.layerCounter}`,
+      visible: true,
+      opacity: 1,
+      fill: 1,
+      blend: "source-over",
+      locked: false,
+      alphaLock: false,
+      clip: false,
+      color: "none",
+      collapsed: false,
+      parentId: null,
+    };
+  }
+
   makeImageLayer(name: string, src: string, x: number, y: number, w: number, h: number): SceneLayer {
     this.layerCounter++;
     return {
@@ -289,6 +308,22 @@ export class SceneDocument {
     return this.layers.filter((l) => l.kind === "matter");
   }
 
+  get aquaLayers(): SceneLayer[] {
+    return this.layers.filter((l) => l.kind === "aqua");
+  }
+
+  /**
+   * Capa de acuarela donde deben caer las huellas nuevas: la activa si lo es,
+   * si no la última creada, y si no hay ninguna se crea una. Así el pincel de
+   * acuarela nunca pinta en el vacío, igual que `matterTarget` con la materia.
+   */
+  aquaTarget(): SceneLayer {
+    const active = this.activeLayer;
+    if (active?.kind === "aqua") return active;
+    const existing = this.aquaLayers[this.aquaLayers.length - 1];
+    return existing ?? this.addAquaLayer();
+  }
+
   matterTarget(): SceneLayer {
     const active = this.activeLayer;
     if (active?.kind === "matter") return active;
@@ -360,28 +395,69 @@ export class SceneDocument {
     return layer;
   }
 
+  /** Crea una capa de acuarela encima de la activa. */
+  addAquaLayer(name?: string): SceneLayer {
+    const layer = this.makeAquaLayer(name);
+    const active = this.activeLayer;
+    const at = active ? this.layerIndex(active.id) + 1 : this.layers.length;
+    this.layers.splice(at, 0, layer);
+    this.activeLayerId = layer.id;
+    this.inkRevision++;
+    return layer;
+  }
+
+  /** ¿`id` es `ancestorId` o desciende de él? (corta ciclos por seguridad). */
+  isDescendantOf(id: string, ancestorId: string): boolean {
+    let p: string | null = id;
+    const seen = new Set<string>();
+    while (p && !seen.has(p)) {
+      if (p === ancestorId) return true;
+      seen.add(p);
+      p = this.layerById(p)?.parentId ?? null;
+    }
+    return false;
+  }
+
+  /** La capa y todas sus descendientes, a cualquier profundidad. */
+  subtreeIds(id: string): Set<string> {
+    const out = new Set<string>([id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const l of this.layers) {
+        if (!out.has(l.id) && l.parentId !== null && out.has(l.parentId)) {
+          out.add(l.id);
+          grew = true;
+        }
+      }
+    }
+    return out;
+  }
+
   /**
    * Elimina una capa con su contenido: los items si es de tinta (y, si es
-   * grupo, también los de sus hijas) o los cuerpos si es de materia.
+   * grupo, también los de sus descendientes) o los cuerpos si es de materia.
    */
   removeLayer(id: string): void {
     const layer = this.layerById(id);
     if (!layer) return;
 
-    if (layer.kind === "matter") {
-      this.physics.removeByLayer(id);
+    // Materia y acuarela no alojan items de tinta: su contenido vive en el
+    // mundo físico o en la GPU, así que basta con soltar la fila. Son capas
+    // eliminables aunque fueran las únicas de su tipo: la invariante que el
+    // documento protege es tener siempre una capa de TINTA donde dibujar.
+    if (layer.kind === "matter" || layer.kind === "aqua") {
+      if (layer.kind === "matter") this.physics.removeByLayer(id);
       this.layers = this.layers.filter((l) => l.id !== id);
       if (this.activeLayerId === id) {
-        this.activeLayerId = (this.firstInkLayer() ?? this.layers[0]).id;
+        this.activeLayerId = (this.firstInkLayer() ?? this.layers[0])?.id ?? "";
       }
       this.inkRevision++;
       return;
     }
 
-    const ids = new Set<string>([id]);
-    if (layer.kind === "group") {
-      for (const child of this.layers) if (child.parentId === id) ids.add(child.id);
-    }
+    // Un grupo se lleva TODO su subárbol, no solo sus hijas directas.
+    const ids = layer.kind === "group" ? this.subtreeIds(id) : new Set<string>([id]);
     // No dejar el documento sin ninguna capa de tinta.
     const remainingInk = this.layers.filter((l) => l.kind === "ink" && !ids.has(l.id));
     if (remainingInk.length === 0) {
@@ -464,33 +540,84 @@ export class SceneDocument {
     this.inkRevision++;
   }
 
-  /** Funde toda la tinta en una sola capa (conserva la materia). */
+  /** Funde toda la tinta en una sola capa. Conserva materia y acuarela: su
+   *  contenido no es un item de tinta y no se puede fundir en uno. */
   flatten(): void {
     const ink = this.firstInkLayer();
     if (!ink) return;
     for (const it of this.items) it.layerId = ink.id;
     ink.parentId = null;
     ink.clip = false;
-    this.layers = this.layers.filter((l) => l.kind === "matter" || l.id === ink.id);
+    this.layers = this.layers.filter(
+      (l) => l.kind === "matter" || l.kind === "aqua" || l.id === ink.id,
+    );
     this.activeLayerId = ink.id;
     this.inkRevision++;
   }
 
-  /** Reordena/reubica una capa. La materia puede moverse para ordenar su z. */
-  moveLayer(id: string, beforeId: string | null, parentId: string | null): void {
-    const idx = this.layerIndex(id);
-    if (idx < 0) return;
-    const layer = this.layers[idx];
-    if (layer.kind === "matter" && parentId !== null) return; // no anidar matter en grupos
-    const [moved] = this.layers.splice(idx, 1);
-    moved.parentId = parentId;
-    let at = this.layers.length;
-    if (beforeId) {
-      const bi = this.layerIndex(beforeId);
-      if (bi >= 0) at = bi;
+  /**
+   * Reubica una capa: la mete en `parentId` (null = raíz) en la posición
+   * `index` entre sus hermanas, contando de ABAJO arriba (0 = la más baja).
+   *
+   * Se razona sobre la lista de hermanas y luego se reconstruye el array
+   * entero, en vez de calcular un índice absoluto: el array es plano pero el
+   * modelo es un árbol (`parentId`), y mezclar las dos cosas es lo que hacía
+   * que soltar una capa junto a un grupo abierto no moviera nada.
+   */
+  moveLayerTo(id: string, parentId: string | null, index: number): void {
+    const layer = this.layerById(id);
+    if (!layer) return;
+    // Materia y acuarela son planos propios: viven en la raíz, no en grupos.
+    if (layer.kind === "matter" || layer.kind === "aqua") parentId = null;
+    if (parentId !== null) {
+      // Un grupo no puede caer dentro de sí mismo ni de sus descendientes.
+      if (this.isDescendantOf(parentId, id)) return;
+      // Solo los grupos alojan hijas; cualquier otra capa recibe a su hermana.
+      const parent = this.layerById(parentId);
+      if (!parent) parentId = null;
+      else if (parent.kind !== "group") parentId = parent.parentId;
     }
-    this.layers.splice(at, 0, moved);
+    const sibs = this.layers.filter((l) => l.parentId === parentId && l.id !== id);
+    layer.parentId = parentId;
+    sibs.splice(clampIndex(index, sibs.length), 0, layer);
+    this.rebuildLayerOrder(parentId, sibs);
     this.inkRevision++;
+  }
+
+  /**
+   * Reconstruye `layers` en orden canónico: recorrido en profundidad desde la
+   * raíz, cada grupo seguido de sus hijas. Solo cambia posiciones ABSOLUTAS
+   * —el z lo decide el orden relativo entre hermanas— así que el dibujo no se
+   * altera; lo que gana es que las hijas de un grupo quedan contiguas, que es
+   * la forma en la que `moveLayerTo` y el compositor esperan encontrarlas.
+   *
+   * `overrideKids` fija el orden de un nivel concreto (el destino de un
+   * movimiento); los demás niveles conservan el orden que ya tenían.
+   */
+  private rebuildLayerOrder(overrideParent?: string | null, overrideKids?: SceneLayer[]): void {
+    const out: SceneLayer[] = [];
+    const seen = new Set<string>();
+    const kidsOf = (pid: string | null): SceneLayer[] =>
+      overrideKids && pid === overrideParent
+        ? overrideKids
+        : this.layers.filter((l) => l.parentId === pid);
+    const walk = (pid: string | null): void => {
+      for (const l of kidsOf(pid)) {
+        if (seen.has(l.id)) continue; // ciclo o duplicado: no reentrar
+        seen.add(l.id);
+        out.push(l);
+        if (l.kind === "group") walk(l.id);
+      }
+    };
+    walk(null);
+    // Huérfanas (padre inexistente o ciclo): se rescatan a la raíz, en su orden.
+    for (const l of this.layers) {
+      if (seen.has(l.id)) continue;
+      l.parentId = null;
+      seen.add(l.id);
+      out.push(l);
+    }
+    this.layers = out;
   }
 
   setActiveLayer(id: string): void {
@@ -676,6 +803,11 @@ export class SceneDocument {
           r = unionRect(r, { x: l.imageX ?? 0, y: l.imageY ?? 0, w, h });
         }
       }
+      // La acuarela horneada ocupa sitio en el mundo; el fluido vivo no, porque
+      // está anclado al viewport y encuadrar por él movería la cámara sola.
+      if (l.kind === "aqua" && l.aquaBaked && l.aquaRect && l.aquaRect.w > 0) {
+        r = unionRect(r, l.aquaRect);
+      }
     }
     return r ?? { ...EMPTY_RECT };
   }
@@ -707,6 +839,10 @@ export class SceneDocument {
     this.inkRevision++;
   }
 }
+
+/** Índice acotado al rango insertable de una lista (0..length). */
+const clampIndex = (i: number, length: number): number =>
+  i < 0 ? 0 : i > length ? length : Math.round(i);
 
 /** Caja envolvente de un rect transformado (se transforman las 4 esquinas). */
 export function transformRect(r: Rect, m: Mat2d): Rect {

@@ -13,8 +13,10 @@ import type { ShapeDef } from "../physics/shapes";
  * los `items` siguen planos, ahora cada uno con su `layerId`. v3: la materia
  * deja de ser una pseudo-capa única: cada cuerpo lleva `layerId` y puede haber
  * varias capas de materia (o ninguna). v4: alcance de cohesion configurable.
+ * v6: capas de acuarela (`kind: "aqua"`), que viajan dentro de `layers` con su
+ * pigmento ya horneado en `aquaBaked` (PNG) y el rectángulo de mundo que ocupa.
  */
-export const PROJECT_VERSION = 5;
+export const PROJECT_VERSION = 6;
 
 export interface ProjectFile {
   format: "drawi";
@@ -148,6 +150,36 @@ export function saveLocal(payload: string): void {
     localStorage.setItem(STORAGE_KEY, payload);
   } catch {
     // Cuota llena o almacenamiento bloqueado: el autoguardado es opcional.
+  }
+}
+
+/**
+ * Autoguardado con plan B: si el proyecto no cabe, se reintenta sin los rásteres
+ * de acuarela.
+ *
+ * Una capa de acuarela horneada es un PNG en base64 y puede ocupar megas; el
+ * cupo de `localStorage` ronda los 5 MB. Antes que perder el autoguardado
+ * entero se sacrifica la acuarela, que es justo lo que menos duele: el trazo
+ * vectorial es lo que no se puede reconstruir.
+ */
+export function saveLocalLossy(payload: string): "full" | "trimmed" | "failed" {
+  try {
+    localStorage.setItem(STORAGE_KEY, payload);
+    return "full";
+  } catch {
+    // Sigue abajo.
+  }
+  try {
+    const data = JSON.parse(payload) as ProjectFile;
+    for (const l of data.layers ?? []) {
+      if (l.kind !== "aqua") continue;
+      delete l.aquaBaked;
+      delete l.aquaRect;
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    return "trimmed";
+  } catch {
+    return "failed";
   }
 }
 

@@ -60,8 +60,16 @@ export class LayersPanel {
 
   // Arrastre en curso.
   private dragId: string | null = null;
+  /** Arrastre armado pero aún no confirmado: hace falta superar el umbral para
+   *  distinguir "he hecho clic para seleccionar" de "estoy moviendo la capa". */
+  private pendingId: string | null = null;
+  private pendingY = 0;
   private dropLine: HTMLElement;
   private dropGap = -1;
+  /** Autodesplazamiento al arrastrar junto a los bordes de la lista. */
+  private scrollRaf = 0;
+  private scrollDir = 0;
+  private lastPointerY = 0;
 
   constructor(private editor: Editor) {
     this.head = this.buildHead();
@@ -104,20 +112,34 @@ export class LayersPanel {
     const group = button({ iconName: "folder", title: "Nuevo grupo (Ctrl+Shift+G)", onClick: () => ed.addGroup() });
     const add = button({ iconName: "plus", title: "Nueva capa (Ctrl+Shift+N)", onClick: () => ed.addLayer() });
     const matter = button({ iconName: "matter", title: "Nueva capa de materia", onClick: () => ed.addMatterLayer() });
+    const aqua = button({ iconName: "droplet", title: "Nueva capa de acuarela", onClick: () => ed.addAquaLayer() });
     const del = button({ iconName: "trash", variant: "danger", title: "Borrar capa (Supr)", onClick: () => this.deleteActive() });
-    return el("div", { class: "layers-footer" }, [clip.el, mask.el, group.el, add.el, matter.el, del.el]);
+    return el("div", { class: "layers-footer" }, [clip.el, mask.el, group.el, add.el, matter.el, aqua.el, del.el]);
   }
 
   private active(): SceneLayer | undefined {
     return this.editor.doc.activeLayer;
   }
 
-  /** Papelera / Supr sobre la capa activa. Materia sí es una capa eliminable. */
+  /**
+   * La capa de una fila, leída del documento en el momento de actuar.
+   *
+   * Las filas no se reconstruyen en cada fotograma, así que un manejador que se
+   * quedara con el objeto `SceneLayer` del momento en que se creó la fila
+   * trabajaría con una copia congelada: `doc.restore` (deshacer, rehacer, abrir
+   * un proyecto) sustituye TODAS las capas por clones con el mismo id. Eso era
+   * lo que dejaba el ojo sin respuesta —el icono se veía bien porque se pinta
+   * desde el documento, pero el clic calculaba `!visible` sobre el objeto viejo
+   * y escribía el valor que ya tenía—. Por eso todo manejador pasa por aquí.
+   */
+  private layerOf(id: string): SceneLayer | undefined {
+    return this.editor.doc.layerById(id);
+  }
+
+  /** Papelera / Supr sobre la capa activa. */
   private deleteActive(): void {
     const l = this.active();
-    if (!l) return;
-    if (l.kind === "matter") this.editor.removeLayer(l.id);
-    else this.editor.removeLayer(l.id);
+    if (l) this.editor.removeLayer(l.id);
   }
 
   /** Ejecuta una acción sobre la capa activa. La materia acepta opacidad, fusión
@@ -164,26 +186,40 @@ export class LayersPanel {
     if (this.editor.doc.inkRevision !== this.thumbRevision) {
       for (const { layer } of items) this.paintThumb(layer);
       this.thumbRevision = this.editor.doc.inkRevision;
+    } else {
+      // La acuarela se mueve sola mientras el fluido sigue vivo, sin tocar
+      // `inkRevision`. Su miniatura se refresca aparte y a ritmo lento: es un
+      // sello de 40 px, no hace falta seguirlo fotograma a fotograma.
+      const now = performance.now();
+      if (now - this.aquaThumbAt > 250) {
+        this.aquaThumbAt = now;
+        for (const { layer } of items) if (layer.kind === "aqua") this.paintThumb(layer);
+      }
     }
     this.syncHead(state);
   }
 
+  /** Último refresco de las miniaturas de acuarela (ms de `performance.now`). */
+  private aquaThumbAt = 0;
+
   /** Cabecera: refleja las propiedades de la capa activa. La materia usa
-   * opacidad/fusión/bloqueo; alfa, recorte y máscara solo aplican a la tinta. */
+   * opacidad/fusión/bloqueo; el alfa bloqueado solo tiene sentido en la tinta,
+   * pero la máscara se aplica a todo lo que el compositor compone (incluida la
+   * acuarela). */
   private syncHead(state: EditorState): void {
     const l = this.editor.doc.activeLayer;
     setClass(this.head, "is-disabled", !l);
     if (!l) return;
-    const inkLike = l.kind !== "matter";
+    const composed = l.kind !== "matter";
     this.blendSel.set(l.blend);
     this.opacity.set(Math.round(l.opacity * 100));
     this.fill.set(Math.round(l.fill * 100));
     this.lockBtn.setActive(l.locked);
     this.alphaBtn.setActive(l.alphaLock);
     this.maskModeBtn.setActive(state.maskMode);
-    // Los controles que no aplican a la materia se atenúan sin ocultarse.
-    setClass(this.alphaBtn.el, "is-disabled", !inkLike);
-    setClass(this.maskModeBtn.el, "is-disabled", !inkLike);
+    // Los controles que no aplican se atenúan sin ocultarse.
+    setClass(this.alphaBtn.el, "is-disabled", l.kind !== "ink");
+    setClass(this.maskModeBtn.el, "is-disabled", !composed);
   }
 
   /** Rehace la lista de filas conservando el mapa por id. */
@@ -203,15 +239,22 @@ export class LayersPanel {
     for (const id of [...this.rows.keys()]) if (!seen.has(id)) this.rows.delete(id);
   }
 
-  /** Construye la fila de una capa. */
+  /** Construye la fila de una capa. Ningún manejador se queda con `layer`: todos
+   *  releen la capa por id (ver `layerOf`). */
   private buildRow(layer: SceneLayer, depth: number): Row {
     const ed = this.editor;
+    const id = layer.id;
     const strip = el("span", { class: "layer-strip" });
     const eye = el("button", { class: "layer-eye", type: "button", title: "Mostrar/ocultar (Alt: aislar)" });
     eye.innerHTML = icon("eye");
     eye.addEventListener("click", (e) => {
-      if (e.altKey) ed.toggleSolo(layer.id);
-      else ed.setLayer(layer.id, { visible: !layer.visible });
+      e.stopPropagation();
+      if (e.altKey) {
+        ed.toggleSolo(id);
+        return;
+      }
+      const l = this.layerOf(id);
+      if (l) ed.setLayer(id, { visible: !l.visible });
     });
     const thumb = el("canvas", { class: "layer-thumb" });
     thumb.width = 40; thumb.height = 40;
@@ -219,24 +262,39 @@ export class LayersPanel {
     maskThumb.width = 28; maskThumb.height = 28;
     maskThumb.title = "Máscara · doble clic para invertir (Ctrl+I)";
     maskThumb.setAttribute("aria-label", "Máscara de capa");
-    maskThumb.addEventListener("dblclick", () => ed.invertLayerMask(layer.id));
+    maskThumb.addEventListener("dblclick", () => ed.invertLayerMask(id));
     const name = el("span", { class: "layer-name", text: layer.name });
-    name.addEventListener("dblclick", () => this.editName(layer, name));
-    const grip = el("span", { class: "layer-grip", html: icon("grip"), title: "Arrastrar para reordenar" });
-    grip.addEventListener("pointerdown", (e) => this.onDragStart(e, layer.id));
+    name.addEventListener("dblclick", () => {
+      const l = this.layerOf(id);
+      if (l) this.editName(l, name);
+    });
+    const grip = el("span", { class: "layer-grip", html: icon("grip"), title: "Arrastra la fila para reordenar" });
     const badges = el("span", { class: "layer-badges" });
 
-    const kindIcon = layer.kind === "group" ? "folder" : layer.kind === "matter" ? "matter" : null;
+    const kindIcon =
+      layer.kind === "group" ? "folder" : layer.kind === "matter" ? "matter" : null;
+    // La acuarela sí lleva miniatura: su mancha es lo que la identifica.
     const glyph = kindIcon ? el("span", { class: "layer-kind", html: icon(kindIcon) }) : thumb;
 
     const rowEl = el("div", { class: `layer-row depth-${Math.min(depth, 4)}` }, [
       strip, eye, glyph, name, maskThumb, badges, grip,
     ]);
-    rowEl.dataset.id = layer.id;
-    rowEl.addEventListener("click", () => ed.setActiveLayer(layer.id));
-    rowEl.addEventListener("contextmenu", (e) => { e.preventDefault(); this.openMenu(layer, e); });
+    rowEl.dataset.id = id;
+    // Toda la barra arrastra, como en Photoshop: el asa de la derecha se queda
+    // solo como pista visual. La selección pasa a `pointerdown` (y no a `click`)
+    // porque al soltar un arrastre no debe cambiar la capa activa.
+    rowEl.addEventListener("pointerdown", (e) => this.onRowPointerDown(e, id));
+    rowEl.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const l = this.layerOf(id);
+      if (l) this.openMenu(l, e);
+    });
     if (layer.kind === "group") {
-      glyph.addEventListener("click", (e) => { e.stopPropagation(); ed.setLayer(layer.id, { collapsed: !layer.collapsed }); });
+      glyph.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const l = this.layerOf(id);
+        if (l) ed.setLayer(id, { collapsed: !l.collapsed });
+      });
     }
     return { el: rowEl, thumb, maskThumb, name, eye, strip, depth };
   }
@@ -313,6 +371,10 @@ export class LayersPanel {
   private paintThumb(layer: SceneLayer): void {
     const row = this.rows.get(layer.id);
     if (!row) return;
+    if (layer.kind === "aqua") {
+      this.paintAquaThumb(layer, row);
+      return;
+    }
     if (layer.kind === "image") {
       const ctx = row.thumb.getContext("2d");
       if (!ctx) return;
@@ -360,6 +422,42 @@ export class LayersPanel {
     ctx.clearRect(0, 0, W, H);
     const items = this.editor.doc.layerItems(layer.id);
     this.fitAndFill(ctx, W, H, items, false);
+    if (layer.mask) this.paintMask(layer, row);
+  }
+
+  /**
+   * Miniatura de una capa de acuarela: lo ya horneado (en mundo, encajado como
+   * el resto de miniaturas) y encima el fluido vivo (en pantalla, encajado a la
+   * miniatura entera). Es el mismo orden que usa el compositor.
+   */
+  private paintAquaThumb(layer: SceneLayer, row: Row): void {
+    const ctx = row.thumb.getContext("2d");
+    if (!ctx) return;
+    const W = row.thumb.width, H = row.thumb.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const baked = layer.aquaBaked ? this.imageThumbCache.get(layer.aquaBaked) : undefined;
+    if (layer.aquaBaked && !baked) {
+      const img = new Image();
+      img.src = layer.aquaBaked;
+      this.imageThumbCache.set(layer.aquaBaked, img);
+      img.onload = () => this.paintThumb(layer);
+    }
+    const rect = layer.aquaRect;
+    if (baked?.complete && baked.naturalWidth > 0 && rect) {
+      const b = this.editor.doc.contentBounds();
+      if (b.w > 0 && b.h > 0) {
+        const pad = 4;
+        const scale = Math.min((W - pad) / b.w, (H - pad) / b.h);
+        const ox = (W - b.w * scale) / 2 - b.x * scale;
+        const oy = (H - b.h * scale) / 2 - b.y * scale;
+        ctx.setTransform(scale, 0, 0, scale, ox, oy);
+        ctx.drawImage(baked, rect.x, rect.y, rect.w, rect.h);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+    }
+    const live = this.editor.aquaCanvasFor(layer.id);
+    if (live && live.width > 0) ctx.drawImage(live, 0, 0, W, H);
     if (layer.mask) this.paintMask(layer, row);
   }
 
@@ -416,36 +514,98 @@ export class LayersPanel {
   }
 
   // ----------------------------------------------------------- arrastre
-  private onDragStart(e: PointerEvent, id: string): void {
-    e.preventDefault();
-    e.stopPropagation();
-    this.dragId = id;
-    this.list.classList.add("is-dragging");
+
+  /** Píxeles que hay que recorrer para que un clic pase a ser un arrastre. */
+  private static readonly DRAG_THRESHOLD = 4;
+  /** Franja junto a los bordes de la lista que activa el autodesplazamiento. */
+  private static readonly EDGE = 26;
+
+  /**
+   * Botón primario sobre una fila: selecciona ya y arma un posible arrastre.
+   *
+   * No se arrastra desde los controles de la fila (ojo, máscara, carpeta de un
+   * grupo, nombre en edición): ahí el gesto es un clic con significado propio.
+   */
+  private onRowPointerDown(e: PointerEvent, id: string): void {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest(".layer-eye, .layer-mask-thumb, .layer-name-edit, .layer-kind")) return;
+    this.editor.setActiveLayer(id);
+    const l = this.layerOf(id);
+    if (!l || l.locked) return; // una capa bloqueada no se mueve
+    this.pendingId = id;
+    this.pendingY = e.clientY;
+    this.lastPointerY = e.clientY;
+    // Captura en la fila: el puntero puede salirse de la lista sin perder el
+    // gesto, que es justo lo que hace falta para arrastrar hasta los extremos.
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // Sin captura el arrastre sigue funcionando vía window; no es crítico.
+    }
     window.addEventListener("pointermove", this.onDragMove);
     window.addEventListener("pointerup", this.onDragEnd);
     window.addEventListener("pointercancel", this.onDragEnd);
   }
 
   private onDragMove = (e: PointerEvent): void => {
-    if (this.dragId === null) return;
-    const gap = this.gapAt(e.clientY);
-    this.dropGap = gap;
-    this.showDropLine(gap);
+    this.lastPointerY = e.clientY;
+    // Mientras no se supere el umbral, esto sigue siendo un clic.
+    if (this.dragId === null) {
+      if (this.pendingId === null) return;
+      if (Math.abs(e.clientY - this.pendingY) < LayersPanel.DRAG_THRESHOLD) return;
+      this.dragId = this.pendingId;
+      this.list.classList.add("is-dragging");
+      this.rows.get(this.dragId)?.el.classList.add("is-drag-source");
+      this.startAutoScroll();
+    }
+    e.preventDefault();
+    this.dropGap = this.gapAt(e.clientY);
+    this.showDropLine(this.dropGap);
   };
 
   private onDragEnd = (): void => {
-    if (this.dragId === null) return;
     const id = this.dragId;
     const gap = this.dropGap;
+    if (id !== null) this.rows.get(id)?.el.classList.remove("is-drag-source");
     this.dragId = null;
+    this.pendingId = null;
     this.dropGap = -1;
+    this.stopAutoScroll();
     this.list.classList.remove("is-dragging");
     this.dropLine.style.display = "none";
     window.removeEventListener("pointermove", this.onDragMove);
     window.removeEventListener("pointerup", this.onDragEnd);
     window.removeEventListener("pointercancel", this.onDragEnd);
-    if (gap >= 0) this.applyDrop(id, gap);
+    if (id !== null && gap >= 0) this.applyDrop(id, gap);
   };
+
+  /** Desplaza la lista mientras el puntero se mantiene junto a un borde. */
+  private startAutoScroll(): void {
+    if (this.scrollRaf) return;
+    const tick = (): void => {
+      if (this.dragId === null) {
+        this.scrollRaf = 0;
+        return;
+      }
+      const r = this.list.getBoundingClientRect();
+      const y = this.lastPointerY;
+      this.scrollDir = y < r.top + LayersPanel.EDGE ? -1 : y > r.bottom - LayersPanel.EDGE ? 1 : 0;
+      if (this.scrollDir !== 0) {
+        this.list.scrollTop += this.scrollDir * 8;
+        this.dropGap = this.gapAt(y);
+        this.showDropLine(this.dropGap);
+      }
+      this.scrollRaf = requestAnimationFrame(tick);
+    };
+    this.scrollRaf = requestAnimationFrame(tick);
+  }
+
+  private stopAutoScroll(): void {
+    if (this.scrollRaf) cancelAnimationFrame(this.scrollRaf);
+    this.scrollRaf = 0;
+    this.scrollDir = 0;
+  }
 
   /** Índice de hueco (0 = arriba del todo) según la Y del puntero. */
   private gapAt(clientY: number): number {
@@ -474,26 +634,39 @@ export class LayersPanel {
     this.dropLine.style.top = `${y + this.list.scrollTop}px`;
   }
 
-  /** Traduce el hueco visual a `moveLayer(id, beforeId, parentId)`. */
+  /**
+   * Traduce el hueco visual a `moveLayerTo(id, parentId, index)`.
+   *
+   * Se razona con la lista VISIBLE, no con el array de capas: el destino sale de
+   * quién queda justo encima del hueco (si es un grupo abierto, se entra en él)
+   * y la posición, de cuántas hermanas quedan por debajo. Antes se traducía a un
+   * índice absoluto del array y soltar junto a un grupo abierto no movía nada.
+   */
   private applyDrop(id: string, gap: number): void {
+    const doc = this.editor.doc;
+    const dragged = doc.layerById(id);
+    if (!dragged) return;
     const items = this.flatten();
-    // La capa que quedará visualmente ENCIMA del hueco marca el destino en z.
     const above = gap > 0 ? items[gap - 1].layer : null;
-    // No soltar un grupo dentro de sí mismo.
-    if (above && this.isDescendant(above.id, id)) return;
-    const beforeId = above ? above.id : null;
-    const parentId = above ? above.parentId : null;
-    this.editor.moveLayer(id, beforeId, parentId);
-  }
 
-  /** ¿`maybeChild` está dentro de `ancestorId` (o es él mismo)? */
-  private isDescendant(maybeChild: string, ancestorId: string): boolean {
-    let p: string | null = maybeChild;
-    while (p) {
-      if (p === ancestorId) return true;
-      p = this.editor.doc.layerById(p)?.parentId ?? null;
+    let parentId: string | null = null;
+    if (above) {
+      // Soltar justo debajo de la cabecera de un grupo abierto = entrar en él.
+      parentId = above.kind === "group" && !above.collapsed ? above.id : above.parentId;
     }
-    return false;
+    // Un grupo no puede caer dentro de sí mismo ni de sus descendientes.
+    if (parentId && doc.isDescendantOf(parentId, id)) return;
+    // Materia y acuarela son planos propios: siempre en la raíz.
+    if (dragged.kind === "matter" || dragged.kind === "aqua") parentId = null;
+
+    // Posición entre hermanas, de abajo arriba: las que quedan bajo el hueco.
+    const sibIds = new Set(
+      doc.childLayers(parentId).filter((l) => l.id !== id).map((l) => l.id),
+    );
+    let below = 0;
+    for (let i = gap; i < items.length; i++) if (sibIds.has(items[i].layer.id)) below++;
+
+    this.editor.moveLayerTo(id, parentId, below);
   }
 
   // ------------------------------------------------------- menú contextual
@@ -512,10 +685,21 @@ export class LayersPanel {
 
     const isInk = layer.kind === "ink";
     const isMatter = layer.kind === "matter";
+    const isAqua = layer.kind === "aqua";
     if (isMatter) {
       // La materia sí es una capa eliminable: vaciar sus cuerpos o borrar la capa.
       item("Vaciar materia", () => ed.clearMatterLayer(layer.id));
       item("Borrar capa", () => ed.removeLayer(layer.id));
+      sep();
+    } else if (isAqua) {
+      // Hornear pasa el fluido a un ráster de mundo: deja de correr, acompaña al
+      // paneo y al zoom, y es lo único que se guarda y se exporta.
+      item("Hornear acuarela", () => ed.bakeAquaLayer(layer.id));
+      item("Limpiar acuarela", () => ed.clearAquaLayer(layer.id));
+      item("Borrar capa", () => ed.removeLayer(layer.id));
+      sep();
+      item(layer.mask ? "Quitar máscara" : "Añadir máscara", () => ed.toggleLayerMask(layer.id));
+      if (layer.mask) item("Invertir máscara", () => ed.invertLayerMask(layer.id));
       sep();
     } else {
       item("Duplicar", () => ed.duplicateLayer(layer.id), !isInk);

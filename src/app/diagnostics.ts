@@ -197,8 +197,16 @@ export class Diagnostics {
 
     section(`Capas (${doc.layers.length})`);
     for (const l of doc.layers) {
-      const n = l.kind === "matter" ? doc.physics.bodiesOf(l.id).length : doc.layerItems(l.id).length;
-      const flags = `${l.kind} · ${n} it · op ${fmt(l.opacity)} · fill ${fmt(l.fill)} · ${l.blend}`;
+      // Cada tipo cuenta lo suyo: la tinta sus items, la materia sus cuerpos y
+      // la acuarela si tiene pigmento horneado (el fluido vivo está en la GPU).
+      const n =
+        l.kind === "matter"
+          ? doc.physics.bodiesOf(l.id).length
+          : l.kind === "aqua"
+            ? Number(Boolean(l.aquaBaked))
+            : doc.layerItems(l.id).length;
+      const unit = l.kind === "matter" ? "cuerpos" : l.kind === "aqua" ? "horneado" : "it";
+      const flags = `${l.kind} · ${n} ${unit} · op ${fmt(l.opacity)} · fill ${fmt(l.fill)} · ${l.blend}`;
       line(`${l.visible ? "ojo" : " — "} ${l.name}`, flags + (l.id === doc.activeLayerId ? " · ACTIVA" : ""));
     }
 

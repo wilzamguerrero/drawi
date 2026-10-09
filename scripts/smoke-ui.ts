@@ -12,6 +12,7 @@
  */
 
 import { App } from "../src/ui/app";
+import { LayersPanel } from "../src/ui/layers-panel";
 import { buildRoot } from "../src/ui/hotbox/menu";
 import { exportSvg } from "../src/io/export";
 import { exportVector, newDocument, projectText, saveProject, autosave, restoreAutosave } from "../src/ui/file-actions";
@@ -304,6 +305,137 @@ ok("la rueda cambio el zoom", Math.abs(ed.state.zoom - 1) > 1e-6, `zoom=${ed.sta
 noThrow("restablecer la vista", () => { ed.camera.reset(); ed.emitState(); });
 
 // --- Exportacion y proyecto ---
+// ---------------------------------------------- panel de capas: ojo y arrastre
+//
+// El panel no reconstruye sus filas en cada fotograma, asi que un manejador que
+// se quedara con el objeto `SceneLayer` del momento de construirla trabajaria
+// con una copia congelada: `doc.restore` (deshacer, rehacer, abrir proyecto)
+// sustituye TODAS las capas por clones con el mismo id. El sintoma era que
+// despues de deshacer una vez, el ojo pintaba bien pero dejaba de responder:
+// el clic calculaba `!visible` sobre el objeto viejo y reescribia el valor que
+// la capa ya tenia.
+//
+// Se monta un LayersPanel propio en vez de buscar el del dock: el dock se
+// refresca dentro de un requestAnimationFrame y esta suite es sincrona, asi que
+// sus filas aun no existirian. La clase que se prueba es exactamente la misma.
+{
+  const panel = new LayersPanel(ed);
+  panel.update(ed.state);
+
+  const nodes: any[] = [];
+  const collect = (n: any): void => { nodes.push(n); (n.childNodes ?? []).forEach(collect); };
+  collect(panel.el);
+
+  /** Dispara los manejadores que el panel registro en un nodo concreto. */
+  const fire = (node: any, type: string, ev: any = {}): boolean => {
+    let found = false;
+    for (const [n, t, fn] of globalThis.__listeners) {
+      if (n !== node || t !== type) continue;
+      fn({ stopPropagation() {}, preventDefault() {}, altKey: false, button: 0, ...ev });
+      found = true;
+    }
+    return found;
+  };
+  const rowFor = (id: string): any =>
+    nodes.find((n) => (n.className ?? "").includes("layer-row") && n.dataset?.id === id);
+  const eyeIn = (r: any): any =>
+    (r?.childNodes ?? []).find((c: any) => (c.className ?? "").includes("layer-eye"));
+
+  const target = ed.doc.layers.find((l) => l.kind === "ink");
+  const row = target ? rowFor(target.id) : null;
+  const eye = eyeIn(row);
+  ok("el panel de capas monta filas con ojo", !!target && !!row && !!eye,
+     `${nodes.filter((n) => (n.className ?? "").includes("layer-row")).length} filas`);
+
+  if (target && eye) {
+    const id = target.id;
+    const visible = (): boolean => !!ed.doc.layerById(id)?.visible;
+
+    ok("la capa nace visible", visible());
+    fire(eye, "click");
+    ok("el ojo oculta la capa", !visible());
+    fire(eye, "click");
+    ok("el ojo la vuelve a mostrar", visible());
+
+    // Y ahora lo que fallaba: tras un deshacer, el documento tiene capas NUEVAS
+    // con los mismos ids. El ojo tiene que seguir mandando sobre la capa viva.
+    fire(eye, "click");
+    ed.undo();
+    const afterUndo = visible();
+    fire(eye, "click");
+    ok("el ojo sigue respondiendo tras deshacer", visible() !== afterUndo,
+       `tras deshacer ${afterUndo} -> ${visible()}`);
+    // Dos clics mas: debe alternar siempre, no quedarse clavado en un valor.
+    const a = visible();
+    fire(eye, "click");
+    const b = visible();
+    fire(eye, "click");
+    ok("el ojo alterna de forma estable", b !== a && visible() === a, `${a} -> ${b} -> ${visible()}`);
+    if (!visible()) fire(eye, "click");
+  }
+
+  // Arrastre desde CUALQUIER punto de la barra (antes solo desde el asa de los
+  // seis puntos). El DOM simulado da el mismo rectangulo a todos los nodos, asi
+  // que el hueco calculado es siempre el del final de la lista: se arrastra la
+  // capa de DELANTE (la ultima del array) y debe acabar al FONDO (la primera).
+  const roots = ed.doc.layers.filter((l) => l.parentId === null && !l.locked);
+  if (roots.length >= 2) {
+    const front = roots[roots.length - 1];
+    const dragRow = rowFor(front.id);
+    // Solo se disparan los manejadores que el propio gesto acaba de registrar:
+    // en `window` hay muchos mas (lienzo, atajos) que no pintan nada aqui.
+    const mark = globalThis.__listeners.length;
+    ok("la fila entera acepta el gesto de arrastre",
+       !!dragRow && fire(dragRow, "pointerdown", { clientY: 100, pointerId: 1, currentTarget: dragRow }));
+    const fresh = (type: string, ev: any): void => {
+      for (let i = mark; i < globalThis.__listeners.length; i++) {
+        const [n, t, fn] = globalThis.__listeners[i];
+        if (n === globalThis.window && t === type) fn({ preventDefault() {}, ...ev });
+      }
+    };
+    ok("la capa arrastrada estaba delante", ed.doc.layers[ed.doc.layers.length - 1].id === front.id);
+    // Un primer movimiento por debajo del umbral NO debe mover nada: eso es un
+    // clic de seleccion, no un arrastre.
+    const orderBefore = ed.doc.layers.map((l) => l.id).join(",");
+    fresh("pointermove", { clientY: 102 });
+    ok("por debajo del umbral sigue siendo un clic",
+       ed.doc.layers.map((l) => l.id).join(",") === orderBefore);
+    // Y ahora el gesto de verdad.
+    fresh("pointermove", { clientY: 400 });
+    fresh("pointerup", { clientY: 400 });
+    ok("arrastrar la fila manda la capa al fondo", ed.doc.layers[0].id === front.id,
+       ed.doc.layers.map((l) => l.name).join(" | "));
+    ok("no se perdio ninguna capa al arrastrar",
+       new Set(ed.doc.layers.map((l) => l.id)).size === ed.doc.layers.length,
+       `${ed.doc.layers.length} capas`);
+    ok("el arrastre se puede deshacer", ed.state.history.canUndo);
+  }
+}
+
+// ------------------------------------------------------- capas de acuarela
+//
+// El DOM simulado no tiene WebGL2, asi que la acuarela no puede simular: se
+// comprueba justo eso, que la ruta sin GPU degrada en vez de reventar.
+ok("sin WebGL2 la acuarela se declara no disponible", ed.aquaAvailable === false);
+noThrow("pedir una capa de acuarela sin GPU no revienta", () => ed.addAquaLayer());
+noThrow("hornear sin acuarela no revienta", () => ed.aquaFix());
+noThrow("limpiar sin acuarela no revienta", () => ed.aquaClear());
+noThrow("los ajustes de acuarela aceptan cambios sin GPU", () => {
+  ed.setAquaParam("bleed", 0.7);
+  ed.setAquaMode("brush");
+  ed.setAquaSize(55);
+  return ed.state.aquaParams.bleed;
+});
+ok("los ajustes de acuarela se recuerdan sin GPU",
+   ed.state.aquaParams.bleed === 0.7 && ed.state.aquaMode === "brush" && ed.state.aquaSize === 55);
+noThrow("pintar en modo acuarela sin GPU no revienta", () => {
+  ed.setBrush({ asAqua: true, mode: "stroke" });
+  send("pointerdown", 250, 250, 0.5);
+  for (let i = 1; i <= 10; i++) send("pointermove", 250 + i * 6, 250 + i * 4, 0.6);
+  send("pointerup", 310, 290, 0);
+  ed.setBrush({ asAqua: false });
+});
+
 // Antes de exportar, montamos varias capas (una suelta, un grupo y una máscara)
 // para que la exportación por capas recorra orden, grupos y máscara de verdad.
 noThrow("nueva capa", () => ed.addLayer());

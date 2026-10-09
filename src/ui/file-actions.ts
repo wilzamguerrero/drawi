@@ -6,7 +6,7 @@ import {
   loadLocal,
   parseProject,
   pickFile,
-  saveLocal,
+  saveLocalLossy,
   serializeProject,
 } from "../io/project";
 
@@ -28,6 +28,10 @@ export function projectText(editor: Editor): string {
 }
 
 export function saveProject(editor: Editor): string {
+  // La acuarela viva está en la GPU y en coordenadas de pantalla: antes de
+  // serializar se hornea a un ráster de mundo, que es lo que sabe viajar en el
+  // archivo. Si no, el .drawi saldría sin ella.
+  editor.bakeAllAquaLayers();
   const name = sanitize(editor.doc.meta.name);
   download(projectText(editor), `${name}.drawi`, "application/json");
   return `Proyecto guardado como ${name}.drawi`;
@@ -54,6 +58,9 @@ export async function exportImage(
   options: Partial<ExportOptions> = {},
 ): Promise<string> {
   const opt = { ...DEFAULT_EXPORT, ...options };
+  // Igual que al guardar: el PNG se rasteriza en coordenadas de mundo, así que
+  // la acuarela tiene que estar horneada para poder aparecer en él.
+  editor.bakeAllAquaLayers();
   const blob = await exportPng(editor.doc, opt);
   const name = timestampName(sanitize(editor.doc.meta.name), "png");
   download(blob, name, "image/png");
@@ -64,7 +71,11 @@ export function exportVector(editor: Editor, options: Partial<ExportOptions> = {
   const svg = exportSvg(editor.doc, options);
   const name = timestampName(sanitize(editor.doc.meta.name), "svg");
   download(svg, name, "image/svg+xml");
-  return "SVG exportado";
+  // El SVG es vectorial puro: la acuarela es un ráster de fluido y no tiene
+  // representación en trazos, así que se queda fuera a propósito.
+  return editor.doc.aquaLayers.length > 0
+    ? "SVG exportado (sin la acuarela: es un ráster)"
+    : "SVG exportado";
 }
 
 export function newDocument(editor: Editor): string {
@@ -80,9 +91,16 @@ export function newDocument(editor: Editor): string {
   return "Lienzo nuevo";
 }
 
-/** Vuelca el autoguardado al almacenamiento local. */
+/**
+ * Vuelca el autoguardado al almacenamiento local.
+ *
+ * A diferencia del guardado explícito, aquí NO se hornea la acuarela: pasar el
+ * fluido a PNG cuesta décimas de segundo y el autoguardado salta cada vez que
+ * se suelta el pincel. Lo que sí viaja es lo que ya estuviera horneado, y si no
+ * cabe en el cupo se recorta antes que perder el autoguardado entero.
+ */
 export function autosave(editor: Editor): void {
-  saveLocal(projectText(editor));
+  saveLocalLossy(projectText(editor));
 }
 
 /**
@@ -96,7 +114,11 @@ export function restoreAutosave(editor: Editor): boolean {
   if (!text) return false;
   try {
     const file = parseProject(text);
-    if (file.items.length === 0 && file.bodies.length === 0) return false;
+    // Un autoguardado vacío no se restaura (no merece pisar el lienzo nuevo).
+    // La acuarela horneada cuenta como contenido: un dibujo que solo es acuarela
+    // no es un dibujo vacío.
+    const hasAqua = (file.layers ?? []).some((l) => l.kind === "aqua" && l.aquaBaked);
+    if (file.items.length === 0 && file.bodies.length === 0 && !hasAqua) return false;
     applyProject(editor.doc, file);
     editor.brush = { ...editor.brush, ...file.brush };
     editor.camera.state = file.camera;
