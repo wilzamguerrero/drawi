@@ -1576,19 +1576,35 @@ body {
   transition: color 0.25s ease, opacity 0.25s ease;
 }
 
+/*
+ * Chip del espacio.
+ *
+ * Solo esta cuando el espacio tiene el puntero. La alternativa -reservarle el
+ * sitio siempre- dejaria la linea permanentemente mas ancha aunque nadie use el
+ * 3D, que es justo lo que no se quiere. Asi, en 2D la barra queda EXACTAMENTE
+ * como estaba antes de que existiera el espacio, y el unico movimiento ocurre al
+ * entrar y salir, que es una accion deliberada.
+ *
+ * `min-width` para que la profundidad no baile al pulsar los corchetes: es el
+ * chip que tiene a la derecha a fps y GPU, y sin reservar el ancho los empujaria.
+ */
+.status-space {
+  display: none;
+  min-width: 11ch;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+}
+
+.status-space.is-on {
+  /* `block` y no `inline`: dentro de un flex el hijo se bloquea igual, y asi no
+     depende de esa regla para leerse. */
+  display: block;
+}
+
 .status-chip.is-warn {
   color: var(--hot);
-}
-
-/* Chip del espacio: los números técnicos del visor. Se apaga cuando el espacio no
-   está en juego, en vez de mostrar dos ceros. */
-.status-space.is-hidden {
-  display: none;
-}
-
-.status-space {
-  letter-spacing: 0.02em;
-  opacity: 0.85;
 }
 
 .status-engine {

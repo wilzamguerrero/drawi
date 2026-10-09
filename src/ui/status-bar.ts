@@ -65,9 +65,8 @@ export class StatusBar {
     this.message = el("span", { class: "status-message is-fresh", text: "Listo" });
     this.toolName = el("span", { class: "status-chip" });
     this.counts = el("span", { class: "status-chip" });
-    // Chip del espacio: solo aparece cuando el espacio esta en juego. Los numeros
-    // tecnicos -lotes, instancias, profundidad del plano- viven aqui y no en un
-    // HUD flotante sobre el lienzo, que tapaba justo lo que se estaba dibujando.
+    // Chip del espacio: aparece solo cuando el espacio tiene el puntero, para que
+    // en 2D la barra quede exactamente como estaba.
     this.space = el("span", { class: "status-chip status-space" });
     this.zoom = el("span", { class: "status-chip" });
     this.fps = el("span", { class: "status-chip" });
@@ -151,35 +150,38 @@ export class StatusBar {
   }
 
   update(state: EditorState): void {
-    // Con el espacio delante, los dos chips de siempre pasan a hablar del espacio
-    // en vez del lienzo: asi la linea dice donde esta el puntero y que hay alli,
-    // sin anadir un segundo sitio donde mirar.
+    // Fuera del espacio, la barra queda EXACTAMENTE como estaba: los mismos chips
+    // y el mismo texto. Solo al entrar al espacio cambian -el chip de herramienta
+    // pasa a decir el modo del espacio y el de recuento cuenta lo del espacio-, y
+    // eso es una accion deliberada, no un salto mientras se dibuja.
     const s3 = state.scene3d;
     const enEspacio = state.mode3d;
     this.toolName.textContent = enEspacio
       ? `Espacio · ${spaceToolLabel(state.scene3dSettings, state.brush.mode)}`
       : TOOL_LABELS[state.tool];
+    this.toolName.title = this.toolName.textContent;
+    // Los dos textos tienen la misma forma -"N trazos · N manchas" frente a
+    // "N trazos · N cuerpos"-, asi que cambiar de uno a otro no mueve el ancho.
     this.counts.textContent = enEspacio
       ? `${s3.strokes} ${s3.strokes === 1 ? "trazo" : "trazos"} · ${s3.fills} ${
           s3.fills === 1 ? "mancha" : "manchas"
         }`
       : `${state.items} trazos · ${state.bodies} cuerpos`;
+    this.counts.title = enEspacio
+      ? "Trazos y manchas del espacio"
+      : "Trazo de tinta y cuerpos de materia del documento";
 
-    const hayEspacio = enEspacio || s3.strokes > 0 || s3.fills > 0;
-    setClass(this.space, "is-hidden", !hayEspacio);
-    if (hayEspacio) {
-      const partes: string[] = [];
-      if (!enEspacio) partes.push("espacio en la pila");
-      // Las llamadas de dibujado y las instancias solo se enseñan cuando hay
-      // algo: en un espacio vacio son dos ceros que no dicen nada.
-      if (s3.drawCalls > 0) {
-        partes.push(`${s3.drawCalls} ${s3.drawCalls === 1 ? "lote" : "lotes"} · ${s3.instances} inst`);
-      }
-      if (enEspacio) partes.push(`plano ${s3.plane === 0 ? "auto" : num(s3.plane, 0)}`);
-      this.space.textContent = partes.join(" · ");
-      this.space.title = enEspacio
-        ? "Corchetes [ y ] mueven el plano de dibujo; F encuadra"
-        : "El espacio se esta viendo compuesto sobre el lienzo";
+    // Un solo dato mas, el que no se ve en ningun otro sitio: donde esta el plano
+    // de dibujo. Lo tecnico -lotes, instancias- va en el `title`, porque en la
+    // barra solo alarga la linea y donde se mira de verdad es en el diagnostico.
+    setClass(this.space, "is-on", enEspacio);
+    if (enEspacio) {
+      this.space.textContent = `plano ${s3.plane === 0 ? "auto" : num(s3.plane, 0)}`;
+      const lotes =
+        s3.drawCalls > 0
+          ? `${s3.drawCalls} ${s3.drawCalls === 1 ? "lote" : "lotes"}, ${s3.instances} instancias`
+          : "sin lotes";
+      this.space.title = `${lotes}. Corchetes [ y ] mueven el plano; F encuadra.`;
     }
 
     this.zoom.textContent = `${num(state.zoom * 100, 0)}%`;
