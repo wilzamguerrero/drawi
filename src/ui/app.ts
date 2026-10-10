@@ -1,7 +1,20 @@
 import { Editor, type EditorState } from "../app/editor";
 import { Diagnostics } from "../app/diagnostics";
+import { consumeLaunchFiles } from "../io/file-handle";
+import { Busy } from "./busy";
 import { el, setClass } from "./dom";
-import { autosave, exportImage, exportVector, newDocument, openProject, restoreAutosave, saveProject } from "./file-actions";
+import {
+  autosave,
+  exportImage,
+  exportVector,
+  newDocument,
+  openHandle,
+  openProject,
+  reattachLastFile,
+  restoreAutosave,
+  saveProject,
+  saveProjectAs,
+} from "./file-actions";
 import { HelpOverlay } from "./help";
 import { StatusBar } from "./status-bar";
 import { TopBar } from "./top-bar";
@@ -37,6 +50,7 @@ export class App {
   private panels: Panels;
   private sideDock: SideDock;
   private diagnostics: Diagnostics;
+  private busy: Busy;
   private stage: HTMLElement;
   private chrome: HTMLElement;
 
@@ -45,6 +59,9 @@ export class App {
   private autosaveTimer = 0;
   private idleTimer = 0;
   private pinned = false;
+  /** Hay cambios posteriores al último guardado. Solo alimenta el título. */
+  private dirty = false;
+  private offDirty: (() => void) | null = null;
   private lastPointer = { x: 0, y: 0 };
   private keyHandler: (e: KeyboardEvent) => void;
   private pointerHandler: (e: PointerEvent) => void;
@@ -101,7 +118,8 @@ export class App {
       newDoc: () => this.editor.status(newDocument(this.editor)),
       openFile: () => this.openFile(),
       importImage: () => void this.importImageViaPicker().then(() => this.wake()),
-      save: () => this.editor.status(saveProject(this.editor)),
+      save: () => void this.saveFile(),
+      saveAs: () => void this.saveFileAs(),
       exportPng: () => void exportImage(this.editor).then((m) => this.editor.status(m)),
       exportSvg: () => this.editor.status(exportVector(this.editor)),
     };
@@ -134,6 +152,14 @@ export class App {
     root.appendChild(this.help.el);
     this.panels.mount(root);
     this.sideDock.mount(root);
+    // El velo de carga va el último de los flotantes y con z-index propio: tapa
+    // todo mientras se abre un archivo, para que no se dibuje sobre lo que está a
+    // punto de desaparecer.
+    this.busy = new Busy();
+    this.busy.mount(root);
+    // También el velo, para poder comprobarlo desde consola (y desde la
+    // verificación de guardado, que necesita forzarlo).
+    (window as unknown as { __drawiBusy: Busy }).__drawiBusy = this.busy;
     this.hotbox.mount(root);
     this.radialChips.mount(root);
     this.commandPalette.mount(root);
@@ -141,6 +167,9 @@ export class App {
     this.editor.events.on("state", (s) => this.queue(s));
     this.editor.events.on("status", (m) => this.statusBar.setMessage(m));
     this.editor.events.on("dirty", () => this.scheduleAutosave());
+    // El mismo aviso de "hay cambios" que dispara el autoguardado marca el título
+    // con un punto, como hace un editor de escritorio. Se limpia al guardar.
+    this.offDirty = this.editor.events.on("dirty", () => this.touchDirty());
 
     // ------- invocaciones del hotbox
     this.stage.addEventListener("contextmenu", (e) => {
@@ -154,11 +183,35 @@ export class App {
     window.addEventListener("pointermove", this.pointerHandler, { passive: true });
 
     this.keyHandler = (e: KeyboardEvent) => {
+      // Con el velo de carga puesto no se atiende a nadie: el trabajo en curso es
+      // sincrono y cualquier orden se aplicaria sobre un documento a medias. Salvo
+      // Escape, que se deja pasar para no secuestrar el teclado del navegador.
+      if (this.busy.isBusy && e.key !== "Escape") {
+        e.preventDefault();
+        return;
+      }
       // Ctrl/Cmd+K: el paletón de órdenes. Va antes del filtro de INPUT/TEXTAREA
       // para poder alternarlo (abrir/cerrar) también desde su propio campo de texto.
       if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         this.commandPalette.toggle();
+        return;
+      }
+      // Ctrl/Cmd+S: guardar; con Shift, elegir otro archivo. Va antes del filtro de
+      // INPUT para que funcione mientras se escribe el nombre del documento, igual
+      // que Ctrl+K. Y de paso `preventDefault` evita que el navegador abra su propio
+      // diálogo de "guardar página".
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        if (e.shiftKey) void this.saveFileAs();
+        else void this.saveFile();
+        return;
+      }
+      // Ctrl/Cmd+O: abrir. También le quita al navegador su "abrir archivo", que
+      // abriría el .drawi como texto en una pestaña.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "o" || e.key === "O")) {
+        e.preventDefault();
+        void this.openFile();
         return;
       }
       // Ctrl+Alt+D: panel de diagnóstico del render. Antes del filtro de INPUT
@@ -225,11 +278,21 @@ export class App {
     window.addEventListener("beforeunload", () => autosave(this.editor));
 
     this.bindImageDropAndPaste();
+    this.bindLaunchFiles();
     if (restoreAutosave(this.editor)) {
       this.editor.status("Sesion anterior recuperada");
+      // El autoguardado puede ser el de un trabajo que ya tenía archivo en disco:
+      // se reengancha para que Ctrl+S siga escribiendo en él sin preguntar. Si no
+      // coincide, no se hace nada y el primer guardado pedirá destino.
+      void reattachLastFile(this.editor).then((name) => {
+        if (name) this.editor.status(`Sesion anterior recuperada · archivo: ${name}`);
+      });
     } else {
       this.editor.status("Dibuja. Clic derecho o Q para las herramientas; Tab para buscarlas.");
     }
+    // Abrir con un proyecto dentro deja el documento limpio: lo que venga después
+    // sí son cambios sin guardar.
+    this.dirty = false;
     this.queue(this.editor.state);
     this.revealHud();
     // Restaurar los trozos guardados una vez el editor tiene su estado.
@@ -253,8 +316,70 @@ export class App {
   }
 
   private async openFile(): Promise<void> {
-    this.editor.status(await openProject(this.editor));
+    const message = await openProject(this.editor, this.busy);
+    this.editor.status(message);
+    // Abrir deja el documento tal cual está en disco: no hay nada sin guardar.
+    this.markSaved();
     this.wake();
+  }
+
+  /**
+   * Guarda. Con un archivo ya vinculado escribe encima de él sin preguntar; la
+   * primera vez (o en un navegador sin la API) pide destino.
+   */
+  private async saveFile(): Promise<void> {
+    const message = await saveProject(this.editor);
+    this.editor.status(message);
+    // Solo si de verdad se escribió: cancelar el diálogo no salva nada.
+    if (message.startsWith("Guardado")) this.markSaved();
+    this.wake();
+  }
+
+  /** Guarda con otro nombre, y el documento pasa a estar vinculado al nuevo archivo. */
+  private async saveFileAs(): Promise<void> {
+    const message = await saveProjectAs(this.editor);
+    this.editor.status(message);
+    if (message.startsWith("Guardado")) this.markSaved();
+    this.wake();
+  }
+
+  /**
+   * Escucha al sistema: cuando se abre la app con un `.drawi` (doble clic en el
+   * explorador, app instalada), el navegador entrega el archivo por aquí y además
+   * con permiso para escribir en él, así que queda vinculado desde el primer momento.
+   */
+  private bindLaunchFiles(): void {
+    consumeLaunchFiles((handle) => {
+      void openHandle(this.editor, handle, this.busy).then((message) => {
+        this.editor.status(message);
+        this.markSaved();
+        this.wake();
+      });
+    });
+  }
+
+  /** Hay cambios sin guardar: el título lo dice. */
+  private touchDirty(): void {
+    if (this.dirty) return;
+    this.dirty = true;
+    this.refreshTitle();
+  }
+
+  /**
+   * El documento está como en disco.
+   *
+   * Se llama DESPUÉS de renombrar y de aplicar el proyecto a propósito: `setName` y
+   * `reload` emiten "dirty", así que marcarlo antes dejaría el título con un punto
+   * que no corresponde a ningún cambio.
+   */
+  private markSaved(): void {
+    this.dirty = false;
+    this.refreshTitle();
+  }
+
+  private refreshTitle(): void {
+    const mark = this.dirty ? "• " : "";
+    document.title = `${mark}${this.editor.doc.meta.name} · Zence Draw`;
   }
 
   private async importImageViaPicker(): Promise<void> {
@@ -282,15 +407,23 @@ export class App {
     const before = this.editor.doc.snapshot();
     const viewCenter = { x: this.editor.camera.x, y: this.editor.camera.y };
     let ok = 0;
-    for (const f of files) {
-      if (!isImageFile(f)) continue;
-      try {
-        const n = await importImageFile(f, this.editor.doc, viewCenter);
-        if (n > 0) ok += n;
-      } catch (e) {
-        console.warn("[import]", e);
-      }
-    }
+    // Importar es de lo más lento que hay en la app -un PSD se trocea en capas y
+    // cada una se convierte a trazos-, así que va con el velo puesto igual que
+    // abrir un proyecto: sin él, el lienzo se queda congelado sin explicación.
+    await this.busy.run(
+      files.length > 1 ? `Importando ${files.length} imágenes` : "Importando imagen",
+      async () => {
+        for (const f of files) {
+          if (!isImageFile(f)) continue;
+          try {
+            const n = await importImageFile(f, this.editor.doc, viewCenter);
+            if (n > 0) ok += n;
+          } catch (e) {
+            console.warn("[import]", e);
+          }
+        }
+      },
+    );
     if (ok > 0) {
       this.editor.history.record(ok > 1 ? `Importar ${ok} imágenes` : "Importar imagen", before);
       this.editor.invalidateAll();
@@ -418,7 +551,7 @@ export class App {
     // Los trozos flotantes también reflejan el estado (un dial cambiado en otro
     // sitio repinta su arco); se salta el trozo que se esté arrastrando.
     this.radialChips.syncFromEditor();
-    document.title = `${state.name} · Zence Draw`;
+    this.refreshTitle();
   }
 
   private scheduleAutosave(): void {
@@ -437,6 +570,8 @@ export class App {
   dispose(): void {
     window.removeEventListener("keydown", this.keyHandler);
     window.removeEventListener("pointermove", this.pointerHandler);
+    this.offDirty?.();
+    this.offDirty = null;
     this.topBar.dispose();
     this.hotbox.dispose();
     this.radialChips.dispose();

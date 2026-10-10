@@ -72,6 +72,7 @@ export interface MenuHooks {
   openFile(): void;
   importImage(): void;
   save(): void;
+  saveAs(): void;
   exportPng(): void;
   exportSvg(): void;
 }

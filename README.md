@@ -68,6 +68,26 @@ paletas de color y cuentagotas · exportar **PNG** (1×–4×, con margen y fond
 configurables) y **SVG** · guardar/abrir proyecto `.drawi` · autoguardado en el
 navegador.
 
+### Guardar encima del mismo archivo
+
+Desde la primera vez que se guarda, el documento queda **vinculado** a ese archivo
+del disco: `Ctrl+S` escribe encima, sin diálogo y sin dejar `dibujo (1).drawi`,
+`dibujo (2).drawi`… por el camino. Abrir un `.drawi` lo vincula también, así que el
+primer `Ctrl+S` ya sobrescribe el archivo abierto, y el vínculo sobrevive a recargar
+la pestaña o a cerrar la aplicación instalada. Es el comportamiento de Photopea, y
+es lo que hace que la PWA no tenga nada que envidiarle a un programa de escritorio.
+
+Los atajos son `Ctrl+S` (guardar), `Ctrl+Shift+S` (guardar como) y `Ctrl+O` (abrir).
+Con la app instalada, además, **doble clic en un `.drawi`** desde el explorador la
+abre con ese archivo ya vinculado.
+
+Esto lo da la File System Access API, que hoy solo está en Chrome y Edge (y sus
+derivados): allí donde no existe —Firefox, Safari— guardar sigue siendo una descarga
+y no hay vínculo, que es lo único que el navegador permite. Mientras un archivo se
+abre o se importa, la app se tapa con un velo y su materia viva: aplicar un proyecto
+es trabajo sincrónico y dibujar sobre lo que está a punto de desaparecer no lleva a
+ninguna parte.
+
 ---
 
 ## Empezar

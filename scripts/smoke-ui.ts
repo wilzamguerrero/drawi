@@ -106,6 +106,7 @@ const shapeDials = (): string[] => {
     openFile: () => {},
     importImage: () => {},
     save: () => {},
+    saveAs: () => {},
     exportPng: () => {},
     exportSvg: () => {},
   });
@@ -526,7 +527,13 @@ ok("el proyecto conserva las capas", !!parsed && Array.isArray(parsed.layers) &&
   doc.removeStroke3D(trazo.id);
 }
 
-noThrow("guardar proyecto (descarga)", () => saveProject(ed));
+// Guardar es asincrono desde que existe el archivo vinculado. En Node no hay
+// `showSaveFilePicker`, asi que esto ejercita el camino de DESCARGA: el mismo que
+// usan Firefox y Safari, y el que no conviene romper al tocar el otro.
+void saveProject(ed).then(
+  (message) => ok("guardar sin la API descarga el proyecto", message.includes(".drawi"), message),
+  (err) => ok("guardar sin la API descarga el proyecto", false, String(err)),
+);
 noThrow("autoguardado", () => autosave(ed));
 
 // --- Historial a fondo ---
@@ -610,6 +617,7 @@ const toolPaths = (): Map<string, string> => {
     openFile: () => {},
     importImage: () => {},
     save: () => {},
+    saveAs: () => {},
     exportPng: () => {},
     exportSvg: () => {},
   });

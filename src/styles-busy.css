@@ -1,0 +1,113 @@
+/* ==========================================================================
+   Velo de carga (abrir un archivo).
+
+   Mientras se aplica un proyecto la app no atiende, asi que en vez de dejar el
+   lienzo a la vista -y que lo que se dibuje encima desaparezca al terminar- se
+   tapa con un velo y se avisa con la MISMA materia viva del buscador: las gotas
+   de `MateriaFx` se juntan al aparecer, la masa respira mientras se trabaja y se
+   deshace al terminar. Ni un lenguaje nuevo ni un spinner generico.
+
+   La logica vive en `ui/busy.ts`.
+   ========================================================================== */
+
+.busy {
+  position: fixed;
+  inset: 0;
+  /* Por encima de todo, splash incluido: mientras se abre un archivo no hay nada
+     mas que hacer en la app. */
+  z-index: 12000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  background: rgba(5, 7, 10, 0.5);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  cursor: progress;
+  opacity: 0;
+  visibility: hidden;
+  /* Sin velo no se atiende al puntero: `pointer-events` no se interpola, asi que
+     el lienzo recupera el mando en el mismo instante en que se retira la clase,
+     sin esperar a que acabe el fundido. La `visibility` si se retrasa, para que
+     las gotas terminen de salir despedidas sin que las corte el `hidden`. */
+  pointer-events: none;
+  transition:
+    opacity 260ms ease,
+    visibility 0s linear 300ms;
+}
+
+.busy.is-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 220ms ease,
+    visibility 0s;
+}
+
+/* La masa vive en su propia caja, del tamaño del nucleo (96px, el mismo que le da
+   `Busy` a `MateriaFx`): el flex la coloca encima del aviso con su hueco, en vez de
+   tener que calcular coordenadas de pantalla para cada tamaño de ventana.
+   Y respira: un latido lento de escala sobre el ondulado del borde, para que una
+   carga larga no sea un disco quieto. */
+.busy-matter {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  animation: busy-breathe 2.8s ease-in-out infinite;
+}
+
+@keyframes busy-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+/* El aviso, debajo de la masa. Con tracking y en caja baja -no en mayúsculas: el
+   aviso suele llevar el nombre del archivo y gritarlo quedaba mal-, y el
+   `text-indent` compensa el espacio que el tracking añade a la derecha para que el
+   texto quede centrado de verdad. */
+.busy-text {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  max-width: min(70vw, 520px);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-indent: 0.16em;
+  color: rgba(255, 255, 255, 0.94);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+  text-align: center;
+}
+
+/* La masa que deja el `gather` no se queda quieta: respira con el mismo ondulado
+   lento del borde (`materia-blob`, compartido en styles-fx.css) que el nucleo del
+   menu radial y el emblema del buscador.
+   Se declara aqui -con la especificidad exacta de la regla original- porque el
+   `animation` del gather se apaga al terminar y hay que sumarle el ondulado, no
+   sustituirlo: `materia-core-in` mueve el transform y `materia-blob` el
+   border-radius, asi que conviven. */
+.busy .materia-fx.is-gathering .materia-fx-core {
+  animation:
+    materia-core-in 0.42s ease both,
+    materia-blob 9s ease-in-out infinite;
+}
+
+/* Con el movimiento reducido no hay gotas (styles-fx.css esconde `.materia-fx`) ni
+   latido: quedan el velo y el aviso, que siguen haciendo su trabajo. */
+@media (prefers-reduced-motion: reduce) {
+  .busy,
+  .busy.is-visible {
+    transition: none;
+  }
+
+  .busy-matter {
+    animation: none;
+  }
+}

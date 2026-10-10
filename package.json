@@ -11,7 +11,8 @@
     "check": "tsc --noEmit",
     "smoke": "node scripts/run-smoke.mjs",
     "test": "npm run check && npm run smoke",
-    "verify:3d": "npm run build && node scripts/verify-render3d.mjs"
+    "verify:3d": "npm run build && node scripts/verify-render3d.mjs",
+    "verify:save": "node scripts/verify-save.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.170.0",

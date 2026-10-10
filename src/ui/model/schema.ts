@@ -876,6 +876,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       { kind: "action", id: "open", label: "Abrir", icon: "folder", run: () => hooks.openFile() },
       { kind: "action", id: "import", label: "Importar imagen", icon: "image", hint: "Importa JPG, PNG, WebP o PSD por capas. También puedes arrastrar o pegar (Ctrl+V).", run: () => hooks.importImage() },
       { kind: "action", id: "save", label: "Guardar", icon: "save", run: () => hooks.save() },
+      { kind: "action", id: "save-as", label: "Guardar como", icon: "save", hint: "Elige otro archivo. El documento pasa a guardarse en él.", run: () => hooks.saveAs() },
       { kind: "action", id: "png", label: "PNG", icon: "download", run: () => hooks.exportPng() },
       { kind: "action", id: "svg", label: "SVG", icon: "download", run: () => hooks.exportSvg() },
       { kind: "action", id: "help", label: "Atajos", icon: "info", run: () => hooks.help() },
