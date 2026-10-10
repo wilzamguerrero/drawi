@@ -55,8 +55,20 @@ import {
   outlineArea,
 } from "../scene3d/fill";
 import { placePullShape, pullShape, randomPullShape, type PullFamily } from "../tools/pull-shapes";
+import {
+  axisDirection,
+  blendTangent,
+  constrainToAxis,
+  resolveStart,
+  FLOOR_Y,
+  type SnapAxis,
+} from "../scene3d/snap";
 import { Rng, uid } from "../core/rng";
 import { v3, type V3 } from "../scene3d/vec3";
+
+/** Distancia entre dos puntos. Se usa para medir el avance del gesto. */
+const distancia = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number =>
+  Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
 
 /** Recurso de un lote cuya capa ya no existe: no se dibuja. */
 const HIDDEN_PAINT: LayerPaint = { visible: false, opacity: 1, order: 0 };
@@ -103,8 +115,30 @@ const MIN_FILL_AREA = 8;
  *   insiste, que es como se dosifica un suavizado a mano.
  */
 type Gesture =
-  | { kind: "stroke"; planeNormal: V3 }
-  | { kind: "fill"; planeNormal: V3; outline: number[]; minStep: number }
+  | {
+      kind: "stroke";
+      planeNormal: V3;
+      /**
+       * Origen del trazado: el punto ya resuelto por el ajuste.
+       *
+       * El eje y la continuidad de tangente se aplican a los puntos SIGUIENTES
+       * tomando este punto como origen; moverlo habria perdido el enganche.
+       */
+      anchor: V3;
+      /** Tangente del trazo al que se ha encadenado, o `null`. */
+      tangent: V3 | null;
+      /** Lo recorrido desde el ancla, para soltar la tangente poco a poco. */
+      travelled: number;
+      /**
+       * El gesto empezo con Mayusculas, asi que puede ser un clic seco para
+       * marcar el anclaje.
+       *
+       * Se decide al SOLTAR, no al pulsar: Mayusculas sostenida es el bloqueo
+       * temporal del eje mientras se arrastra, y un clic sin arrastre es la marca
+       * del anclaje. Decidirlo al pulsar obligaria a elegir entre las dos.
+       */
+      maybeAnchor: boolean;
+    }  | { kind: "fill"; planeNormal: V3; outline: number[]; minStep: number }
   | {
       kind: "pull";
       /** Base del plano de dibujo: pasar del mundo a 2D y volver. */
@@ -127,6 +161,15 @@ const DEPTH_STEP = 25;
 /** Radio de captura del borrador, en pixeles de pantalla. */
 const ERASE_SLOP = 10;
 
+/**
+ * Movimiento por debajo del cual un gesto con Mayusculas cuenta como clic seco.
+ *
+ * En unidades de mundo, y pequeño: el temblor de un clic normal no llega a un
+ * pixel, asi que ningun trazo de verdad cae por debajo. Es lo que separa "marcar
+ * el anclaje" de "trazar con el eje bloqueado".
+ */
+const ANCHOR_CLICK_SLOP = 2;
+
 export interface Viewport3DHost {
   /** Color activo del editor. */
   color(): string;
@@ -140,6 +183,10 @@ export interface Viewport3DHost {
   history(): History;
   /** Ajustes propios del visor: herramienta, radio de agarre y fuerza. */
   settings(): Scene3DSettings;
+  /** Sube con cada cambio de esos ajustes: es el aviso de que hay que repintar. */
+  settingsRevision(): number;
+  /** Marca o quita el punto de anclaje del ajuste (`null` lo quita). */
+  setAnchor(p: V3 | null): void;
   /** Avisa al editor de algo que el usuario debe leer. */
   status(message: string): void;
   /** Avisa de que el estado cambio (para refrescar la interfaz). */
@@ -207,6 +254,8 @@ export class Viewport3D {
   private syncedInk = -1;
   /** Firma de la pila que ya se pinto: identidad, ojo y opacidad de cada capa. */
   private syncedLayers = "";
+  /** Revision de los ajustes del visor que ya se pintaron. */
+  private syncedSettings = -1;
   /**
    * Ultima muestra cruda bajo el puntero.
    *
@@ -217,6 +266,14 @@ export class Viewport3D {
   private tail: Sample3D | null = null;
   /** Ultimo punto de pantalla por el que paso el borrador, para no dejar huecos. */
   private eraseFrom: { x: number; y: number } | null = null;
+  /**
+   * Ultimo punto CRUDO del trazo en curso.
+   *
+   * Es lo que mide el avance del gesto: el ajuste puede mover los puntos, y medir
+   * el avance sobre los ya movidos falsearia cuanto lleva recorrido el trazo -y
+   * con ello cuanto pesa todavia la tangente del anterior-.
+   */
+  private lastRaw: V3 | null = null;
   private depth = 0;
   private space = false;
   private dirty = true;
@@ -328,6 +385,14 @@ export class Viewport3D {
         this.dirty = true;
       }
     }
+    // Los ajustes del visor -la rejilla, el ajuste del trazo, la marca del
+    // anclaje- cambian la imagen sin tocar el documento. Se avisa por revision y
+    // no comparando objetos, que seria recorrerlos en cada fotograma.
+    const ajustes = this.api.settingsRevision();
+    if (ajustes !== this.syncedSettings) {
+      this.syncedSettings = ajustes;
+      this.dirty = true;
+    }
   }
 
   /** Lo de la pila de capas que cambia lo que se ve: identidad, ojo y opacidad. */
@@ -424,6 +489,25 @@ export class Viewport3D {
     const paintOf = (id: string): LayerPaint => paint.get(id) ?? HIDDEN_PAINT;
     this.backend.sync(this.scene.all, paintOf);
     this.backend.syncFills(this.fills.all, paintOf);
+    // La marca del anclaje solo se enseña cuando el ajuste esta puesto en el: si
+    // no, seria un adorno mas en medio del dibujo.
+    const s = this.api.settings().snap;
+    this.backend.drawAnchor(s.source === "anchor" ? s.anchor : null, Math.max(4, s.radius * 0.35));
+    // La rejilla se centra en el punto de mira: asi siempre hay suelo bajo lo que
+    // se esta dibujando, se mire donde se mire. Su paso es el MISMO que el del
+    // enganche, para que lo que se ve sea exactamente a lo que se pega el trazo.
+    const grid = this.api.settings().grid;
+    this.backend.syncGrid(
+      grid.enabled
+        ? {
+            centerX: this.camera.px,
+            centerZ: this.camera.pz,
+            floorY: FLOOR_Y,
+            step: s.gridStep,
+            opacity: grid.opacity,
+          }
+        : null,
+    );
     // La vista previa se rehace una vez por fotograma y no una por evento de
     // puntero: el navegador puede entregar varios eventos coalescidos entre dos
     // fotogramas, y recomponer la cinta para cada uno seria trabajo tirado.
@@ -431,7 +515,7 @@ export class Viewport3D {
     if (tracing) live = this.builder.preview(this.tail);
     else if (contouring) live = this.outline.preview(null);
     this.backend.setLive(live);
-    this.backend.render(this.camera);
+    this.backend.render(this.camera, doc.lights3d);
     this.dirty = false;
   }
 
@@ -596,6 +680,25 @@ export class Viewport3D {
     this.beginGesture(e);
   }
 
+  /**
+   * Marca (o quita) el punto de anclaje del ajuste.
+   *
+   * Es el punto del que arrancan los trazos cuando la continuacion esta puesta en
+   * "Anclaje": dibujar en abanico desde un mismo origen. Volver a marcar en el
+   * mismo sitio lo quita, para no tener que ir al panel a deshacerlo.
+   */
+  private markAnchor(p: V3): void {
+    const actual = this.api.settings().snap.anchor;
+    const mismo = actual !== null && distancia(actual, p) < 1e-3;
+    this.api.setAnchor(mismo ? null : p);
+    this.api.status(
+      mismo
+        ? "Anclaje quitado"
+        : `Anclaje en (${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)})`,
+    );
+    this.dirty = true;
+  }
+
   private onMove(e: PointerEvent): void {
     if (this.controls.navigating) {
       const r = this.rect();
@@ -696,9 +799,22 @@ export class Viewport3D {
 
     const history = this.api.history();
     if (g.kind === "stroke") {
+      // Un clic seco con Mayusculas no es un trazo: es marcar el anclaje. Se
+      // descarta lo que hubiera en el constructor y se marca el punto. El umbral
+      // es corto a proposito -el temblor de un clic normal no llega ni a un
+      // pixel-, asi que no se come ningun trazo por error.
+      if (g.maybeAnchor && g.travelled < ANCHOR_CLICK_SLOP) {
+        this.builder.cancel();
+        this.lastRaw = null;
+        this.tail = null;
+        this.markAnchor(g.anchor);
+        this.refreshState();
+        return;
+      }
       const stroke = this.builder.finalize();
       this.builder.cancel();
       this.tail = null;
+      this.lastRaw = null;
       if (!stroke) return;
       history.begin();
       // La mejora al soltar se aplica ANTES de guardar: lo que entra en el
@@ -760,17 +876,32 @@ export class Viewport3D {
   // ---------------------------------------------------------------- trazo
 
   private beginStroke(e: PointerEvent): void {
-    const p = this.worldPoint(e);
-    if (!p) return;
+    const raw = this.worldPoint(e);
+    if (!raw) return;
 
     const brush = this.api.brush();
     this.builder.settings = brush;
     this.builder.setZoom(1);
     const planeNormal = forwardOf(this.camera, { x: 0, y: 0, z: 0 });
-    this.gesture = { kind: "stroke", planeNormal };
+
+    // De donde arranca el trazo y con que direccion sale lo decide el ajuste:
+    // puede engancharse al extremo de otro trazo, a la rejilla o a un anclaje, y
+    // traer consigo la tangente para que la union no haga pico.
+    const snap = this.api.settings().snap;
+    const arranque = resolveStart(raw, snap, this.api.doc().strokes3d, this.camera);
+    const anchor = arranque.point;
+    this.lastRaw = { ...raw };
+    this.gesture = {
+      kind: "stroke",
+      planeNormal,
+      anchor,
+      tangent: arranque.tangent,
+      travelled: 0,
+      maybeAnchor: e.shiftKey,
+    };
 
     const doc = this.api.doc();
-    const sample = this.sampleOf(e, p);
+    const sample = this.sampleOf(e, anchor);
     this.tail = sample;
     this.builder.begin(sample, {
       brush: brush.mode === "erase" ? "ribbon" : brush.mode,
@@ -784,13 +915,58 @@ export class Viewport3D {
   }
 
   private pushStroke(e: PointerEvent): void {
-    const p = this.worldPoint(e);
-    if (!p) return;
+    const g = this.gesture;
+    if (!g || g.kind !== "stroke") return;
     const samples = this.coalescedSamples(e);
     if (samples.length === 0) return;
-    this.tail = samples[samples.length - 1];
-    this.builder.push(samples);
+
+    // Cada muestra se ajusta con el avance que llevaba el trazo AL LLEGAR a ella,
+    // no con el mismo para todas: la tangente pesa mucho al principio y nada al
+    // final, y aplicarles el mismo avance apelotonaria un gesto rapido en un solo
+    // punto. El avance se mide sobre los puntos CRUDOS, que son los del gesto; si
+    // se midiera sobre los ya ajustados, el eje lo falsearia.
+    // Con Mayusculas sostenida, el eje del panel se sustituye por la horizontal de
+    // la vista mientras dure el gesto. Es el bloqueo temporal de toda la vida, y
+    // no pisa el ajuste permanente: al soltar, vuelve el del panel.
+    const snap = this.api.settings().snap;
+    const eje: SnapAxis = e.shiftKey ? "view-x" : snap.axis;
+    const dir = axisDirection(eje, this.camera, v3());
+    const ajustadas: Sample3D[] = [];
+    let avance = g.travelled;
+    for (const s of samples) {
+      if (this.lastRaw) avance += distancia(this.lastRaw, s);
+      this.lastRaw = { x: s.x, y: s.y, z: s.z };
+      const punto = this.snapPoint(g.anchor, s, avance, dir);
+      ajustadas.push({ ...s, x: punto.x, y: punto.y, z: punto.z });
+    }
+    this.gesture = { ...g, travelled: avance };
+
+    this.tail = ajustadas[ajustadas.length - 1];
+    this.builder.push(ajustadas);
     this.dirty = true;
+  }
+
+  /**
+   * Lleva un punto del puntero a donde manda el ajuste.
+   *
+   * El orden de los dos pasos importa: primero se endereza la direccion hacia la
+   * tangente del trazo enganchado y despues se lleva al eje. Al reves, el ultimo
+   * paso dejaria el punto fuera del eje, que es lo que el usuario ha pedido de
+   * forma explicita.
+   */
+  private snapPoint(anchor: V3, p: V3, travelled: number, dir: V3 | null): V3 {
+    const g = this.gesture;
+    const snap = this.api.settings().snap;
+    const tang = g?.kind === "stroke" ? g.tangent : null;
+    const girado = blendTangent(
+      anchor,
+      p,
+      tang,
+      travelled,
+      snap.tangentBlend,
+      snap.tangent ? 1 : 0,
+    );
+    return constrainToAxis(anchor, girado, dir);
   }
 
   /** Mejora el trazo recien cerrado, si el ajuste lo pide. */

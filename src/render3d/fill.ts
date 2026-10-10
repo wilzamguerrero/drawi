@@ -13,7 +13,7 @@
 
 import * as THREE from "three";
 import type { FillBatch } from "../scene3d/fill";
-import { SCENE_LIGHT } from "./ribbon";
+import { lightUniforms } from "./ribbon";
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -40,10 +40,14 @@ varying vec3 vWorld;
 
 uniform vec3 uColor;
 uniform vec3 uCameraPos;
-uniform vec3 uLightDir;
-uniform vec3 uLightColor;
-uniform vec3 uAmbient;
 uniform float uOpacity;
+
+// Las mismas luces que la cinta, y por el mismo motivo: una mancha y un trazo del
+// mismo color tienen que salir del mismo tono.
+#define NUM_LUCES 4
+uniform vec4 uLightVec[NUM_LUCES];
+uniform vec3 uLightColor[NUM_LUCES];
+uniform vec3 uAmbient;
 
 void main() {
   vec3 n = normalize(vNormal);
@@ -52,10 +56,15 @@ void main() {
   // la contraria. Sin esto, una mancha girada sale en negro.
   if (dot(n, view) < 0.0) n = -n;
 
-  vec3 L = normalize(-uLightDir);
-  float wrap = clamp((dot(n, L) + 0.45) / 1.45, 0.0, 1.0);
-  vec3 col = uColor * (uAmbient + uLightColor * wrap);
+  vec3 difusa = uAmbient;
+  for (int i = 0; i < NUM_LUCES; i++) {
+    vec4 lv = uLightVec[i];
+    vec3 L = lv.w < 0.5 ? normalize(lv.xyz) : normalize(lv.xyz - vWorld);
+    float wrap = clamp((dot(n, L) + 0.45) / 1.45, 0.0, 1.0);
+    difusa += uLightColor[i] * wrap;
+  }
 
+  vec3 col = uColor * difusa;
   gl_FragColor = vec4(col * uOpacity, uOpacity);
 }
 `;
@@ -68,9 +77,7 @@ export const createFillMaterial = (color: string, opacity: number): THREE.Shader
       uViewProjection: { value: new THREE.Matrix4() },
       uColor: { value: new THREE.Color(color) },
       uCameraPos: { value: new THREE.Vector3() },
-      uLightDir: { value: SCENE_LIGHT.dir },
-      uLightColor: { value: SCENE_LIGHT.color },
-      uAmbient: { value: SCENE_LIGHT.ambient },
+      ...lightUniforms(),
       uOpacity: { value: opacity },
     },
     transparent: true,

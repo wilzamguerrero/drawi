@@ -9,6 +9,7 @@ import type { BrushSettings } from "../stroke/types";
 import type { ShapeDef } from "../physics/shapes";
 import { DEFAULT_CAMERA_3D, type Camera3DState } from "../scene3d/camera3d";
 import { outlineBounds, type Fill3D } from "../scene3d/fill";
+import { DEFAULT_LIGHTS, type Light3D } from "../scene3d/lights";
 import type { V3 } from "../scene3d/vec3";
 import { POINT_FLOATS, boundsOf, type Stroke3D } from "../scene3d/types";
 
@@ -19,8 +20,9 @@ import { POINT_FLOATS, boundsOf, type Stroke3D } from "../scene3d/types";
  * varias capas de materia (o ninguna). v4: alcance de cohesion configurable.
  * v6: capas de acuarela (`kind: "aqua"`), que viajan dentro de `layers` con su
  * pigmento ya horneado en `aquaBaked` (PNG) y el rectángulo de mundo que ocupa.
- * v7: capas del espacio (`kind: "scene3d"`) con sus trazos en `strokes3d` y sus
- * manchas rellenas en `fills3d`, mas el punto de vista del visor en `camera3d`.
+ * v7: capas del espacio (`kind: "scene3d"`) con sus trazos en `strokes3d`, sus
+ * manchas rellenas en `fills3d` y las luces de la escena en `lights3d`, mas el
+ * punto de vista del visor en `camera3d`.
  */
 export const PROJECT_VERSION = 7;
 
@@ -37,6 +39,8 @@ export interface ProjectFile {
   strokes3d?: Stroke3DFile[];
   /** Manchas rellenas del espacio (v7+). */
   fills3d?: Fill3DFile[];
+  /** Luces de la escena (v7+). Son datos planos: viajan tal cual. */
+  lights3d?: Light3D[];
   /** Punto de vista del visor espacial (v7+). */
   camera3d?: Camera3DState;
   bodies: BodySnapshot[];
@@ -241,6 +245,7 @@ export function serializeProject({ doc, brush, camera }: SerializeInput): string
     activeLayerId: doc.activeLayerId,
     strokes3d: doc.strokes3d.map(encodeStroke3D),
     fills3d: doc.fills3d.map(encodeFill3D),
+    lights3d: doc.lights3d.map((l) => ({ ...l })),
     camera3d: { ...doc.camera3d },
     bodies: doc.bodies.map(snapshotBody),
     symmetry: { ...doc.symmetry },
@@ -280,6 +285,12 @@ export function applyProject(doc: SceneDocument, file: ProjectFile): void {
   // v7 no traen ninguno y se quedan con la lista vacia.
   doc.strokes3d = Array.isArray(file.strokes3d) ? file.strokes3d.map(decodeStroke3D) : [];
   doc.fills3d = Array.isArray(file.fills3d) ? file.fills3d.map(decodeFill3D) : [];
+  // Un proyecto anterior a las luces se abre con la luz de estudio: dejar la lista
+  // vacia daria una escena a oscuras, que parece un fallo y no una ausencia.
+  doc.lights3d =
+    Array.isArray(file.lights3d) && file.lights3d.length > 0
+      ? file.lights3d.map((l) => ({ ...l }))
+      : DEFAULT_LIGHTS.map((l) => ({ ...l }));
   doc.camera3d = { ...DEFAULT_CAMERA_3D, ...(file.camera3d ?? {}) };
   // Los cuerpos entran primero para que `ensureLayers` sepa a qué capa de
   // materia reasignar los que vengan sin `layerId` (proyectos v1/v2).

@@ -1,7 +1,7 @@
 import { Emitter } from "../core/emitter";
 import { clamp, clamp01 } from "../core/math";
 import { DEFAULT_PALETTES, rgbToHex, type Palette } from "../core/color";
-import { globalRng, Rng } from "../core/rng";
+import { globalRng, Rng, uid } from "../core/rng";
 import type { Vec2 } from "../core/vec2";
 import { PointerInput, type GestureState, type InputSample } from "../input/pointer";
 import { DEFAULT_SHAPE, randomShape, type ShapeDef } from "../physics/shapes";
@@ -39,6 +39,9 @@ import { DEFAULT_TOOL, HELD_TOOL, TOOL_KEYS, TOOL_LABELS, TOOLS } from "../tools
 import type { Tool, ToolContext, ToolId, WetStroke } from "../tools/types";
 import { Viewport3D } from "./viewport3d";
 import { DEFAULT_SCENE3D, type Scene3DSettings } from "../scene3d/tools3d";
+import { makeLight, studioLight, type Light3D } from "../scene3d/lights";
+import { DEFAULT_CAMERA_3D } from "../scene3d/camera3d";
+import type { SnapSettings } from "../scene3d/snap";
 
 /** Operacion activa de la herramienta Materia. */
 export type MatterOp = "move" | "rotate" | "scale" | "pivot";
@@ -143,6 +146,15 @@ export interface EditorState {
   };
   /** Herramienta del visor espacial y sus ajustes de retoque. */
   scene3dSettings: Scene3DSettings;
+  /** Luces de la escena, para el panel. */
+  lights: {
+    enabled: boolean;
+    count: number;
+    /** Luz principal: la direccional o puntual que da direccion y color. */
+    key: Light3D | null;
+    /** Ambiente: la que impide que lo que no toca la luz quede negro del todo. */
+    ambient: Light3D | null;
+  };
 }
 
 interface EditorEvents extends Record<string, unknown> {
@@ -195,6 +207,15 @@ export class Editor {
    * lienzo. Lo que SI comparten los dos espacios es el modo del pincel.
    */
   scene3dSettings: Scene3DSettings = { ...DEFAULT_SCENE3D };
+  /**
+   * Sube con cada cambio de esos ajustes.
+   *
+   * El visor necesita saber que tiene que repintar, y no puede mirarlo comparando
+   * objetos: la rejilla o el ajuste del trazo cambian lo que se ve aunque el
+   * documento no toque ni un vertice. Sin este aviso, encender la rejilla desde el
+   * panel no dibujaba nada hasta que algo mas ensuciara el visor.
+   */
+  private scene3dSettingsRevision = 0;
   showWalls = false;
   debugColliders = false;
   showBridgeReach = false;
@@ -400,6 +421,12 @@ export class Editor {
       scene3dAvailable: this.scene3dAvailable,
       scene3d: this.scene3dStats(),
       scene3dSettings: this.scene3dSettings,
+      lights: {
+        enabled: this.doc.lights3d.some((l) => l.enabled),
+        count: this.doc.lights3d.length,
+        key: this.keyLight ?? null,
+        ambient: this.ambientLight ?? null,
+      },
     };
   }
 
@@ -432,6 +459,8 @@ export class Editor {
         doc: () => this.doc,
         history: () => this.history,
         settings: () => this.scene3dSettings,
+        settingsRevision: () => this.scene3dSettingsRevision,
+        setAnchor: (p) => this.setSpaceSnap({ anchor: p }),
         status: (m) => this.status(m),
         changed: () => {
           this.events.emit("dirty", undefined);
@@ -497,6 +526,77 @@ export class Editor {
   /** Cambia la herramienta o los ajustes del visor espacial. */
   setScene3D(patch: Partial<Scene3DSettings>): void {
     this.scene3dSettings = { ...this.scene3dSettings, ...patch };
+    this.scene3dSettingsRevision++;
+    this.emitState();
+  }
+
+  /**
+   * Cambia el ajuste del trazo en el espacio.
+   *
+   * Va aparte de `setScene3D` porque `snap` es un objeto anidado: un `patch`
+   * superficial lo reemplazaria entero y cada campo que no viniera en el parche se
+   * perderia al tocar cualquier otro.
+   */
+  setSpaceSnap(patch: Partial<SnapSettings>): void {
+    this.scene3dSettings = {
+      ...this.scene3dSettings,
+      snap: { ...this.scene3dSettings.snap, ...patch },
+    };
+    this.scene3dSettingsRevision++;
+    this.emitState();
+  }
+
+  /** La luz que da la direccion de las sombras: la primera direccional o puntual. */
+  get keyLight(): Light3D | undefined {
+    return this.doc.lights3d.find((l) => l.kind !== "ambient");
+  }
+
+  get ambientLight(): Light3D | undefined {
+    return this.doc.lights3d.find((l) => l.kind === "ambient");
+  }
+
+  /**
+   * Cambia la luz principal, creandola si no hay ninguna.
+   *
+   * Se edita en el sitio y con un solo paso de historial por gesto: mover una luz
+   * con un deslizador no debe dejar ochenta pasos.
+   */
+  setKeyLight(patch: Partial<Light3D>): void {
+    const l = this.keyLight;
+    const before = this.doc.snapshot();
+    if (l) this.doc.updateLight3D(l.id, patch);
+    else this.doc.addLight3D(makeLight("directional", uid(), patch));
+    this.history.record("Luz", before);
+    this.invalidateAll();
+    this.emitState();
+  }
+
+  setAmbientLight(patch: Partial<Light3D>): void {
+    const l = this.ambientLight;
+    const before = this.doc.snapshot();
+    if (l) this.doc.updateLight3D(l.id, patch);
+    else this.doc.addLight3D(makeLight("ambient", uid(), patch));
+    this.history.record("Luz ambiente", before);
+    this.emitState();
+  }
+
+  /** Enciende o apaga todas las luces de golpe. */
+  setLightsEnabled(on: boolean): void {
+    if (this.doc.lights3d.length === 0) return;
+    const before = this.doc.snapshot();
+    for (const l of this.doc.lights3d) this.doc.updateLight3D(l.id, { enabled: on });
+    this.history.record(on ? "Encender luces" : "Apagar luces", before);
+    this.emitState();
+  }
+
+  /** Coloca la luz principal sobre el hombro de la camara. */
+  lightFromCamera(): void {
+    const l = studioLight(this.viewport3dInstance?.camera ?? DEFAULT_CAMERA_3D, this.keyLight?.id ?? uid());
+    const before = this.doc.snapshot();
+    if (this.keyLight) this.doc.updateLight3D(l.id, { x: l.x, y: l.y, z: l.z, enabled: true });
+    else this.doc.addLight3D(l);
+    this.history.record("Luz desde la camara", before);
+    this.invalidateAll();
     this.emitState();
   }
 

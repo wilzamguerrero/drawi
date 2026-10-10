@@ -51,7 +51,10 @@ Sin dependencia de WebGL ni del DOM, así que corre en las pruebas de Node.
 | `src/scene3d/relax.ts` | Editar trazos ya dibujados: suavizado laplaciano y arrastre con caída |
 | `src/scene3d/fill.ts` | Manchas rellenas: contorno, triangulación por recorte de orejas y lotes |
 | `src/scene3d/tools3d.ts` | Herramienta del visor y sus ajustes |
+| `src/scene3d/snap.ts` | De dónde arranca el trazo, hacia dónde sale y a qué eje va atado |
+| `src/scene3d/lights.ts` | Luces de la escena y su empaquetado a uniformes |
 | `src/render3d/fill.ts` | Malla y material de las manchas |
+| `src/render3d/grid.ts` | Rejilla del suelo, pintada por shader |
 | `src/io/project.ts` | Los trazos viajan en el proyecto (v7) con los puntos en base64 |
 
 ### Pruebas
@@ -65,8 +68,13 @@ Total del proyecto: **319 comprobaciones** (68 motor 2D + 110 interfaz + 141 del
 
 ## 3. Qué NO está construido
 
-- **Continuación del trazo** (encadenar al anterior, ejes, anclaje).
-- **Luces, materiales, primitivas y posprocesado.**
+- **Sombras.** Las luces iluminan, pero no proyectan sombra sobre el suelo.
+- **Materiales y primitivas.** No hay objetos que insertar, ni materiales que
+  asignar más allá del color de cada trazo.
+- **Lista de luces en el panel.** Hoy se edita la luz principal y el ambiente; no
+  se pueden añadir una segunda direccional o una puntual desde la interfaz, aunque
+  el documento y el shader ya las soportan. Falta el editor de lista.
+- **Posprocesado.**
 - **Descarte y LOD por trazo** en el bucle de dibujado. El módulo está escrito y
   probado, pero el visor dibuja el lote entero y deja el recorte a la GPU.
 - **`asMatter` y `asAqua` en 3D.** Sigue siendo la pregunta de diseño abierta.
@@ -349,6 +357,63 @@ lista, así que el visor solo lo hace cuando el documento avisa
 de dibujado, hay un segundo aviso (`inkRevision`) que marca sucio cuando cambia la
 pila de capas: sin él, apagar una capa dejaba el lienzo con el fotograma anterior.
 
+### 4.14 La continuación son tres decisiones, no una
+
+De dónde arranca el trazo, a qué eje está atado y con qué dirección sale son cosas
+independientes, y mezclarlas en una sola función haría imposible decir cuál de las
+tres está mal cuando el resultado no cuadra. Viven separadas en `snap.ts`:
+
+- **El punto de arranque** sale de un extremo de otro trazo, de un cruce de la
+  rejilla o de un anclaje fijo. Al engancharse a un trazo, "el último" es el más
+  reciente **que tenga un extremo a tiro**: si el último no llega, se mira el
+  anterior, porque el radio ya dice que se quiere enganchar a algo.
+- **La restricción** es un eje del mundo o de la vista. Los de la vista son los de
+  la cámara *ahora*: al orbitar dejan de coincidir con los del mundo, y por eso son
+  los útiles para dibujar.
+- **La dirección de salida** se mezcla con la tangente del trazo enganchado, con
+  peso decreciente a lo largo de un alcance. Es lo que hace que la unión quede
+  tangente en vez de en pico.
+
+Dos cosas que se aprendieron al escribirlo:
+
+- **El eje no toca el punto de arranque**, solo los siguientes. Si lo moviera,
+  encadenar a un extremo y forzar un eje a la vez perdería el encadenaje.
+- **El orden de los dos pasos importa**: primero se endereza la dirección y después
+  se lleva al eje, de modo que el resultado quede exactamente sobre el eje.
+  Al revés, el último paso movería el punto fuera de él.
+
+Mayúsculas hace dos cosas según lo que dure el gesto: **sostenida mientras se
+arrastra** sustituye el eje del panel por la horizontal de la vista -el bloqueo
+temporal de siempre-, y **en un clic seco** marca el punto de anclaje. Decidirlo al
+soltar, por el recorrido, es lo que permite que las dos convivan en la misma tecla.
+
+### 4.15 La rejilla del suelo se pinta, no se dibuja
+
+No es geometría de líneas: es un quad grande con la rejilla resuelta en el
+fragment shader. Una rejilla de líneas tiene que ser finita y su borde se ve; aquí
+el quad se coloca bajo la cámara y las líneas se desvanecen por distancia antes de
+llegar a su borde, así que no hay borde. Y con `fwidth` las líneas salen del grosor
+de un píxel midan lo que midan en pantalla: sin eso, al alejarse, la rejilla se
+convierte en un muaré que ensucia la imagen entera.
+
+Su paso es **el mismo** que el del enganche a rejilla. Dos números distintos para lo
+mismo acabarían enseñando una rejilla a la que el trazo no se pega.
+
+### 4.16 Las luces se recorren siempre todas
+
+El shader recorre cuatro luces en cada fragmento, y las que no se usan llevan color
+cero: así no hay ni una rama por píxel. En una cinta, que cubre mucha pantalla, eso
+importa. Las ambientales no ocupan hueco en el bucle: no tienen dirección ni
+posición, así que se suman a un color base.
+
+Los materiales del visor comparten los mismos uniformes de luz -cinta, manchas y
+rejilla-, porque una escena con dos luces distintas se nota en seguida: un trazo y
+una mancha del mismo color saldrían de tonos diferentes.
+
+**Las luces todavía no dan sombra.** Está el sombreado directo, que es lo que hace
+que un trazo se lea como materia. Las sombras proyectadas necesitan proyectar la
+geometría sobre el suelo, y van aparte.
+
 ## 5. Medido
 
 Con la suite de pruebas:
@@ -380,11 +445,10 @@ rendimiento real está sin medir: falta presupuestar los 60 fps con 20.000 trazo
 
 ## 6. Fases pendientes
 
-1. El relleno en el espacio, con su propia geometría de superficie.
-2. Continuación del trazo: encadenar al anterior o al más cercano, ejes,
-   continuidad de tangente y anclaje.
-3. Conectar `cull.ts` al bucle de dibujado, con el descarte por lotes primero.
-4. Primitivas, luces, materiales y posprocesado.
+1. Sombras proyectadas sobre el suelo, a partir de la luz principal.
+2. Editor de lista de luces: añadir, quitar y elegir una segunda.
+3. Primitivas y materiales: objetos que insertar y materiales que asignar.
+4. Conectar `cull.ts` al bucle de dibujado, con el descarte por lotes primero.
 5. Incluir el espacio en la exportación.
 6. Respaldo por CPU, solo como visor.
 7. Repartir el paquete para que three.js no pese hasta que se use.

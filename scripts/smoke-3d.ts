@@ -83,6 +83,25 @@ import {
   triangulateOutline,
 } from "../src/scene3d/fill";
 import { SceneDocument } from "../src/scene/document";
+import {
+  DEFAULT_LIGHTS,
+  MAX_LIGHTS,
+  lightDirection,
+  makeLight,
+  packLights,
+  parseHex,
+  shadowLight,
+} from "../src/scene3d/lights";
+import {
+  DEFAULT_SNAP,
+  axisDirection,
+  blendTangent,
+  constrainToAxis,
+  endpointsOf,
+  pickCandidate,
+  resolveStart,
+  snapToGrid,
+} from "../src/scene3d/snap";
 
 // El tsconfig usa `"types": []` a proposito: la aplicacion se compila contra el
 // DOM y nada mas. Esta suite si corre en Node, asi que declara aqui lo unico que
@@ -2192,6 +2211,370 @@ const PLANO_Z = v3(0, 0, 1);
   );
 
   ok("borrar la capa se lleva sus manchas", (doc.removeLayer(capa.id), doc.fills3d.length === 0));
+}
+
+// ------------------------------------------------------------- ajuste --
+
+/** Un trazo en el plano XY a partir de puntos 3D. */
+const strokeOf = (pts: readonly [number, number, number][]): Stroke3D => {
+  const data = new Float32Array(pts.length * POINT_FLOATS);
+  for (let i = 0; i < pts.length; i++) {
+    const o = i * POINT_FLOATS;
+    data[o + POS_OFFSET] = pts[i][0];
+    data[o + POS_OFFSET + 1] = pts[i][1];
+    data[o + POS_OFFSET + 2] = pts[i][2];
+    data[o + RADIUS_OFFSET] = 4;
+  }
+  return {
+    id: `s-${++planarSeq}`,
+    brush: "ribbon",
+    color: "#000000",
+    layerId: "L",
+    data,
+    count: pts.length,
+    bounds: boundsOf(data, pts.length),
+    seed: 1,
+    planeNormal: null,
+  };
+};
+
+/**
+ * Los dos extremos de un trazo, con la direccion con la que se llega a cada uno.
+ *
+ * La tangente tiene que apuntar HACIA FUERA en los dos: en el final es la
+ * direccion de llegada, y en el principio la contraria. Si las dos apuntaran
+ * igual, encadenar por un cabo torceria el trazo nuevo.
+ */
+{
+  const recto = strokeOf([[0, 0, 0], [50, 0, 0], [100, 0, 0], [150, 0, 0]]);
+  const e = endpointsOf(recto);
+  ok("un trazo da dos extremos", e.length === 2, `${e.length}`);
+  ok(
+    "el primer extremo es el primer punto",
+    e[0].point.x === 0 && e[0].point.y === 0,
+    `(${f(e[0].point.x, 1)}, ${f(e[0].point.y, 1)})`,
+  );
+  ok(
+    "y el segundo, el ultimo",
+    e[1].point.x === 150,
+    f(e[1].point.x, 1),
+  );
+  // En el final la tangente mira hacia +X (hacia donde seguia el trazo); en el
+  // principio, hacia -X.
+  ok("la tangente del final mira hacia fuera", e[1].tangent.x > 0.99, f(e[1].tangent.x, 3));
+  ok("y la del principio, al reves", e[0].tangent.x < -0.99, f(e[0].tangent.x, 3));
+
+  const corto = strokeOf([[0, 0, 0], [1e-4, 0, 0]]);
+  const ec = endpointsOf(corto);
+  ok("un trazo sin longitud util no da direccion", Math.hypot(ec[0].tangent.x, ec[0].tangent.y) < 1e-6);
+  ok("un trazo de un punto no da extremos", endpointsOf(strokeOf([[0, 0, 0]])).length === 0);
+}
+
+/** Elegir a que extremo encadenar: el ultimo trazo o el extremo mas cercano. */
+{
+  const a = strokeOf([[0, 0, 0], [100, 0, 0]]);
+  // `b` se dibujo despues, y su extremo esta un poco mas lejos que el de `a`.
+  const b = strokeOf([[120, 0, 0], [220, 0, 0]]);
+  const trazos = [a, b];
+
+  // El puntero esta a 5 del final de `a` y a 15 del principio de `b`: las dos
+  // opciones caen dentro del radio, asi que la prueba distingue de verdad.
+  const dentro = v3(105, 0, 0);
+  const porCercania = pickCandidate(trazos, dentro, { pick: "nearest", radius: 40 });
+  ok(
+    "por cercania gana el extremo mas proximo",
+    porCercania?.point.x === 100,
+    f(porCercania?.point.x ?? -1, 1),
+  );
+
+  const porUltimo = pickCandidate(trazos, dentro, { pick: "last", radius: 40 });
+  ok(
+    "por 'el ultimo' gana el del trazo dibujado despues, aunque este mas lejos",
+    porUltimo?.point.x === 120,
+    f(porUltimo?.point.x ?? -1, 1),
+  );
+
+  ok(
+    "fuera del radio no hay candidato",
+    pickCandidate(trazos, v3(500, 0, 0), { pick: "nearest", radius: 40 }) === null,
+  );
+  // Si el trazo mas reciente no tiene ningun extremo a tiro, se mira el anterior:
+  // el radio ya dice que se quiere enganchar a algo, y negarse a enganchar por no
+  // ser el ultimo dejaria el ajuste sin hacer nada sin motivo.
+  ok(
+    "si el mas reciente no llega, se mira el anterior",
+    pickCandidate([a, strokeOf([[900, 0, 0], [1000, 0, 0]])], v3(105, 0, 0), {
+      pick: "last",
+      radius: 40,
+    })?.point.x === 100,
+  );
+  ok(
+    "y se puede excluir el trazo que se acaba de dibujar",
+    pickCandidate([a], v3(100, 0, 0), { pick: "nearest", radius: 40, onlyStrokeId: a.id }) === null,
+  );
+}
+
+/** La rejilla del suelo: al suelo y a sus cruces. */
+{
+  const g = snapToGrid(v3(63, 120, -88), 50);
+  ok("la rejilla lleva al cruce mas proximo", g.x === 50 && g.z === -100, `(${g.x}, ${g.z})`);
+  ok("y deja el punto en el suelo", g.y === 0, f(g.y, 3));
+  const sin = snapToGrid(v3(63, 120, -88), 0);
+  ok("sin paso no mueve nada", sin.x === 63 && sin.y === 120 && sin.z === -88);
+}
+
+/** Los ejes: los del mundo son fijos; los de la vista giran con la camara. */
+{
+  ok("sin restriccion no hay direccion", axisDirection("none") === null);
+  const x = axisDirection("world-x");
+  ok("el eje X del mundo es (1,0,0)", x?.x === 1 && x.y === 0 && x.z === 0);
+
+  // La vista de frente: su derecha es el +X del mundo.
+  const frente = { ...DEFAULT_CAMERA_3D, yaw: 0, pitch: 0 };
+  const vx = axisDirection("view-x", frente);
+  ok("con la camara de frente, la horizontal de la vista es el eje X", vx !== null && Math.abs(vx.x - 1) < 1e-6 && Math.abs(vx.z) < 1e-6);
+
+  // Girada 90 grados, la horizontal de la vista pasa a ser el -Z del mundo.
+  const girada = { ...DEFAULT_CAMERA_3D, yaw: Math.PI / 2, pitch: 0 };
+  const vx2 = axisDirection("view-x", girada);
+  ok(
+    "y al orbitar 90 grados deja de coincidir con el mundo",
+    vx2 !== null && Math.abs(vx2.z + 1) < 1e-6,
+    `(${f(vx2?.x ?? 0, 3)}, ${f(vx2?.z ?? 0, 3)})`,
+  );
+  const vy = axisDirection("view-y", girada);
+  ok("la vertical de la vista sigue siendo el arriba del mundo con cabeceo cero", vy !== null && Math.abs(vy.y - 1) < 1e-6);
+}
+
+/** Restringir a un eje: proyeccion, no redondeo. */
+{
+  const origen = v3(10, 20, 30);
+  const dir = axisDirection("world-x");
+  const p = constrainToAxis(origen, v3(110, 90, 70), dir);
+  ok("el punto se queda en la recta del eje", p.y === 20 && p.z === 30, `(${f(p.y, 2)}, ${f(p.z, 2)})`);
+  ok("y conserva el avance que traia", Math.abs(p.x - 110) < 1e-6, f(p.x, 3));
+
+  // Proyectar dos veces no cambia nada: es una proyeccion, no un paso.
+  const otra = constrainToAxis(origen, p, dir);
+  ok("aplicarlo dos veces da lo mismo", Math.abs(otra.x - p.x) < 1e-9 && otra.y === p.y);
+
+  const libre = constrainToAxis(origen, v3(110, 90, 70), null);
+  ok("sin direccion no toca el punto", libre.y === 90 && libre.z === 70);
+}
+
+/**
+ * Continuidad de tangente: el trazo nace alineado con el anterior y se suelta
+ * poco a poco. Lo que hay que medir es que el peso cae, no que la direccion sea
+ * exactamente la tangente: mezclar direcciones nunca da la tangente exacta.
+ */
+{
+  const ancla = v3(0, 0, 0);
+  const tangente = v3(1, 0, 0);
+  // El gesto tira hacia abajo; la tangente dice hacia la derecha.
+  const crudo = v3(0, 10, 0);
+
+  const alPrincipio = blendTangent(ancla, crudo, tangente, 0, 100);
+  ok(
+    "al arrancar manda la tangente del trazo anterior",
+    alPrincipio.x > 9.9 && Math.abs(alPrincipio.y) < 0.01,
+    `(${f(alPrincipio.x, 3)}, ${f(alPrincipio.y, 3)})`,
+  );
+
+  const aMitad = blendTangent(ancla, crudo, tangente, 50, 100);
+  ok(
+    "a mitad de recorrido esta entre las dos",
+    aMitad.x > 0.1 && aMitad.y > 0.1,
+    `(${f(aMitad.x, 3)}, ${f(aMitad.y, 3)})`,
+  );
+
+  const alFinal = blendTangent(ancla, crudo, tangente, 100, 100);
+  ok("y al final manda el gesto", Math.abs(alFinal.x) < 1e-6 && alFinal.y > 9.99, f(alFinal.y, 3));
+
+  // La distancia al ancla no cambia: se gira la direccion, no se estira el trazo.
+  for (const t of [0, 25, 50, 75, 100]) {
+    const r = blendTangent(ancla, crudo, tangente, t, 100);
+    const d = Math.hypot(r.x, r.y, r.z);
+    if (Math.abs(d - 10) > 1e-6) {
+      ok("girar la direccion no cambia la distancia al ancla", false, `${t} -> ${f(d, 4)}`);
+      break;
+    }
+    if (t === 100) ok("girar la direccion no cambia la distancia al ancla", true);
+  }
+
+  ok("sin tangente no se toca el punto", blendTangent(ancla, crudo, null, 0, 100).y === 10);
+  ok("con mezcla nula tampoco", blendTangent(ancla, crudo, tangente, 0, 0).y === 10);
+}
+
+/** Resolver el arranque: de donde sale y con que direccion. */
+{
+  const trazo = strokeOf([[0, 0, 0], [100, 0, 0]]);
+  const trazos = [trazo];
+
+  const libre = resolveStart(v3(7, 3, 9), { ...DEFAULT_SNAP }, trazos);
+  ok("en libre el punto es el del puntero", libre.kind === "free" && libre.point.x === 7 && libre.tangent === null);
+
+  const enganchado = resolveStart(v3(105, 4, 0), { ...DEFAULT_SNAP, source: "strokes", radius: 40 }, trazos);
+  ok("engancha al extremo del trazo", enganchado.kind === "stroke-end" && enganchado.point.x === 100 && enganchado.point.y === 0);
+  ok("y devuelve su tangente", enganchado.tangent !== null && enganchado.tangent.x > 0.99);
+
+  const sinTangente = resolveStart(
+    v3(105, 4, 0),
+    { ...DEFAULT_SNAP, source: "strokes", radius: 40, tangent: false },
+    trazos,
+  );
+  ok("con la continuidad apagada no hay tangente", sinTangente.kind === "stroke-end" && sinTangente.tangent === null);
+
+  const conRejilla = resolveStart(v3(63, 120, -88), { ...DEFAULT_SNAP, source: "grid", gridStep: 50 }, []);
+  ok("con rejilla cae en el cruce", conRejilla.kind === "grid" && conRejilla.point.x === 50 && conRejilla.point.y === 0);
+
+  const anclado = resolveStart(
+    v3(500, 500, 500),
+    { ...DEFAULT_SNAP, source: "anchor", anchor: v3(1, 2, 3) },
+    [],
+  );
+  ok("con anclaje sale del punto marcado", anclado.kind === "anchor" && anclado.point.x === 1 && anclado.point.z === 3);
+
+  const sinAnclaje = resolveStart(v3(5, 5, 5), { ...DEFAULT_SNAP, source: "anchor", anchor: null }, []);
+  ok("sin anclaje marcado vuelve a ser libre", sinAnclaje.kind === "free" && sinAnclaje.point.x === 5);
+
+  // Lo que NO debe hacer: mover el arranque por culpa del eje. Si lo moviera,
+  // encadenar y forzar un eje a la vez perderia el encadenaje.
+  const conEje = resolveStart(
+    v3(105, 4, 0),
+    { ...DEFAULT_SNAP, source: "strokes", radius: 40, axis: "world-y" },
+    trazos,
+  );
+  ok(
+    "el eje no toca el punto de arranque",
+    conEje.point.x === 100 && conEje.point.y === 0,
+    `(${f(conEje.point.x, 1)}, ${f(conEje.point.y, 1)})`,
+  );
+}
+
+// ----------------------------------------------------------------- luces --
+
+/** Empaquetado de las luces a uniformes: lo que el shader va a recorrer. */
+{
+  const DEFECTO = packLights(DEFAULT_LIGHTS);
+  ok("la escena de arranque tiene una luz direccional", DEFECTO.count === 1, `${DEFECTO.count}`);
+  ok(
+    "y su direccion es la de estudio, normalizada",
+    Math.abs(Math.hypot(DEFECTO.positions[0], DEFECTO.positions[1], DEFECTO.positions[2]) - 1) < 1e-6,
+    `${f(Math.hypot(DEFECTO.positions[0], DEFECTO.positions[1], DEFECTO.positions[2]), 4)}`,
+  );
+  ok("marcada como direccional, no como punto", DEFECTO.positions[3] === 0);
+  ok(
+    "y el ambiente queda por encima del suelo para que nada sea negro del todo",
+    DEFECTO.ambient[0] > 0 && DEFECTO.ambient[1] > 0 && DEFECTO.ambient[2] > 0,
+    `${f(DEFECTO.ambient[0], 3)}`,
+  );
+
+  // Los huecos libres van a cero: el shader recorre SIEMPRE las cuatro, asi que
+  // una luz que no se usa no puede aportar nada.
+  const sobrantes = [];
+  for (let i = DEFECTO.count; i < 4; i++) {
+    sobrantes.push(DEFECTO.colors[i * 3] + DEFECTO.colors[i * 3 + 1] + DEFECTO.colors[i * 3 + 2]);
+  }
+  ok("los huecos libres no aportan luz", sobrantes.every((v) => v === 0), sobrantes.join(","));
+
+  // Apagada = fuera, y el ambiente no se cuenta como hueco del bucle.
+  const apagada = packLights([{ ...DEFAULT_LIGHTS[0], enabled: false }]);
+  ok("una luz apagada no entra", apagada.count === 0 && apagada.positions[0] === 0);
+
+  const ambiente = packLights([{ ...DEFAULT_LIGHTS[1], intensity: 1, color: "#ffffff" }]);
+  ok("una ambiental no ocupa hueco del bucle", ambiente.count === 0);
+  ok(
+    "y se suma al ambiente base",
+    ambiente.ambient[0] > 1,
+    f(ambiente.ambient[0], 3),
+  );
+
+  // Mas luces que huecos: las de mas se ignoran sin romper nada.
+  const muchas = packLights([
+    makeLight("directional", "a"),
+    makeLight("directional", "b"),
+    makeLight("point", "c"),
+    makeLight("directional", "d"),
+    makeLight("directional", "e"),
+    makeLight("point", "f"),
+  ]);
+  ok("no entran mas luces que huecos hay", muchas.count === MAX_LIGHTS, `${muchas.count}`);
+  // Las cuatro primeras entran en orden: direccional, direccional, puntual, direccional.
+  ok("la tercera entra como puntual", muchas.positions[2 * 4 + 3] === 1);
+  ok("y la cuarta como direccional", muchas.positions[3 * 4 + 3] === 0);
+  // La quinta y la sexta no caben, y no dejan rastro.
+  ok("y la quinta ya no entra", muchas.colors[4 * 3] === undefined);
+
+  // La intensidad escala el color; a cero no ilumina aunque este encendida.
+  const floja = packLights([makeLight("directional", "x", { intensity: 0 })]);
+  ok("intensidad cero no ilumina", floja.colors[0] === 0 && floja.colors[1] === 0 && floja.colors[2] === 0);
+
+  // Una direccional sin direccion no ilumina por ningun lado: se le da la de
+  // estudio en vez de dejarla en cero, que daria un resultado plano y raro.
+  const sinDireccion = packLights([makeLight("directional", "x", { x: 0, y: 0, z: 0 })]);
+  ok(
+    "una direccional sin direccion cae en la de estudio",
+    Math.abs(Math.hypot(sinDireccion.positions[0], sinDireccion.positions[1], sinDireccion.positions[2]) - 1) < 1e-6 &&
+      sinDireccion.positions[1] > 0,
+  );
+
+  ok("un color blanco es blanco", parseHex("#ffffff").every((v) => Math.abs(v - 1) < 1e-6));
+  ok("y el negro es negro", parseHex("#000000").every((v) => v === 0));
+  ok("la forma corta vale igual", Math.abs(parseHex("#fff")[0] - 1) < 1e-6);
+  ok("y un color invalido no revienta", parseHex("no-es-un-color").every((v) => v === 1));
+}
+
+/** Direccion de la luz: la que necesitaran las sombras proyectadas. */
+{
+  const sol = makeLight("directional", "sol", { x: 0, y: 1, z: 0 });
+  // La luz esta arriba, asi que viaja hacia abajo.
+  const viaja = lightDirection(sol);
+  ok("una luz de arriba viaja hacia abajo", viaja.y < -0.99, f(viaja.y, 3));
+
+  const bombilla = makeLight("point", "bombilla", { x: 0, y: 10, z: 0 });
+  // La luz esta arriba y el punto en el origen, asi que la luz VIAJA hacia abajo.
+  const desdeArriba = lightDirection(bombilla, v3(0, 0, 0));
+  ok("una puntual alumbra desde donde esta", desdeArriba.y < -0.99, f(desdeArriba.y, 3));
+  // El mismo foco, mirado desde un punto a su lado, alumbra en otra direccion: es
+  // la diferencia con la direccional, y lo que hace que sus sombras sean distintas.
+  const desdeElLado = lightDirection(bombilla, v3(10, 10, 0));
+  ok("y cambia segun donde se mire", desdeElLado.x > 0.99, f(desdeElLado.x, 3));
+
+  ok(
+    "la luz de las sombras es la primera que no es ambiental",
+    shadowLight([makeLight("ambient", "a"), makeLight("directional", "d")])?.id === "d",
+  );
+  ok("sin luces de direccion no hay luz de sombras", shadowLight([makeLight("ambient", "a")]) === null);
+  ok("y una apagada no vale", shadowLight([{ ...makeLight("directional", "d"), enabled: false }]) === null);
+}
+
+/** Las luces viven en el documento: se editan, se deshacen y viajan. */
+{
+  const doc = new SceneDocument();
+  ok("el documento nace con la luz de estudio", doc.lights3d.length === DEFAULT_LIGHTS.length);
+
+  const antes = doc.snapshot();
+  const sol = doc.lights3d.find((l) => l.kind === "directional");
+  ok("y tiene una direccional", !!sol);
+  doc.updateLight3D(sol!.id, { intensity: 0.25 });
+  ok("editar una luz cambia su valor", doc.lights3d.find((l) => l.id === sol!.id)?.intensity === 0.25);
+  ok("y sube la revision del espacio", doc.spaceRevision > 0);
+
+  doc.restore(antes);
+  ok(
+    "deshacer devuelve la luz como estaba",
+    doc.lights3d.find((l) => l.id === sol!.id)?.intensity === sol!.intensity,
+    `${doc.lights3d.find((l) => l.id === sol!.id)?.intensity}`,
+  );
+
+  const nueva = makeLight("point", "nueva");
+  doc.addLight3D(nueva);
+  ok("se pueden añadir luces", doc.lights3d.length === DEFAULT_LIGHTS.length + 1);
+  ok("y quitarlas", doc.removeLight3D(nueva.id) && doc.lights3d.length === DEFAULT_LIGHTS.length);
+  ok("quitar una que no existe no hace nada", doc.removeLight3D("no-existe") === false);
+
+  doc.resetLights3D();
+  ok("reiniciar deja la luz de estudio", doc.lights3d.length === DEFAULT_LIGHTS.length);
 }
 
 console.log(out.join("\n"));

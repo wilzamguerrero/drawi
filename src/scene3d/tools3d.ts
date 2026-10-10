@@ -12,6 +12,7 @@
  */
 
 import type { BrushMode } from "../stroke/types";
+import { DEFAULT_SNAP, type SnapSettings } from "./snap";
 
 /** Herramientas del visor. */
 export type Tool3D = "brush" | "smooth";
@@ -45,6 +46,22 @@ export interface Scene3DSettings {
   refineOnRelease: boolean;
   /** Fuerza de esa mejora al soltar, 0..1. */
   refineStrength: number;
+  /**
+   * De donde toma el trazo su punto de arranque, a que eje va restringido y con
+   * que direccion sale. Ver `snap.ts`.
+   */
+  snap: SnapSettings;
+  /**
+   * Rejilla del suelo.
+   *
+   * Su paso es el de `snap.gridStep`, no uno propio: lo que se ve tiene que ser
+   * exactamente aquello a lo que se engancha el trazo, o la rejilla miente.
+   */
+  grid: {
+    enabled: boolean;
+    /** Opacidad de las lineas, 0..1. */
+    opacity: number;
+  };
 }
 
 export const DEFAULT_SCENE3D: Scene3DSettings = {
@@ -53,6 +70,8 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
   strength: 0.35,
   refineOnRelease: false,
   refineStrength: 0.5,
+  snap: { ...DEFAULT_SNAP },
+  grid: { enabled: false, opacity: 0.55 },
 };
 
 /**

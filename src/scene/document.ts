@@ -9,6 +9,7 @@ import { DEFAULT_SYMMETRY, normalizeSymmetry, symmetryTransforms, type SymmetryS
 import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
 import { DEFAULT_CAMERA_3D, type Camera3DState } from "../scene3d/camera3d";
 import type { Fill3D } from "../scene3d/fill";
+import { DEFAULT_LIGHTS, type Light3D } from "../scene3d/lights";
 import type { Stroke3D } from "../scene3d/types";
 import { EMPTY_RECT, unionRect, type InkItem, type Rect } from "./types";
 import { cloneLayer, makeMask, type LayerColor, type SceneLayer } from "./layer";
@@ -50,6 +51,8 @@ export interface SceneSnapshot {
   strokes3d: Stroke3D[];
   /** Manchas del espacio, compartidas por referencia por el mismo motivo. */
   fills3d: Fill3D[];
+  /** Luces de la escena. Se copian: son objetos planos y se editan en sitio. */
+  lights3d: Light3D[];
   /** Camara del visor espacial en el momento de la instantanea. */
   camera3d: Camera3DState;
   layers: SceneLayer[];
@@ -149,6 +152,13 @@ export class SceneDocument {
    * area frente a una cinta- y no comparten ni geometria ni sombreado.
    */
   fills3d: Fill3D[] = [];
+  /**
+   * Luces de la escena, en el documento y no en el visor.
+   *
+   * Son parte de la obra -cambian como se ve todo lo demas- y por eso viajan con
+   * el proyecto y entran en la instantanea del historial, igual que las capas.
+   */
+  lights3d: Light3D[] = DEFAULT_LIGHTS.map((l) => ({ ...l }));
   /** Camara del visor espacial: viaja con el documento para que reabrirlo
    *  devuelva al mismo punto de vista. */
   camera3d: Camera3DState = { ...DEFAULT_CAMERA_3D };
@@ -413,6 +423,35 @@ export class SceneDocument {
     const gone = before - this.fills3d.length;
     if (gone > 0) this.spaceRevision++;
     return gone;
+  }
+
+  // --------------------------------------------------------- luces de escena
+
+  addLight3D(light: Light3D): void {
+    this.lights3d.push(light);
+    this.spaceRevision++;
+  }
+
+  updateLight3D(id: string, patch: Partial<Light3D>): boolean {
+    const i = this.lights3d.findIndex((l) => l.id === id);
+    if (i < 0) return false;
+    this.lights3d[i] = { ...this.lights3d[i], ...patch, id };
+    this.spaceRevision++;
+    return true;
+  }
+
+  removeLight3D(id: string): boolean {
+    const i = this.lights3d.findIndex((l) => l.id === id);
+    if (i < 0) return false;
+    this.lights3d.splice(i, 1);
+    this.spaceRevision++;
+    return true;
+  }
+
+  /** Deja la escena con la luz de estudio de siempre. */
+  resetLights3D(): void {
+    this.lights3d = DEFAULT_LIGHTS.map((l) => ({ ...l }));
+    this.spaceRevision++;
   }
 
   /** Envuelve items planos (proyectos v1) en una capa de tinta por defecto. */
@@ -1026,6 +1065,7 @@ export class SceneDocument {
       // son inmutables, asi que una instantanea cuesta un array de punteros.
       strokes3d: this.strokes3d.slice(),
       fills3d: this.fills3d.slice(),
+      lights3d: this.lights3d.map((l) => ({ ...l })),
       camera3d: { ...this.camera3d },
       layers: this.layers.map(cloneLayer),
       activeLayerId: this.activeLayerId,
@@ -1041,6 +1081,7 @@ export class SceneDocument {
     this.items = snap.items.slice();
     this.strokes3d = snap.strokes3d.slice();
     this.fills3d = snap.fills3d.slice();
+    this.lights3d = snap.lights3d.map((l) => ({ ...l }));
     this.camera3d = { ...snap.camera3d };
     this.layers = snap.layers.map(cloneLayer);
     this.activeLayerId = snap.activeLayerId;

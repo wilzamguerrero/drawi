@@ -23,8 +23,10 @@
 import * as THREE from "three";
 import { INSTANCE_FLOATS, packSegments, segmentsOf, type StrokeBatch } from "../scene3d/batch";
 import type { FillBatch } from "../scene3d/fill";
+import { packLights, type Light3D } from "../scene3d/lights";
 import { eyeOf, forwardOf, viewProjection, type Camera3DState } from "../scene3d/camera3d";
 import { boundsRadius, type Stroke3D } from "../scene3d/types";
+import type { V3 } from "../scene3d/vec3";
 import {
   bindInstances,
   createRibbonGeometry,
@@ -40,6 +42,13 @@ import {
   syncFillGeometry,
   type FillGeometry,
 } from "./fill";
+import {
+  createFloorGrid,
+  disposeFloorGrid,
+  updateFloorGrid,
+  type FloorGrid,
+  type GridOptions,
+} from "./grid";
 
 interface BatchEntry {
   mesh: THREE.Mesh;
@@ -127,6 +136,12 @@ export class Scene3DBackend {
   private readonly dummy = new THREE.PerspectiveCamera();
   private readonly entries = new Map<string, BatchEntry>();
   private readonly fillEntries = new Map<string, FillEntry>();
+  /** Marca del punto de anclaje, si lo hay. */
+  private anchorMark: THREE.LineSegments | null = null;
+  private anchorAt: V3 | null = null;
+  private grid: FloorGrid | null = null;
+  /** Firma de las luces ya repartidas: evita reempaquetarlas en cada fotograma. */
+  private lightSignature = "";
   private readonly mat = new THREE.Matrix4();
   private live: LiveEntry | null = null;
   private width = 1;
@@ -316,9 +331,11 @@ export class Scene3DBackend {
   }
 
   /** Dibuja la escena. `cam` es el estado puro de `camera3d.ts`. */
-  render(cam: Camera3DState): void {
+  render(cam: Camera3DState, lights: readonly Light3D[] = []): void {
     const renderer = this.renderer;
     if (!renderer) return;
+
+    this.applyLights(lights);
 
     const aspect = this.width / this.height;
     // Cerca y lejos derivados de la distancia: el mundo de drawi se mide en las
@@ -351,11 +368,16 @@ export class Scene3DBackend {
     const materiales = [...this.entries.values()].map((e) => e.material);
     for (const entry of this.fillEntries.values()) materiales.push(entry.material);
     if (this.live) materiales.push(this.live.material);
+    if (this.grid) materiales.push(this.grid.material);
 
+    // Cada material declara SOLO los uniformes que usa, asi que aqui se comprueba
+    // cual esta antes de tocarlo. La rejilla, por ejemplo, no esta iluminada y no
+    // necesita la posicion de la camara; pedirsela a ciegas lanzaba una excepcion
+    // en cada fotograma y el visor se quedaba sin dibujar nada.
     for (const material of materiales) {
       const u = material.uniforms;
-      (u.uViewProjection.value as THREE.Matrix4).copy(this.mat);
-      (u.uCameraPos.value as THREE.Vector3).set(eye.x, eye.y, eye.z);
+      if (u.uViewProjection) (u.uViewProjection.value as THREE.Matrix4).copy(this.mat);
+      if (u.uCameraPos) (u.uCameraPos.value as THREE.Vector3).set(eye.x, eye.y, eye.z);
     }
 
     renderer.render(this.scene, this.dummy);
@@ -419,6 +441,130 @@ export class Scene3DBackend {
       if (live.has(key)) continue;
       this.destroyFillEntry(entry);
       this.fillEntries.delete(key);
+    }
+  }
+
+  /**
+   * Marca del punto de anclaje, o `null` para quitarla.
+   *
+   * Sin una marca visible, "arrancar desde el anclaje" es una opcion que no se
+   * puede comprobar: el punto esta en el espacio y no se ve. Se dibuja una cruz de
+   * tres ejes, que ademas dice hacia donde apunta el mundo en ese punto.
+   */
+  drawAnchor(p: V3 | null, size: number): void {
+    if (!this.renderer) return;
+    if (!p) {
+      if (this.anchorMark) this.anchorMark.visible = false;
+      this.anchorAt = null;
+      return;
+    }
+    // Solo se rehace si de verdad se movio: esto se llama en cada fotograma.
+    if (this.anchorAt && this.anchorAt.x === p.x && this.anchorAt.y === p.y && this.anchorAt.z === p.z) {
+      if (this.anchorMark) this.anchorMark.visible = true;
+      return;
+    }
+    this.anchorAt = { x: p.x, y: p.y, z: p.z };
+
+    if (!this.anchorMark) {
+      const geo = new THREE.BufferGeometry();
+      // Tres ejes, cada uno de los dos mitades para que la cruz quede centrada.
+      geo.setAttribute(
+        "position",
+        new THREE.BufferAttribute(new Float32Array(18), 3),
+      );
+      const mat = new THREE.LineBasicMaterial({ color: 0xff8a3d, transparent: true, opacity: 0.9 });
+      this.anchorMark = new THREE.LineSegments(geo, mat);
+      this.anchorMark.frustumCulled = false;
+      this.anchorMark.matrixAutoUpdate = false;
+      // Por encima de todo menos del trazo en curso: la marca es una ayuda, no
+      // parte del dibujo, pero tiene que verse aunque quede detras de una cinta.
+      this.anchorMark.renderOrder = LIVE_RENDER_ORDER - 1;
+      this.scene.add(this.anchorMark);
+    }
+
+    const attr = this.anchorMark.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const a = attr.array as Float32Array;
+    const ejes: [number, number, number][] = [
+      [size, 0, 0],
+      [0, size, 0],
+      [0, 0, size],
+    ];
+    for (let i = 0; i < 3; i++) {
+      const [dx, dy, dz] = ejes[i];
+      const o = i * 6;
+      a[o] = p.x - dx;
+      a[o + 1] = p.y - dy;
+      a[o + 2] = p.z - dz;
+      a[o + 3] = p.x + dx;
+      a[o + 4] = p.y + dy;
+      a[o + 5] = p.z + dz;
+    }
+    attr.needsUpdate = true;
+    this.anchorMark.visible = true;
+  }
+
+  /**
+   * Rejilla del suelo: la enciende, la coloca bajo la camara o la aparta.
+   *
+   * Se llama en cada fotograma, asi que lo barato importa: mientras esta apagada
+   * no se crea siquiera la malla, y encendida solo se le cambian uniformes.
+   */
+  syncGrid(opts: GridOptions | null): void {
+    if (!this.renderer) return;
+    if (!opts) {
+      if (this.grid) this.grid.mesh.visible = false;
+      return;
+    }
+    if (!this.grid) {
+      this.grid = createFloorGrid();
+      this.scene.add(this.grid.mesh);
+    }
+    updateFloorGrid(this.grid, opts);
+    this.grid.mesh.visible = opts.opacity > 0.002;
+  }
+
+  /**
+   * Reparte las luces del documento entre todos los materiales del visor.
+   *
+   * Se hace antes de dibujar y no al crear cada material, porque los materiales
+   * nacen cuando aparece su primer lote: una luz cambiada con la escena ya
+   * montada no llegaria a los lotes que ya existian.
+   *
+   * La firma evita reempaquetar en cada fotograma: las luces cambian cuando
+   * alguien las toca, no sesenta veces por segundo.
+   */
+  private applyLights(lights: readonly Light3D[]): void {
+    let firma = "";
+    for (const l of lights) {
+      firma += `${l.id}${l.enabled ? 1 : 0}${l.color}${l.intensity}${l.x},${l.y},${l.z};`;
+    }
+    if (firma === this.lightSignature) return;
+    this.lightSignature = firma;
+
+    const packed = packLights(lights);
+    const materiales: THREE.ShaderMaterial[] = [...this.entries.values()].map((e) => e.material);
+    for (const entry of this.fillEntries.values()) materiales.push(entry.material);
+    if (this.live) materiales.push(this.live.material);
+
+    for (const material of materiales) {
+      const u = material.uniforms;
+      const vec = u.uLightVec?.value as THREE.Vector4[] | undefined;
+      const col = u.uLightColor?.value as THREE.Vector3[] | undefined;
+      if (!vec || !col) continue;
+      for (let i = 0; i < vec.length; i++) {
+        vec[i].set(
+          packed.positions[i * 4],
+          packed.positions[i * 4 + 1],
+          packed.positions[i * 4 + 2],
+          packed.positions[i * 4 + 3],
+        );
+        col[i].set(packed.colors[i * 3], packed.colors[i * 3 + 1], packed.colors[i * 3 + 2]);
+      }
+      (u.uAmbient.value as THREE.Vector3).set(
+        packed.ambient[0],
+        packed.ambient[1],
+        packed.ambient[2],
+      );
     }
   }
 
@@ -501,6 +647,17 @@ export class Scene3DBackend {
     this.destroyLive();
     for (const entry of this.fillEntries.values()) this.destroyFillEntry(entry);
     this.fillEntries.clear();
+    if (this.anchorMark) {
+      this.scene.remove(this.anchorMark);
+      this.anchorMark.geometry.dispose();
+      (this.anchorMark.material as THREE.Material).dispose();
+      this.anchorMark = null;
+    }
+    if (this.grid) {
+      this.scene.remove(this.grid.mesh);
+      disposeFloorGrid(this.grid);
+      this.grid = null;
+    }
     this.renderer?.dispose();
     this.renderer = null;
     this.available = false;

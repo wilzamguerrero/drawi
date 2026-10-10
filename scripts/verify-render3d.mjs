@@ -293,7 +293,12 @@ try {
     const ed = window.__drawiEditor;
     const before = { ...ed.brush };
     ed.setBrush({
-      size: 24,
+      // Pincel GRUESO a proposito. El filtro del pincel redondea el codo unos
+      // pocos pixeles -una distancia que no depende del grosor-, asi que cuanto
+      // mas ancho sea el trazo, mas margen queda entre el borde del disco que se
+      // muestrea y el recorte. Con un pincel fino ese margen era de menos de un
+      // pixel y la comprobacion pasaba o fallaba segun el fotograma.
+      size: 44,
       dynamics: "constant",
       smoothing: 0,
       streamline: 0,
@@ -363,13 +368,13 @@ try {
               }
               if (run > thick) thick = run;
             }
-            // El borde del disco esta a medio cubrir, y ademas el codo dibujado
-            // nunca cae exactamente sobre el vertice del raton: el filtro del
-            // pincel lo redondea una fraccion de pixel. Se muestrea al 70 % del
-            // radio, que sigue siendo una ventana enorme comparada con la muesca
-            // que se persigue -que sin prolongar los segmentos se come el lado
-            // exterior entero del codo- y deja ese margen fuera de la cuenta.
-            const rad = Math.max(2, thick * 0.35);
+            // Se muestrea al 60 % del radio: el borde del disco esta a medio
+            // cubrir, y el codo dibujado nunca cae exactamente sobre el vertice
+            // del raton porque el filtro del pincel lo redondea. Ese 40 % de
+            // margen deja fuera las dos cosas y sigue siendo una ventana enorme
+            // comparada con la muesca que se persigue, que sin prolongar los
+            // segmentos se come el lado exterior ENTERO del codo.
+            const rad = Math.max(2, thick * 0.3);
 
             let holes = 0;
             let worst = 0;
@@ -418,6 +423,52 @@ try {
   });
   await page.evaluate((b) => window.__drawiEditor.setBrush(b), brushBefore);
   await settle();
+
+  // --- 2d. La rejilla del suelo y la marca del anclaje -----------------------
+  //
+  // Esto es justo lo que no cubria la verificacion, y por eso se colo un fallo
+  // que se veia a simple vista: la rejilla es un material SIN iluminar, asi que no
+  // declara los mismos uniformes que los demas, y el bucle que reparte la camara
+  // le pedia uno que no tiene. Lanzaba una excepcion en CADA fotograma, y como el
+  // lienzo conserva el ultimo fotograma bueno, parecia que todo iba bien mientras
+  // el visor no dibujaba nada.
+  await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    ed.clearScene3D();
+    ed.setScene3D({ grid: { enabled: true, opacity: 0.9 } });
+    ed.setSpaceSnap({ source: "grid", gridStep: 50 });
+  });
+  await settle();
+  const conRejilla = await readPixels();
+  ok(
+    "la rejilla del suelo se dibuja",
+    conRejilla.opaque > 1500,
+    `${conRejilla.opaque} pixeles`,
+  );
+
+  await page.evaluate(() =>
+    window.__drawiEditor.setSpaceSnap({ source: "anchor", anchor: { x: 0, y: 0, z: 0 } }),
+  );
+  await settle();
+  const conAncla = await readPixels();
+  ok(
+    "y la marca del anclaje se ve",
+    conAncla.opaque > 0,
+    `${conAncla.opaque} pixeles`,
+  );
+
+  await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    ed.setSpaceSnap({ source: "off", anchor: null });
+    ed.setScene3D({ grid: { enabled: false, opacity: 0.55 } });
+  });
+  await settle();
+  const sinNada = await readPixels();
+  ok(
+    "y al apagarlas el lienzo queda limpio",
+    sinNada.opaque < 200,
+    `${sinNada.opaque} pixeles`,
+  );
 
   const drawArc = async (index) => {
     const radius = 40 + index * 26;
@@ -556,6 +607,16 @@ try {
   ok("orbitar NO deja un trazo", afterOrbit.strokes === erased.strokes,
      `${erased.strokes} -> ${afterOrbit.strokes}`);
 
+  // La rejilla se deja puesta para la captura: es la unica forma de mirar de un
+  // vistazo como esta quedando, y un PNG que solo enseña los trazos no dice nada
+  // de las funciones nuevas.
+  await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    ed.setScene3D({ grid: { enabled: false, opacity: 0.55 } });
+    ed.setScene3D({ grid: { enabled: true, opacity: 0.55 } });
+  });
+  await settle();
+
   // Captura del resultado, con el modo 3D todavia activo y el dibujo delante.
   // Fuera de dist/ a proposito: `npm run build` vacia esa carpeta y la borraria.
   const shot = process.env.SHOT || path.join(root, "verificacion-3d.png");
@@ -563,14 +624,50 @@ try {
   console.log("Captura guardada en " + shot);
 
   // --- 6. Volver al 2D --------------------------------------------------------
+  //
+  // Dos cosas distintas, y la distincion es el corazon del diseno: salir del
+  // espacio suelta el PUNTERO -que vuelve al lienzo-, pero no aparta la IMAGEN.
+  // Antes esta comprobacion afirmaba que el lienzo se ocultaba, y por eso ahora
+  // falla: el contrato es el contrario a proposito, porque el espacio es una capa
+  // con la que se convive y no un modo del que se sale.
   const back = await page.evaluate(() => {
     const ed = window.__drawiEditor;
     ed.setMode3D(false);
     const c = document.querySelector("canvas.layer-3d");
-    return { mode3d: ed.mode3d, display: getComputedStyle(c).display };
+    const cs = getComputedStyle(c);
+    return {
+      mode3d: ed.mode3d,
+      display: cs.display,
+      pointer: cs.pointerEvents,
+      strokes: ed.state.scene3d.strokes,
+    };
   });
-  ok("se vuelve al lienzo 2D", back.mode3d === false && back.display === "none",
-     JSON.stringify(back));
+  ok(
+    "al salir del espacio el puntero vuelve al lienzo",
+    back.mode3d === false && back.pointer === "none",
+    JSON.stringify(back),
+  );
+  ok(
+    "y el espacio sigue a la vista, porque tiene trazos",
+    back.strokes > 0 && back.display !== "none",
+    `trazos ${back.strokes}, display ${back.display}`,
+  );
+
+  // Y el caso contrario: sin nada que enseñar, el lienzo se aparta. Es lo que
+  // evita componer un lienzo WebGL a pantalla completa para no enseñar nada.
+  const vaciado = await page.evaluate(() => {
+    window.__drawiEditor.clearScene3D();
+    return window.__drawiEditor.state.scene3d.strokes;
+  });
+  await settle();
+  const oculto = await page.evaluate(() =>
+    getComputedStyle(document.querySelector("canvas.layer-3d")).display,
+  );
+  ok(
+    "sin nada en el espacio, su lienzo se aparta",
+    vaciado === 0 && oculto === "none",
+    `trazos ${vaciado}, display ${oculto}`,
+  );
 
   const errors = logs.filter((l) => l.startsWith("[error]") || l.startsWith("[pageerror]"));
   ok("no hubo errores en la consola del navegador", errors.length === 0,

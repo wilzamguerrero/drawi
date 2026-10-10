@@ -120,11 +120,16 @@ varying float vSide;
 
 uniform vec3 uColor;
 uniform vec3 uCameraPos;
-uniform vec3 uLightDir;
-uniform vec3 uLightColor;
-uniform vec3 uAmbient;
 uniform float uOpacity;
 uniform float uGloss;
+
+// Luces de la escena. Se recorren SIEMPRE las cuatro: las que no se usan llevan
+// color cero, asi que no hay ni una rama por fragmento y el bucle vale para
+// cualquier escena. En una cinta, que ocupa mucha pantalla, eso importa.
+#define NUM_LUCES 4
+uniform vec4 uLightVec[NUM_LUCES];
+uniform vec3 uLightColor[NUM_LUCES];
+uniform vec3 uAmbient;
 
 void main() {
   // Perfil circular: la cinta se sombrea como un tubo del ancho de la cinta.
@@ -136,18 +141,26 @@ void main() {
   // La cinta es de una sola cara: se sombrea la que mira a la camara.
   if (dot(n, view) < 0.0) n = -n;
 
-  vec3 L = normalize(-uLightDir);
-  // Sombreado envolvente: la luz rodea el trazo en vez de cortarlo en seco, que es
-  // lo que hace que una cinta se lea como materia y no como una cuchilla.
-  float wrap = clamp((dot(n, L) + 0.45) / 1.45, 0.0, 1.0);
-  vec3 diffuse = uLightColor * wrap;
+  vec3 difusa = uAmbient;
+  vec3 brillo = vec3(0.0);
 
-  vec3 H = normalize(L + view);
-  float spec = pow(max(dot(n, H), 0.0), 48.0) * uGloss;
+  for (int i = 0; i < NUM_LUCES; i++) {
+    vec4 lv = uLightVec[i];
+    // w = 0: la luz es una direccion -hacia donde esta-. w = 1: es un punto.
+    vec3 L = lv.w < 0.5 ? normalize(lv.xyz) : normalize(lv.xyz - vWorld);
+
+    // Sombreado envolvente: la luz rodea el trazo en vez de cortarlo en seco, que
+    // es lo que hace que una cinta se lea como materia y no como una cuchilla.
+    float wrap = clamp((dot(n, L) + 0.45) / 1.45, 0.0, 1.0);
+    difusa += uLightColor[i] * wrap;
+
+    vec3 H = normalize(L + view);
+    brillo += uLightColor[i] * pow(max(dot(n, H), 0.0), 48.0) * uGloss;
+  }
 
   // Contorno: oscurece el borde para despegar el trazo del fondo.
   float rim = pow(1.0 - c, 2.0);
-  vec3 col = uColor * (uAmbient + diffuse) + uLightColor * spec;
+  vec3 col = uColor * difusa + brillo;
   col *= mix(1.0, 0.82, rim);
 
   // Alfa premultiplicado: el lienzo del visor se compone luego sobre el de tinta
@@ -163,18 +176,26 @@ export interface RibbonMaterialOptions {
 }
 
 /**
- * Luz de la escena, compartida por todo lo que se sombrea en el visor.
+ * Cuantas luces entran en el sombreado.
  *
- * Vive aqui y no en cada material porque una escena con dos luces distintas se
- * nota en seguida: un trazo y una mancha del mismo color saldrian de tonos
- * diferentes. Cuando haya luces de verdad en el documento, este es el sitio del
- * que tiraran las dos.
+ * Tiene que coincidir con `MAX_LIGHTS` de `scene3d/lights.ts`: aqui se declara el
+ * array de uniformes y alli se empaqueta, y un desajuste se veria como luces que
+ * se ignoran sin decir nada.
  */
-export const SCENE_LIGHT = {
-  dir: new THREE.Vector3(0.4, -0.85, -0.35).normalize(),
-  color: new THREE.Color(1, 1, 1),
-  ambient: new THREE.Color(0.34, 0.35, 0.4),
-};
+export const RIBBON_MAX_LIGHTS = 4;
+
+/**
+ * Uniformes de luz de un material del visor.
+ *
+ * Los comparten la cinta, las manchas y la rejilla, para que una escena con dos
+ * luces distintas no se note: un trazo y una mancha del mismo color tienen que
+ * salir del mismo tono.
+ */
+export const lightUniforms = (): Record<string, THREE.IUniform> => ({
+  uLightVec: { value: Array.from({ length: RIBBON_MAX_LIGHTS }, () => new THREE.Vector4()) },
+  uLightColor: { value: Array.from({ length: RIBBON_MAX_LIGHTS }, () => new THREE.Vector3()) },
+  uAmbient: { value: new THREE.Vector3(0.34, 0.35, 0.4) },
+});
 
 export const createRibbonMaterial = (opts: RibbonMaterialOptions): THREE.ShaderMaterial =>
   new THREE.ShaderMaterial({
@@ -184,9 +205,7 @@ export const createRibbonMaterial = (opts: RibbonMaterialOptions): THREE.ShaderM
       uViewProjection: { value: new THREE.Matrix4() },
       uColor: { value: new THREE.Color(opts.color) },
       uCameraPos: { value: new THREE.Vector3() },
-      uLightDir: { value: SCENE_LIGHT.dir },
-      uLightColor: { value: SCENE_LIGHT.color },
-      uAmbient: { value: SCENE_LIGHT.ambient },
+      ...lightUniforms(),
       uOpacity: { value: opts.opacity },
       uGloss: { value: opts.gloss },
     },
