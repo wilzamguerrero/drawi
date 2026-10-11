@@ -459,6 +459,15 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
           ],
         },
         {
+          kind: "toggle",
+          id: "occlude-strokes",
+          label: "Trazos ocultos tras los objetos",
+          icon: "cube",
+          hint: "Encendido: un trazo pintado detrás de un objeto queda tapado por él, como en una escena real. Apagado: los trazos se dibujan siempre por encima, útil si usas el objeto solo como guía.",
+          get: (s) => s.scene3dSettings.occludeStrokes,
+          set: (v) => editor.setScene3D({ occludeStrokes: v }),
+        },
+        {
           kind: "number",
           id: "space-radius",
           label: "Radio del suavizado",

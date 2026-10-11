@@ -79,6 +79,16 @@ export interface Scene3DSettings {
     opacity: number;
   };
   /**
+   * Los trazos del espacio se ocultan tras los objetos solidos.
+   *
+   * Cuando esta encendido, un trazo pintado DETRAS de un cubo queda tapado por el,
+   * como en una escena real: el trazo lee la profundidad del objeto (pero no la
+   * escribe, para seguir componiendose por capas entre trazos). Apagado, los trazos
+   * se dibujan siempre por encima -el comportamiento de lienzo plano-, util cuando
+   * se usa el objeto solo como guia y no se quiere que recorte el dibujo.
+   */
+  occludeStrokes: boolean;
+  /**
    * Sombras de los objetos sobre el suelo.
    *
    * Son sombras REALES: el mapa de sombra de three proyecta la silueta del objeto
@@ -116,6 +126,7 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
   placement: { ...DEFAULT_PLACEMENT },
   grid: { enabled: false, opacity: 0.55 },
   shadow: { enabled: true, opacity: 0.4, softness: 0.4 },
+  occludeStrokes: true,
   gizmo: "move",
   primitive: "box",
 };

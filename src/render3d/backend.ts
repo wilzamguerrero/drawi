@@ -243,6 +243,8 @@ export class Scene3DBackend {
   private packedLights: ReturnType<typeof packLights> | null = null;
   private readonly mat = new THREE.Matrix4();
   private live: LiveEntry | null = null;
+  /** Si los trazos leen la profundidad (se ocultan tras objetos solidos). */
+  private occludeStrokes = true;
   private width = 1;
   private height = 1;
 
@@ -382,6 +384,11 @@ export class Scene3DBackend {
     if (!this.renderer) return;
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(this.width, this.height, false);
+  }
+
+  /** Enciende o apaga la oclusion de trazos por objetos solidos. */
+  setOccludeStrokes(on: boolean): void {
+    this.occludeStrokes = on;
   }
 
   /**
@@ -546,6 +553,18 @@ export class Scene3DBackend {
     const materiales: THREE.ShaderMaterial[] = [...this.entries.values()].map((e) => e.material);
     for (const entry of this.fillEntries.values()) materiales.push(entry.material);
     if (this.live) materiales.push(this.live.material);
+
+    // Oclusion de trazos: cuando esta encendida, los trazos y manchas comprueban la
+    // profundidad -asi un objeto solido delante los tapa- pero NO la escriben, para
+    // seguir componiendose por capas entre si. Apagada, se dibujan siempre encima,
+    // como en un lienzo plano. Es una bandera por material y se reescribe aqui, no
+    // al crear, porque el usuario la cambia en vivo.
+    for (const material of materiales) {
+      if (material.depthTest !== this.occludeStrokes) {
+        material.depthTest = this.occludeStrokes;
+        material.needsUpdate = true;
+      }
+    }
     if (this.grid) materiales.push(this.grid.material);
 
     for (const material of materiales) {

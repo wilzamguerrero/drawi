@@ -604,6 +604,9 @@ export class Viewport3D {
       shadow.opacity,
       shadow.softness,
     );
+    // Oclusion de trazos: que un objeto solido tape el trazo que tiene detras, o
+    // que los trazos vayan siempre por encima. Lo decide el usuario.
+    this.backend.setOccludeStrokes(settings.occludeStrokes);
     // El gizmo solo aparece con la herramienta de objetos y uno seleccionado. El
     // eje resaltado es el que haya bajo el cursor cuando no se esta arrastrando;
     // en pleno arrastre, el que se agarro.
