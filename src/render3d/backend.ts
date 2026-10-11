@@ -32,6 +32,7 @@ import {
   bindInstances,
   createRibbonGeometry,
   createRibbonMaterial,
+  createRibbonDepthMaterial,
   disposeRibbon,
   emptyRibbonGeometry,
   syncRibbonGeometry,
@@ -40,6 +41,7 @@ import {
 import {
   createFillGeometry,
   createFillMaterial,
+  createFillDepthMaterial,
   syncFillGeometry,
   type FillGeometry,
 } from "./fill";
@@ -245,6 +247,8 @@ export class Scene3DBackend {
   private live: LiveEntry | null = null;
   /** Si los trazos leen la profundidad (se ocultan tras objetos solidos). */
   private occludeStrokes = true;
+  /** Si los trazos proyectan su sombra sobre el suelo y los objetos. */
+  private strokeCastShadow = false;
   private width = 1;
   private height = 1;
 
@@ -392,6 +396,21 @@ export class Scene3DBackend {
   }
 
   /**
+   * Enciende o apaga que los trazos proyecten sombra con su forma.
+   *
+   * Se aplica a TODAS las mallas ya creadas, no solo a las nuevas: el usuario
+   * cambia esto en vivo y `sync` -donde nace cada malla- solo corre cuando cambia
+   * el dibujo, no cuando se toca un ajuste. Sin recorrer lo existente, el cambio no
+   * se veria hasta el proximo trazo.
+   */
+  setStrokeCastShadow(on: boolean): void {
+    if (this.strokeCastShadow === on) return;
+    this.strokeCastShadow = on;
+    for (const e of this.entries.values()) e.mesh.castShadow = on;
+    for (const e of this.fillEntries.values()) e.mesh.castShadow = on;
+  }
+
+  /**
    * Pone la escena de la GPU al dia con los lotes.
    *
    * Es incremental a proposito: los lotes que no cambiaron no se tocan. Rehacer
@@ -428,6 +447,10 @@ export class Scene3DBackend {
         // mas ajustadas que la envolvente del lote entero.
         mesh.frustumCulled = false;
         mesh.matrixAutoUpdate = false;
+        // Material de profundidad propio: la cinta se infla en el vertex shader, y
+        // sin repetir ese inflado al dibujar desde la luz la sombra saldria de
+        // hilos. `castShadow` se enciende/apaga por fotograma segun el ajuste.
+        mesh.customDepthMaterial = createRibbonDepthMaterial();
         this.scene.add(mesh);
         entry = { mesh, ribbon, material, batch };
         this.entries.set(key, entry);
@@ -440,10 +463,14 @@ export class Scene3DBackend {
         const mesh = new THREE.Mesh(ribbon.geometry, material);
         mesh.frustumCulled = false;
         mesh.matrixAutoUpdate = false;
+        mesh.customDepthMaterial = createRibbonDepthMaterial();
         this.scene.add(mesh);
         this.entries.set(key, { mesh, ribbon, material, batch });
         entry = this.entries.get(key) as BatchEntry;
       }
+
+      // Que el trazo proyecte sombra con su forma, o no, segun el ajuste.
+      entry.mesh.castShadow = this.strokeCastShadow;
 
       entry.material.uniforms.uOpacity.value = paint.opacity;
       // El orden de la pila del panel manda el orden de dibujado: three ordena
@@ -611,6 +638,7 @@ export class Scene3DBackend {
         const mesh = new THREE.Mesh(fill.geometry, material);
         mesh.frustumCulled = false;
         mesh.matrixAutoUpdate = false;
+        mesh.customDepthMaterial = createFillDepthMaterial();
         this.scene.add(mesh);
         entry = { mesh, fill, material, batch };
         this.fillEntries.set(key, entry);
@@ -621,12 +649,14 @@ export class Scene3DBackend {
         const mesh = new THREE.Mesh(fill.geometry, material);
         mesh.frustumCulled = false;
         mesh.matrixAutoUpdate = false;
+        mesh.customDepthMaterial = createFillDepthMaterial();
         this.scene.add(mesh);
         entry = { mesh, fill, material, batch };
         this.fillEntries.set(key, entry);
       }
 
       entry.material.uniforms.uOpacity.value = paint.opacity;
+      entry.mesh.castShadow = this.strokeCastShadow;
       entry.mesh.renderOrder = paint.order * FILL_ORDER_STEP;
     }
 

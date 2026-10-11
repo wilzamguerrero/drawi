@@ -228,6 +228,68 @@ export const createRibbonMaterial = (opts: RibbonMaterialOptions): THREE.ShaderM
     side: THREE.DoubleSide,
   });
 
+/**
+ * Material de PROFUNDIDAD de la cinta, para que proyecte sombra con su forma.
+ *
+ * El mapa de sombra de three dibuja la escena desde la luz con el material de
+ * profundidad de cada malla. El de la cinta no puede ser el estandar: la geometria
+ * de la cinta es degenerada -un quad por segmento que el VERTEX SHADER infla hasta
+ * el tubo-, asi que sin repetir ese inflado la sombra saldria de hilos, no del
+ * trazo. Aqui va la MISMA expansion que el material visible, pero con las matrices
+ * de three (la camara de la luz las pone en `modelViewMatrix`/`projectionMatrix`),
+ * y el fragmento empaqueta la profundidad como three espera leerla.
+ */
+const DEPTH_VERT = /* glsl */ `
+precision highp float;
+
+attribute vec3 aPosA;
+attribute vec3 aNrmA;
+attribute float aRadA;
+attribute vec3 aPosB;
+attribute vec3 aNrmB;
+attribute float aRadB;
+attribute float aExtA;
+attribute float aExtB;
+
+void main() {
+  float side = position.y;
+  vec3 pa = aPosA;
+  vec3 pb = aPosB;
+  vec3 seg = pb - pa;
+  float segLen = length(seg);
+  vec3 tangent = segLen > 1e-6 ? seg / segLen : vec3(1.0, 0.0, 0.0);
+  float t = mix(-aExtA / max(segLen, 1e-6), 1.0 + aExtB / max(segLen, 1e-6), position.x);
+  vec3 nrm = mix(aNrmA, aNrmB, clamp(t, 0.0, 1.0));
+  vec3 perp = nrm - tangent * dot(tangent, nrm);
+  float pl = length(perp);
+  vec3 facing = pl > 1e-5 ? perp / pl : vec3(0.0, 1.0, 0.0);
+  vec3 width = cross(tangent, facing);
+  float wl = length(width);
+  width = wl > 1e-5 ? width / wl : vec3(1.0, 0.0, 0.0);
+  float radius = mix(aRadA, aRadB, clamp(t, 0.0, 1.0));
+  vec3 center = mix(pa, pb, t);
+  vec3 world = center + width * (side * radius);
+  // La geometria vive en el mundo (matriz de modelo identidad), asi que
+  // modelViewMatrix es la vista de la camara de la luz. three las inyecta.
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(world, 1.0);
+}
+`;
+
+const DEPTH_FRAG = /* glsl */ `
+#include <packing>
+void main() {
+  // Profundidad empaquetada en RGBA, el formato que el mapa de sombra de three lee.
+  gl_FragColor = packDepthToRGBA(gl_FragCoord.z);
+}
+`;
+
+export const createRibbonDepthMaterial = (): THREE.ShaderMaterial =>
+  new THREE.ShaderMaterial({
+    vertexShader: DEPTH_VERT,
+    fragmentShader: DEPTH_FRAG,
+    side: THREE.DoubleSide,
+  });
+
 export interface RibbonGeometry {
   geometry: THREE.InstancedBufferGeometry;
   /** La revision del lote que ya esta en la GPU. */

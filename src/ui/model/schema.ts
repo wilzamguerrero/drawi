@@ -770,6 +770,16 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
               get: (s) => s.scene3dSettings.shadow.softness,
               set: (v) => editor.setScene3D({ shadow: { ...editor.state.scene3dSettings.shadow, softness: v } }),
             },
+            {
+              kind: "toggle",
+              id: "shadow-strokes",
+              label: "Los trazos proyectan sombra",
+              icon: "brush",
+              hint: "Cada trazo tira su sombra con su forma sobre el suelo, los objetos y los demás trazos. Es más costoso: enciéndelo cuando quieras que el dibujo del espacio ensombrezca la escena, no solo los objetos.",
+              visible: (s) => s.scene3dSettings.shadow.enabled,
+              get: (s) => s.scene3dSettings.strokeShadow,
+              set: (v) => editor.setScene3D({ strokeShadow: v }),
+            },
           ],
         },
         {

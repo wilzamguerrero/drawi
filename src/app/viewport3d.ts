@@ -607,6 +607,9 @@ export class Viewport3D {
     // Oclusion de trazos: que un objeto solido tape el trazo que tiene detras, o
     // que los trazos vayan siempre por encima. Lo decide el usuario.
     this.backend.setOccludeStrokes(settings.occludeStrokes);
+    // Que los trazos proyecten su sombra sobre el suelo, los objetos y otros
+    // trazos. Solo tiene efecto con la sombra encendida.
+    this.backend.setStrokeCastShadow(shadow.enabled && settings.strokeShadow);
     // El gizmo solo aparece con la herramienta de objetos y uno seleccionado. El
     // eje resaltado es el que haya bajo el cursor cuando no se esta arrastrando;
     // en pleno arrastre, el que se agarro.

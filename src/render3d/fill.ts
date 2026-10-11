@@ -90,6 +90,20 @@ export const createFillMaterial = (color: string, opacity: number): THREE.Shader
     side: THREE.DoubleSide,
   });
 
+/**
+ * Material de profundidad de la mancha, para que proyecte sombra con su forma.
+ *
+ * La mancha es geometria normal -triangulos de verdad en el mundo-, asi que no
+ * necesita un vertex shader propio como la cinta: le vale el material de
+ * profundidad estandar de three. Esta funcion existe para dar simetria con la
+ * cinta y por si en el futuro la mancha se infla; de momento devuelve el estandar.
+ */
+export const createFillDepthMaterial = (): THREE.MeshDepthMaterial =>
+  new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking,
+    side: THREE.DoubleSide,
+  });
+
 export interface FillGeometry {
   geometry: THREE.BufferGeometry;
   revision: number;

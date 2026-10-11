@@ -89,6 +89,16 @@ export interface Scene3DSettings {
    */
   occludeStrokes: boolean;
   /**
+   * Los trazos del espacio proyectan su sombra.
+   *
+   * Cuando esta encendido -y la sombra del suelo lo esta-, cada trazo tira su
+   * sombra con su forma sobre el suelo, los objetos y los demas trazos, con el
+   * mismo mapa de sombra que los objetos. Va aparte porque es caro -el trazo
+   * entra en el pase de sombra- y porque es una decision de dibujo: a veces se
+   * quiere la silueta limpia sin que los trazos ensucien el suelo.
+   */
+  strokeShadow: boolean;
+  /**
    * Sombras de los objetos sobre el suelo.
    *
    * Son sombras REALES: el mapa de sombra de three proyecta la silueta del objeto
@@ -127,6 +137,7 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
   grid: { enabled: false, opacity: 0.55 },
   shadow: { enabled: true, opacity: 0.4, softness: 0.4 },
   occludeStrokes: true,
+  strokeShadow: false,
   gizmo: "move",
   primitive: "box",
 };
