@@ -42,6 +42,8 @@ import { DEFAULT_SCENE3D, type Scene3DSettings } from "../scene3d/tools3d";
 import { makeLight, studioLight, type Light3D } from "../scene3d/lights";
 import { DEFAULT_CAMERA_3D } from "../scene3d/camera3d";
 import type { SnapSettings } from "../scene3d/snap";
+import type { PlacementSettings } from "../scene3d/placement";
+import type { PrimitiveKind, Object3D } from "../scene3d/objects";
 
 /** Operacion activa de la herramienta Materia. */
 export type MatterOp = "move" | "rotate" | "scale" | "pivot";
@@ -141,11 +143,15 @@ export interface EditorState {
     instances: number;
     strokes: number;
     fills: number;
+    /** Objetos (primitivas) en el espacio. */
+    objects: number;
     /** Profundidad del plano de dibujo, en unidades de mundo. 0 = centro de la vista. */
     plane: number;
   };
   /** Herramienta del visor espacial y sus ajustes de retoque. */
   scene3dSettings: Scene3DSettings;
+  /** Objeto del espacio seleccionado, o `null`. */
+  selectedObject: Object3D | null;
   /** Luces de la escena, para el panel. */
   lights: {
     enabled: boolean;
@@ -421,6 +427,9 @@ export class Editor {
       scene3dAvailable: this.scene3dAvailable,
       scene3d: this.scene3dStats(),
       scene3dSettings: this.scene3dSettings,
+      selectedObject: this.selectedObject3dId
+        ? this.doc.objectById(this.selectedObject3dId) ?? null
+        : null,
       lights: {
         enabled: this.doc.lights3d.some((l) => l.enabled),
         count: this.doc.lights3d.length,
@@ -461,6 +470,10 @@ export class Editor {
         settings: () => this.scene3dSettings,
         settingsRevision: () => this.scene3dSettingsRevision,
         setAnchor: (p) => this.setSpaceSnap({ anchor: p }),
+        selectedObject: () => this.selectedObject3dId,
+        selectObject: (id) => this.selectObject3D(id),
+        setGizmoMode: (m) => this.setScene3D({ gizmo: m }),
+        deleteObject: () => this.deleteSelectedObject(),
         status: (m) => this.status(m),
         changed: () => {
           this.events.emit("dirty", undefined);
@@ -546,6 +559,126 @@ export class Editor {
     this.emitState();
   }
 
+  /** Cambia la colocacion del trazo en profundidad. Objeto anidado, como `snap`. */
+  setSpacePlacement(patch: Partial<PlacementSettings>): void {
+    this.scene3dSettings = {
+      ...this.scene3dSettings,
+      placement: { ...this.scene3dSettings.placement, ...patch },
+    };
+    this.scene3dSettingsRevision++;
+    this.emitState();
+  }
+
+  // -------------------------------------------------------- objetos de escena
+
+  /** Objeto del espacio seleccionado, o `null`. Es estado de interfaz, no del
+   *  documento: no entra en el historial ni se guarda. */
+  private selectedObject3dId: string | null = null;
+
+  get selectedObject3dId_(): string | null {
+    return this.selectedObject3dId;
+  }
+
+  /** Selecciona (o deselecciona) un objeto del espacio y lo refleja en la UI. */
+  selectObject3D(id: string | null): void {
+    if (this.selectedObject3dId === id) return;
+    // Un id que ya no existe -el objeto se borro- se trata como deseleccionar.
+    this.selectedObject3dId = id && this.doc.objectById(id) ? id : null;
+    this.scene3dSettingsRevision++;
+    this.emitState();
+  }
+
+  /** Inserta una primitiva, a traves del visor para que caiga delante de la camara. */
+  insertPrimitive(kind: PrimitiveKind): void {
+    const vp = this.viewport3d;
+    if (!vp) {
+      this.status("El espacio necesita WebGL2");
+      return;
+    }
+    if (!this.mode3d) this.setMode3D(true);
+    if (this.scene3dSettings.tool !== "object") this.setScene3D({ tool: "object" });
+    vp.insertPrimitive(kind);
+  }
+
+  /**
+   * Avisa de que un objeto cambio sin pasar por un metodo del editor.
+   *
+   * El panel edita algunas propiedades -la opacidad- escribiendo directo en el
+   * documento con `updateObject3D`, por comodidad. Eso sube `spaceRevision`, pero
+   * no refresca la interfaz ni marca el documento como sucio; esto cierra el
+   * circulo. No abre paso de historial: un deslizador no debe dejar ochenta.
+   */
+  touchSpace(): void {
+    this.scene3dSettingsRevision++;
+    this.events.emit("dirty", undefined);
+    this.emitState();
+  }
+
+  /** Cambia la primitiva que inserta el boton, y la inserta de una vez. */
+  setPrimitive(kind: PrimitiveKind): void {
+    this.setScene3D({ primitive: kind });
+  }
+
+  /** Borra el objeto seleccionado, con su paso de historial. */
+  deleteSelectedObject(): void {
+    const id = this.selectedObject3dId;
+    if (!id) return;
+    const before = this.doc.snapshot();
+    if (!this.doc.removeObject3D(id)) return;
+    this.selectedObject3dId = null;
+    this.history.record("Borrar objeto", before);
+    this.afterHistory("Objeto borrado");
+  }
+
+  /**
+   * Selecciona un objeto desde el panel de capas.
+   *
+   * Ademas de marcarlo, entra al espacio y pone la herramienta de objetos: el
+   * usuario pulso un objeto para trabajar con el, asi que lo logico es que el
+   * gizmo salga sin un paso extra. Si ya estaba en otra herramienta, se la lleva.
+   */
+  selectObject3DFromPanel(id: string): void {
+    if (!this.mode3d) this.setMode3D(true);
+    if (this.scene3dSettings.tool !== "object") this.setScene3D({ tool: "object" });
+    this.selectObject3D(id);
+    // La capa del objeto pasa a ser la activa, para que el panel y el dibujo
+    // apunten al mismo sitio.
+    const obj = this.doc.objectById(id);
+    if (obj) this.doc.setActiveLayer(obj.layerId);
+    this.emitState();
+  }
+
+  /** Muestra u oculta un objeto (su ojo en el panel). Deshacible. */
+  setObjectHidden(id: string, hidden: boolean): void {
+    const before = this.doc.snapshot();
+    if (!this.doc.updateObject3D(id, { hidden })) return;
+    this.history.record(hidden ? "Ocultar objeto" : "Mostrar objeto", before);
+    this.touchSpace();
+  }
+
+  /** Enciende o apaga una luz desde su ojo en el panel. Deshacible. */
+  setLightEnabled(id: string, enabled: boolean): void {
+    const before = this.doc.snapshot();
+    if (!this.doc.updateLight3D(id, { enabled })) return;
+    this.history.record(enabled ? "Encender luz" : "Apagar luz", before);
+    this.invalidateAll();
+    this.touchSpace();
+  }
+
+  /**
+   * Selecciona una luz desde el panel de capas.
+   *
+   * No hay "luz seleccionada" como estado propio -el panel de luces edita siempre
+   * la principal y el ambiente-, asi que seleccionar una luz entra al espacio y
+   * deja el panel listo. Es el enganche para cuando haya un editor de luz por id;
+   * de momento, abre el espacio donde se ven y se tocan.
+   */
+  selectLightFromPanel(id: string): void {
+    void id;
+    if (!this.mode3d) this.setMode3D(true);
+    this.emitState();
+  }
+
   /** La luz que da la direccion de las sombras: la primera direccional o puntual. */
   get keyLight(): Light3D | undefined {
     return this.doc.lights3d.find((l) => l.kind !== "ambient");
@@ -602,13 +735,15 @@ export class Editor {
 
   private scene3dStats(): EditorState["scene3d"] {
     const vp = this.viewport3dInstance;
-    if (!vp) return { drawCalls: 0, instances: 0, strokes: 0, fills: 0, plane: 0 };
+    const objects = this.doc.objects3d.length;
+    if (!vp) return { drawCalls: 0, instances: 0, strokes: 0, fills: 0, objects, plane: 0 };
     const s = vp.stats();
     return {
       drawCalls: s.drawCalls,
       instances: s.instances,
       strokes: s.strokes,
       fills: s.fills,
+      objects,
       // La profundidad del plano de dibujo: se cambia con [ y ] y es lo unico que
       // dice donde van a caer los trazos nuevos, asi que tiene que verse.
       plane: vp.planeDepth,
@@ -1380,12 +1515,20 @@ export class Editor {
 
   /** Vacía el espacio entero, en todas sus capas. */
   clearScene3D(): void {
-    if (this.doc.strokes3d.length === 0 && this.doc.fills3d.length === 0) return;
+    if (
+      this.doc.strokes3d.length === 0 &&
+      this.doc.fills3d.length === 0 &&
+      this.doc.objects3d.length === 0
+    ) {
+      return;
+    }
     const before = this.doc.snapshot();
     for (const l of this.doc.scene3dLayers) {
       this.doc.clearStrokes3D(l.id);
       this.doc.clearFills3D(l.id);
+      this.doc.clearObjects3D(l.id);
     }
+    this.selectedObject3dId = null;
     this.history.record("Vaciar el espacio", before);
     this.afterHistory("Espacio vaciado");
   }

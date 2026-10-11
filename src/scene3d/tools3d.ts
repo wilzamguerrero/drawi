@@ -13,16 +13,28 @@
 
 import type { BrushMode } from "../stroke/types";
 import { DEFAULT_SNAP, type SnapSettings } from "./snap";
+import { DEFAULT_PLACEMENT, type PlacementSettings } from "./placement";
+import type { DrawPlaneKind } from "./drawplane";
+import type { GizmoMode } from "./gizmo";
+import type { PrimitiveKind } from "./objects";
 
-/** Herramientas del visor. */
-export type Tool3D = "brush" | "smooth";
+/**
+ * Herramientas del visor.
+ *
+ * `brush` y `smooth` trabajan sobre los trazos; `object` sobre las primitivas,
+ * con su gizmo. Son herramientas distintas porque el gesto no significa lo mismo:
+ * con el pincel, arrastrar dibuja; con objetos, arrastrar un eje del gizmo
+ * transforma, y pulsar en el vacio selecciona o deselecciona.
+ */
+export type Tool3D = "brush" | "smooth" | "object";
 
 export const TOOL3D_LABELS: Record<Tool3D, string> = {
   brush: "Pincel",
   smooth: "Suavizar",
+  object: "Objetos",
 };
 
-export const TOOL3D_ORDER: Tool3D[] = ["brush", "smooth"];
+export const TOOL3D_ORDER: Tool3D[] = ["brush", "smooth", "object"];
 
 export interface Scene3DSettings {
   tool: Tool3D;
@@ -51,6 +63,10 @@ export interface Scene3DSettings {
    * que direccion sale. Ver `snap.ts`.
    */
   snap: SnapSettings;
+  /** Sobre qué plano cae el trazo: hacia la cámara, uno del mundo, o el del ancla. */
+  drawPlane: DrawPlaneKind;
+  /** A qué profundidad cae: en el plano, en el origen, en el ancla o sobre el trazo. */
+  placement: PlacementSettings;
   /**
    * Rejilla del suelo.
    *
@@ -62,6 +78,10 @@ export interface Scene3DSettings {
     /** Opacidad de las lineas, 0..1. */
     opacity: number;
   };
+  /** Modo del gizmo cuando la herramienta es `object`: mover, rotar o escalar. */
+  gizmo: GizmoMode;
+  /** Primitiva que inserta el boton "Insertar". */
+  primitive: PrimitiveKind;
 }
 
 export const DEFAULT_SCENE3D: Scene3DSettings = {
@@ -71,7 +91,11 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
   refineOnRelease: false,
   refineStrength: 0.5,
   snap: { ...DEFAULT_SNAP },
+  drawPlane: "view",
+  placement: { ...DEFAULT_PLACEMENT },
   grid: { enabled: false, opacity: 0.55 },
+  gizmo: "move",
+  primitive: "box",
 };
 
 /**
@@ -81,6 +105,7 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
  * barra de estado-, y dos listas de palabras para lo mismo se desvian.
  */
 export const spaceToolLabel = (settings: Scene3DSettings, mode: BrushMode): string => {
+  if (settings.tool === "object") return `objeto · ${settings.gizmo}`;
   if (settings.tool === "smooth") return "suavizar";
   if (mode === "erase") return "borrador";
   if (mode === "pull") return "arrastre";

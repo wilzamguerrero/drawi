@@ -18,7 +18,9 @@
       "Bash(awk '{printf \"%d\\\\t%s\\\\n\", NR+199, substr\\($0, index\\($0,$2\\)\\)}')",
       "Bash(awk 'NR>=260 && NR<=500 {printf \"%d\\\\t%s\\\\n\", NR, $0}' src/ui/layers-panel.ts)",
       "Bash(awk 'NR>=500 && NR<=748 {printf \"%d\\\\t%s\\\\n\", NR, $0}' src/ui/layers-panel.ts)",
-      "Bash(cd \"e:/escrito 2026/documentos/drawi\" && grep -n \"reload\\(\\\\|clearAll\\\\b\" src/app/editor.ts src/scene/document.ts && echo \"=== editor reload ===\" && sed -n '/reload\\(/,/^  }/p' src/app/editor.ts | head -40)"
+      "Bash(cd \"e:/escrito 2026/documentos/drawi\" && grep -n \"reload\\(\\\\|clearAll\\\\b\" src/app/editor.ts src/scene/document.ts && echo \"=== editor reload ===\" && sed -n '/reload\\(/,/^  }/p' src/app/editor.ts | head -40)",
+      "Bash(cd \"e:/escrito 2026/documentos/drawi\" && git show HEAD:src/render3d/backend.ts > /tmp/old-backend.ts 2>/dev/null; grep -n \"buildGizmoAxis\\\\|SphereGeometry\\\\|sphere\\\\|ball\\\\|bola\\\\|esfera\\\\|ConeGeometry\\\\|CylinderGeometry\" /tmp/old-backend.ts 2>/dev/null | head; echo \"--- committed had gizmo? ---\"; git show HEAD:src/render3d/backend.ts 2>/dev/null | grep -c \"buildGizmoAxis\"; echo \"--- Is objects.ts/gizmo.ts new \\(untracked\\)? these are the current files ---\"; git status --short src/scene3d/gizmo.ts src/render3d/objects.ts)",
+      "Read(//tmp/**)"
     ],
     "additionalDirectories": [
       "e:\\escrito 2026\\documentos\\drawi\\src\\app"

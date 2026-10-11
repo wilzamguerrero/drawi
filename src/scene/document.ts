@@ -10,6 +10,7 @@ import { DEFAULT_FIELD_STYLE, type FieldStyle } from "../render/field-gl";
 import { DEFAULT_CAMERA_3D, type Camera3DState } from "../scene3d/camera3d";
 import type { Fill3D } from "../scene3d/fill";
 import { DEFAULT_LIGHTS, type Light3D } from "../scene3d/lights";
+import { cloneObject, cloneTransform, type Object3D, type Transform3D } from "../scene3d/objects";
 import type { Stroke3D } from "../scene3d/types";
 import { EMPTY_RECT, unionRect, type InkItem, type Rect } from "./types";
 import { cloneLayer, makeMask, type LayerColor, type SceneLayer } from "./layer";
@@ -53,6 +54,8 @@ export interface SceneSnapshot {
   fills3d: Fill3D[];
   /** Luces de la escena. Se copian: son objetos planos y se editan en sitio. */
   lights3d: Light3D[];
+  /** Objetos (primitivas) del espacio. Se copian: se editan en sitio. */
+  objects3d: Object3D[];
   /** Camara del visor espacial en el momento de la instantanea. */
   camera3d: Camera3DState;
   layers: SceneLayer[];
@@ -159,6 +162,14 @@ export class SceneDocument {
    * el proyecto y entran en la instantanea del historial, igual que las capas.
    */
   lights3d: Light3D[] = DEFAULT_LIGHTS.map((l) => ({ ...l }));
+  /**
+   * Primitivas del espacio, con su `layerId`.
+   *
+   * Van aparte de los trazos y las manchas porque son otra cosa -objetos
+   * parametricos, no geometria dibujada a mano- pero comparten el mismo modelo:
+   * lista plana, cada uno en su capa, derivados a malla por el backend.
+   */
+  objects3d: Object3D[] = [];
   /** Camara del visor espacial: viaja con el documento para que reabrirlo
    *  devuelva al mismo punto de vista. */
   camera3d: Camera3DState = { ...DEFAULT_CAMERA_3D };
@@ -195,7 +206,8 @@ export class SceneDocument {
       this.items.length === 0 &&
       this.physics.bodies.length === 0 &&
       this.strokes3d.length === 0 &&
-      this.fills3d.length === 0
+      this.fills3d.length === 0 &&
+      this.objects3d.length === 0
     );
   }
 
@@ -454,6 +466,55 @@ export class SceneDocument {
     this.spaceRevision++;
   }
 
+  // --------------------------------------------------------- objetos de escena
+
+  objectsOf(layerId: string): Object3D[] {
+    return this.objects3d.filter((o) => o.layerId === layerId);
+  }
+
+  objectById(id: string): Object3D | undefined {
+    return this.objects3d.find((o) => o.id === id);
+  }
+
+  addObject3D(object: Object3D): void {
+    this.objects3d.push(object);
+    this.spaceRevision++;
+  }
+
+  updateObject3D(id: string, patch: Partial<Object3D>): boolean {
+    const i = this.objects3d.findIndex((o) => o.id === id);
+    if (i < 0) return false;
+    this.objects3d[i] = { ...this.objects3d[i], ...patch, id };
+    this.spaceRevision++;
+    return true;
+  }
+
+  /** Reemplaza la transformacion de un objeto (lo que mueve el gizmo). */
+  setObjectTransform(id: string, transform: Transform3D): boolean {
+    const o = this.objectById(id);
+    if (!o) return false;
+    o.transform = cloneTransform(transform);
+    this.spaceRevision++;
+    return true;
+  }
+
+  removeObject3D(id: string): boolean {
+    const i = this.objects3d.findIndex((o) => o.id === id);
+    if (i < 0) return false;
+    this.objects3d.splice(i, 1);
+    this.spaceRevision++;
+    return true;
+  }
+
+  /** Borra los objetos de una capa. Devuelve cuantos se llevo. */
+  clearObjects3D(layerId: string): number {
+    const before = this.objects3d.length;
+    this.objects3d = this.objects3d.filter((o) => o.layerId !== layerId);
+    const gone = before - this.objects3d.length;
+    if (gone > 0) this.spaceRevision++;
+    return gone;
+  }
+
   /** Envuelve items planos (proyectos v1) en una capa de tinta por defecto. */
   migrateFlatItems(): void {
     this.resetLayers();
@@ -491,7 +552,8 @@ export class SceneDocument {
     const spaceLayers = this.scene3dLayers;
     const lostStrokes = this.strokes3d.filter((s) => !spaceLayers.some((l) => l.id === s.layerId));
     const lostFills = this.fills3d.filter((f) => !spaceLayers.some((l) => l.id === f.layerId));
-    if (lostStrokes.length > 0 || lostFills.length > 0) {
+    const lostObjects = this.objects3d.filter((o) => !spaceLayers.some((l) => l.id === o.layerId));
+    if (lostStrokes.length > 0 || lostFills.length > 0 || lostObjects.length > 0) {
       let target = spaceLayers[0];
       if (!target) {
         target = this.makeScene3DLayer();
@@ -503,6 +565,9 @@ export class SceneDocument {
       );
       this.fills3d = this.fills3d.map((f) =>
         spaceLayers.some((l) => l.id === f.layerId) ? f : { ...f, layerId: home },
+      );
+      this.objects3d = this.objects3d.map((o) =>
+        spaceLayers.some((l) => l.id === o.layerId) ? o : { ...o, layerId: home },
       );
     }
   }
@@ -693,6 +758,7 @@ export class SceneDocument {
       if (layer.kind === "scene3d") {
         this.clearStrokes3D(id);
         this.clearFills3D(id);
+        this.clearObjects3D(id);
       }
       this.layers = this.layers.filter((l) => l.id !== id);
       if (this.activeLayerId === id) {
@@ -1066,6 +1132,7 @@ export class SceneDocument {
       strokes3d: this.strokes3d.slice(),
       fills3d: this.fills3d.slice(),
       lights3d: this.lights3d.map((l) => ({ ...l })),
+      objects3d: this.objects3d.map(cloneObject),
       camera3d: { ...this.camera3d },
       layers: this.layers.map(cloneLayer),
       activeLayerId: this.activeLayerId,
@@ -1082,6 +1149,7 @@ export class SceneDocument {
     this.strokes3d = snap.strokes3d.slice();
     this.fills3d = snap.fills3d.slice();
     this.lights3d = snap.lights3d.map((l) => ({ ...l }));
+    this.objects3d = snap.objects3d.map(cloneObject);
     this.camera3d = { ...snap.camera3d };
     this.layers = snap.layers.map(cloneLayer);
     this.activeLayerId = snap.activeLayerId;

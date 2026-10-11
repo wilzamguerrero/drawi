@@ -15,6 +15,7 @@ import type { InkItem } from "../scene/types";
 import { button, slider, select } from "./controls";
 import { clear, el, setClass } from "./dom";
 import { icon } from "./icons";
+import { LIGHT_LABELS } from "../scene3d/lights";
 
 /** Referencias vivas de una fila del panel (para sincronizar sin reconstruir). */
 interface Row {
@@ -27,11 +28,24 @@ interface Row {
   depth: number;
 }
 
-/** Una entrada de la lista visual: capa + su nivel de anidamiento. */
-interface DisplayItem {
+/** Una fila de capa: capa + su nivel de anidamiento. Es con lo que trabaja el
+ *  arrastre y el reordenamiento, que solo mueven capas. */
+interface LayerItem {
   layer: SceneLayer;
   depth: number;
 }
+
+/**
+ * Fila de la lista visual.
+ *
+ * Casi siempre es una capa. Pero una capa del espacio se despliega en SUB-FILAS:
+ * sus objetos y sus luces, para poder seleccionarlos y manipularlos desde el
+ * panel. Esas sub-filas no son capas -no se reordenan ni se ocultan por
+ * separado-, asi que van marcadas aparte y el arrastre no las ve.
+ */
+type DisplayItem =
+  | { kind: "layer"; layer: SceneLayer; depth: number }
+  | { kind: "object" | "light"; id: string; label: string; layerId: string; depth: number };
 
 /**
  * Panel de capas (estilo Photoshop) para el dock lateral.
@@ -151,25 +165,57 @@ export class LayersPanel {
   }
   // METHODS_PLACEHOLDER
 
-  /** Lista visual (arriba = frente): recorre la raíz de mayor a menor z. */
+  /**
+   * Lista visual (arriba = frente): recorre la raíz de mayor a menor z, y debajo
+   * de cada capa del espacio despliega sus objetos y luces como sub-filas.
+   */
   private flatten(): DisplayItem[] {
     const out: DisplayItem[] = [];
+    const doc = this.editor.doc;
     const walk = (parentId: string | null, depth: number): void => {
-      const kids = this.editor.doc.layers.filter((l) => l.parentId === parentId);
+      const kids = doc.layers.filter((l) => l.parentId === parentId);
       for (let i = kids.length - 1; i >= 0; i--) {
         const l = kids[i];
-        out.push({ layer: l, depth });
+        out.push({ kind: "layer", layer: l, depth });
         if (l.kind === "group" && !l.collapsed) walk(l.id, depth + 1);
+        if (l.kind === "scene3d") this.spaceChildren(l.id, depth + 1, out);
       }
     };
     walk(null, 0);
     return out;
   }
 
+  /** Las sub-filas de una capa del espacio: primero las luces, luego los objetos. */
+  private spaceChildren(layerId: string, depth: number, out: DisplayItem[]): void {
+    const doc = this.editor.doc;
+    // Las luces de la escena no tienen capa propia: son de toda la escena. Se
+    // cuelgan de la PRIMERA capa del espacio para que haya donde seleccionarlas,
+    // que es lo que pediste; no se duplican bajo cada una.
+    if (doc.scene3dLayers[0]?.id === layerId) {
+      for (const l of doc.lights3d) {
+        out.push({ kind: "light", id: l.id, label: LIGHT_LABELS[l.kind], layerId, depth });
+      }
+    }
+    for (const o of doc.objectsOf(layerId)) {
+      out.push({ kind: "object", id: o.id, label: o.name, layerId, depth });
+    }
+  }
+
+  /** Solo las filas de capa, para el arrastre y el reordenamiento. */
+  private layerRows(): LayerItem[] {
+    const out: LayerItem[] = [];
+    for (const it of this.flatten()) if (it.kind === "layer") out.push({ layer: it.layer, depth: it.depth });
+    return out;
+  }
+
   /** Firma estructural: si cambia, se reconstruyen las filas. */
   private sigOf(items: DisplayItem[]): string {
     return items
-      .map((d) => `${d.layer.id}:${d.depth}:${d.layer.kind}:${d.layer.collapsed}:${d.layer.mask ? 1 : 0}`)
+      .map((d) =>
+        d.kind === "layer"
+          ? `L:${d.layer.id}:${d.depth}:${d.layer.kind}:${d.layer.collapsed}:${d.layer.mask ? 1 : 0}`
+          : `${d.kind[0]}:${d.id}:${d.depth}`,
+      )
       .join("|");
   }
 
@@ -180,11 +226,17 @@ export class LayersPanel {
       this.rebuild(items);
       this.signature = sig;
     }
-    // Sincronía viva de cada fila.
-    for (const { layer } of items) this.syncRow(layer, state);
+    // Sincronía viva de cada fila de capa.
+    for (const it of items) if (it.kind === "layer") this.syncRow(it.layer, state);
+    // La fila de un objeto o luz seleccionada se resalta.
+    for (const it of items) {
+      if (it.kind === "layer") continue;
+      const row = this.rows.get(it.id);
+      if (row) setClass(row.el, "is-active", this.isChildSelected(it, state));
+    }
     // Miniaturas: solo si cambió la tinta.
     if (this.editor.doc.inkRevision !== this.thumbRevision) {
-      for (const { layer } of items) this.paintThumb(layer);
+      for (const it of items) if (it.kind === "layer") this.paintThumb(it.layer);
       this.thumbRevision = this.editor.doc.inkRevision;
     } else {
       // La acuarela se mueve sola mientras el fluido sigue vivo, sin tocar
@@ -193,10 +245,19 @@ export class LayersPanel {
       const now = performance.now();
       if (now - this.aquaThumbAt > 250) {
         this.aquaThumbAt = now;
-        for (const { layer } of items) if (layer.kind === "aqua") this.paintThumb(layer);
+        for (const it of items) if (it.kind === "layer" && it.layer.kind === "aqua") this.paintThumb(it.layer);
       }
     }
     this.syncHead(state);
+  }
+
+  /** ¿Está seleccionada la sub-fila de objeto/luz? */
+  private isChildSelected(
+    it: { kind: "object" | "light"; id: string },
+    state: EditorState,
+  ): boolean {
+    if (it.kind === "object") return state.selectedObject?.id === it.id;
+    return false;
   }
 
   /** Último refresco de las miniaturas de acuarela (ms de `performance.now`). */
@@ -229,16 +290,80 @@ export class LayersPanel {
     clear(this.list);
     this.list.appendChild(this.dropLine);
     const seen = new Set<string>();
-    for (const { layer, depth } of items) {
-      seen.add(layer.id);
-      let row = this.rows.get(layer.id);
-      if (!row || row.depth !== depth) {
-        row = this.buildRow(layer, depth);
-        this.rows.set(layer.id, row);
+    for (const it of items) {
+      const key = it.kind === "layer" ? it.layer.id : it.id;
+      seen.add(key);
+      let row = this.rows.get(key);
+      if (!row || row.depth !== it.depth) {
+        row = it.kind === "layer" ? this.buildRow(it.layer, it.depth) : this.buildChildRow(it);
+        this.rows.set(key, row);
       }
       this.list.appendChild(row.el);
     }
     for (const id of [...this.rows.keys()]) if (!seen.has(id)) this.rows.delete(id);
+  }
+
+  /**
+   * Fila de un objeto o una luz dentro de una capa del espacio.
+   *
+   * Es una fila ligera: su icono, su nombre, su ojo propio y nada mas -ni
+   * miniatura, ni mascara, ni arrastre de reordenamiento, que no aplican-. Al
+   * pulsarla, se selecciona el objeto (y se pone la herramienta de objetos, para
+   * que el gizmo salga sin un paso extra) o se enciende la luz en el panel.
+   */
+  private buildChildRow(it: Extract<DisplayItem, { kind: "object" | "light" }>): Row {
+    const ed = this.editor;
+    const glyph = el("span", {
+      class: "layer-kind layer-child-kind",
+      html: icon(it.kind === "light" ? "spark" : "cube"),
+    });
+    const name = el("span", { class: "layer-name", text: it.label });
+    const eye = el("button", { class: "layer-eye", type: "button", title: "Mostrar/ocultar" });
+
+    const refreshEye = (): void => {
+      const on =
+        it.kind === "light"
+          ? ed.doc.lights3d.find((l) => l.id === it.id)?.enabled ?? false
+          : !(ed.doc.objectById(it.id)?.hidden ?? true);
+      eye.innerHTML = icon(on ? "eye" : "eyeOff");
+    };
+    refreshEye();
+    eye.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (it.kind === "light") {
+        const l = ed.doc.lights3d.find((x) => x.id === it.id);
+        if (l) ed.setLightEnabled(it.id, !l.enabled);
+      } else {
+        const o = ed.doc.objectById(it.id);
+        if (o) ed.setObjectHidden(it.id, !o.hidden);
+      }
+      refreshEye();
+    });
+
+    const rowEl = el("div", { class: `layer-row layer-child depth-${Math.min(it.depth, 4)}` }, [
+      el("span", { class: "layer-strip" }),
+      eye,
+      glyph,
+      name,
+    ]);
+    rowEl.dataset.id = it.id;
+    rowEl.addEventListener("pointerdown", (e) => {
+      if ((e as PointerEvent).button !== 0) return;
+      if (it.kind === "object") ed.selectObject3DFromPanel(it.id);
+      else ed.selectLightFromPanel(it.id);
+    });
+
+    // La fila de objeto/luz reutiliza la forma de `Row`, pero su `thumb` y
+    // `maskThumb` no se usan: se crean sueltos para no cambiar el tipo.
+    return {
+      el: rowEl,
+      thumb: el("canvas"),
+      maskThumb: el("canvas"),
+      name,
+      eye,
+      strip: rowEl.firstChild as HTMLElement,
+      depth: it.depth,
+    };
   }
 
   /** Construye la fila de una capa. Ningún manejador se queda con `layer`: todos
@@ -615,9 +740,10 @@ export class LayersPanel {
     this.scrollDir = 0;
   }
 
-  /** Índice de hueco (0 = arriba del todo) según la Y del puntero. */
+  /** Índice de hueco (0 = arriba del todo) según la Y del puntero.
+   *  Solo cuenta filas de capa: las sub-filas de objetos y luces no se reordenan. */
   private gapAt(clientY: number): number {
-    const items = this.flatten();
+    const items = this.layerRows();
     for (let i = 0; i < items.length; i++) {
       const row = this.rows.get(items[i].layer.id);
       if (!row) continue;
@@ -628,7 +754,7 @@ export class LayersPanel {
   }
 
   private showDropLine(gap: number): void {
-    const items = this.flatten();
+    const items = this.layerRows();
     const listRect = this.list.getBoundingClientRect();
     let y: number;
     if (gap >= items.length) {
@@ -645,16 +771,16 @@ export class LayersPanel {
   /**
    * Traduce el hueco visual a `moveLayerTo(id, parentId, index)`.
    *
-   * Se razona con la lista VISIBLE, no con el array de capas: el destino sale de
-   * quién queda justo encima del hueco (si es un grupo abierto, se entra en él)
-   * y la posición, de cuántas hermanas quedan por debajo. Antes se traducía a un
-   * índice absoluto del array y soltar junto a un grupo abierto no movía nada.
+   * Se razona con la lista VISIBLE de CAPAS, no con el array de capas: el destino
+   * sale de quién queda justo encima del hueco (si es un grupo abierto, se entra
+   * en él) y la posición, de cuántas hermanas quedan por debajo. Antes se traducía
+   * a un índice absoluto del array y soltar junto a un grupo abierto no movía nada.
    */
   private applyDrop(id: string, gap: number): void {
     const doc = this.editor.doc;
     const dragged = doc.layerById(id);
     if (!dragged) return;
-    const items = this.flatten();
+    const items = this.layerRows();
     const above = gap > 0 ? items[gap - 1].layer : null;
 
     let parentId: string | null = null;

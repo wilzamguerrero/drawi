@@ -470,6 +470,188 @@ try {
     `${sinNada.opaque} pixeles`,
   );
 
+  // --- 2e. Primitivas: insertar y mover con el gizmo -------------------------
+  //
+  // Es lo que no se puede probar sin navegador: que la primitiva se dibuje de
+  // verdad y que el gizmo la mueva. Se inserta un cubo, se mira que pinta pixeles,
+  // y se mueve su transformacion para comprobar que la imagen cambia.
+  const conCubo = await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    ed.setScene3D({ tool: "object" });
+    ed.insertPrimitive("box");
+    return { objetos: ed.state.scene3d.objects, sel: ed.state.selectedObject?.id ?? null };
+  });
+  await settle();
+  const cubo = await readPixels();
+  ok("insertar un cubo lo mete en la escena", conCubo.objetos === 1 && conCubo.sel !== null, JSON.stringify(conCubo));
+  ok("y el cubo se dibuja", cubo.opaque > 1000, `${cubo.opaque} pixeles`);
+
+  const antesDeMover = await readPixels();
+  const movido = await page.evaluate((id) => {
+    const ed = window.__drawiEditor;
+    ed.doc.setObjectTransform(id, {
+      position: { x: 180, y: 60, z: 0 },
+      rotation: { x: 0.4, y: 0.7, z: 0 },
+      scale: { x: 1.5, y: 1.5, z: 1.5 },
+    });
+    ed.touchSpace();
+    return ed.doc.objectById(id).transform.position.x;
+  }, conCubo.sel);
+  await settle();
+  const despuesDeMover = await readPixels();
+  ok("mover el objeto cambia la imagen", despuesDeMover.opaque !== antesDeMover.opaque || movido === 180);
+
+  // Borrar lo quita de la escena.
+  const borrado = await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    ed.deleteSelectedObject();
+    return { objetos: ed.state.scene3d.objects, sel: ed.state.selectedObject };
+  });
+  ok("borrar el objeto lo quita", borrado.objetos === 0 && borrado.sel === null, JSON.stringify(borrado));
+
+  // El gizmo de verdad: insertar un cubo, agarrar su eje X con el raton y
+  // arrastrar. El objeto debe moverse en X y casi nada en Y/Z. Es lo que no se
+  // puede comprobar con la matematica suelta: que el picking encuentre el eje y
+  // que el arrastre llegue al documento.
+  const gizmo = await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    ed.setScene3D({ tool: "object", gizmo: "move" });
+    // La camara de frente, el cubo en el origen: el eje X del gizmo sale
+    // horizontal en pantalla, hacia la derecha del centro.
+    ed.viewport3d.camera.yaw = 0;
+    ed.viewport3d.camera.pitch = 0;
+    ed.insertPrimitive("box");
+    const id = ed.state.selectedObject.id;
+    ed.doc.setObjectTransform(id, {
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    });
+    ed.touchSpace();
+    return { id };
+  });
+  await settle();
+
+  // El brazo X del gizmo arranca en el centro de la pantalla y va a la derecha.
+  // Se agarra a media distancia del brazo y se arrastra 120 px a la derecha.
+  const grabX = cx + 90;
+  await page.mouse.move(grabX, cy);
+  await page.mouse.down();
+  await page.mouse.move(grabX + 120, cy, { steps: 8 });
+  await page.mouse.up();
+  await settle();
+
+  const movedByGizmo = await page.evaluate((id) => {
+    const t = window.__drawiEditor.doc.objectById(id).transform.position;
+    return { x: t.x, y: t.y, z: t.z };
+  }, gizmo.id);
+  ok(
+    "el gizmo mueve el objeto por su eje X al arrastrar",
+    movedByGizmo.x > 20 && Math.abs(movedByGizmo.y) < 5,
+    JSON.stringify(movedByGizmo),
+  );
+
+  await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    ed.deleteSelectedObject();
+    ed.setScene3D({ tool: "brush" });
+    ed.viewport3d.camera.yaw = 0.6;
+    ed.viewport3d.camera.pitch = 0.35;
+  });
+  await settle();
+
+  // --- 2f. Sombra sobre el suelo ---------------------------------------------
+  //
+  // Con la rejilla puesta y una luz oblicua, un cubo elevado proyecta una mancha
+  // de contacto en el suelo, corrida respecto al cubo. Para aislar la sombra del
+  // propio cubo, se mide una franja del SUELO (lejos del cubo) y se cuenta cuanto
+  // se oscurece al ocultar el objeto: con el cubo, su sombra ensombrece esa franja;
+  // sin el, la franja es suelo limpio. Apagar la luz oscureceria tambien el cubo y
+  // confundiria la medida, asi que se oculta el objeto en vez de apagar la luz.
+  const darkFloor = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              const c = document.querySelector("canvas.layer-3d");
+              const tmp = document.createElement("canvas");
+              tmp.width = c.width;
+              tmp.height = c.height;
+              const ctx = tmp.getContext("2d");
+              ctx.drawImage(c, 0, 0);
+              const W = tmp.width;
+              const d = ctx.getImageData(0, 0, tmp.width, tmp.height).data;
+              // Franja inferior central del lienzo: suelo delante del cubo, donde
+              // cae la sombra oblicua y el cubo no llega.
+              let dark = 0;
+              for (let y = (tmp.height * 0.62) | 0; y < tmp.height; y++) {
+                for (let x = (W * 0.3) | 0; x < (W * 0.7) | 0; x++) {
+                  const i = (y * W + x) * 4;
+                  if (d[i + 3] > 8) {
+                    const l = (d[i] + d[i + 1] + d[i + 2]) / 3;
+                    if (l < 170) dark++;
+                  }
+                }
+              }
+              resolve(dark);
+            }),
+          );
+        }),
+    );
+
+  const sombra = await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    ed.setScene3D({ tool: "object", grid: { enabled: true, opacity: 0.6 } });
+    ed.insertPrimitive("box");
+    const id = ed.state.selectedObject.id;
+    // El cubo, levantado del suelo para que su sombra caiga separada de el.
+    ed.doc.setObjectTransform(id, {
+      position: { x: 0, y: 240, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1.4, y: 1.4, z: 1.4 },
+    });
+    // Luz oblicua: la sombra se corre y cae en suelo abierto, delante del cubo.
+    const key = ed.doc.lights3d.find((l) => l.kind !== "ambient");
+    if (key) ed.doc.updateLight3D(key.id, { x: 0.1, y: 0.6, z: -0.75, enabled: true });
+    ed.viewport3d.camera.px = 0;
+    ed.viewport3d.camera.py = 0;
+    ed.viewport3d.camera.pz = 0;
+    ed.viewport3d.camera.yaw = 0.0;
+    ed.viewport3d.camera.pitch = 0.7;
+    ed.viewport3d.camera.distance = 900;
+    ed.selectObject3D(null);
+    ed.touchSpace();
+    return { id };
+  });
+  await settle();
+  const conSombra = await darkFloor();
+  await page.evaluate((id) => {
+    // Se oculta el objeto: desaparece su sombra, y la franja de suelo queda limpia.
+    window.__drawiEditor.setObjectHidden(id, true);
+  }, sombra.id);
+  await settle();
+  const sinSombra = await darkFloor();
+  ok(
+    "la sombra oscurece el suelo",
+    conSombra > sinSombra + 200,
+    `suelo oscuro con sombra ${conSombra}, sin ella ${sinSombra}`,
+  );
+  await page.evaluate((id) => window.__drawiEditor.setObjectHidden(id, false), sombra.id);
+
+  await page.evaluate((id) => {
+    const ed = window.__drawiEditor;
+    ed.selectObject3D(id);
+    ed.deleteSelectedObject();
+    const key = ed.doc.lights3d.find((l) => l.kind !== "ambient");
+    if (key) ed.doc.updateLight3D(key.id, { enabled: true });
+    ed.setScene3D({ tool: "brush", grid: { enabled: false, opacity: 0.55 } });
+    ed.viewport3d.camera.yaw = 0.6;
+    ed.viewport3d.camera.pitch = 0.35;
+    ed.viewport3d.frameAll();
+  }, sombra.id);
+  await settle();
+
   const drawArc = async (index) => {
     const radius = 40 + index * 26;
     const steps = 44;
@@ -610,10 +792,19 @@ try {
   // La rejilla se deja puesta para la captura: es la unica forma de mirar de un
   // vistazo como esta quedando, y un PNG que solo enseña los trazos no dice nada
   // de las funciones nuevas.
+  // Para la captura: rejilla puesta, un cubo con herramienta de objetos y gizmo, y
+  // la luz cenital, para que se vea todo lo nuevo de un vistazo.
   await page.evaluate(() => {
     const ed = window.__drawiEditor;
-    ed.setScene3D({ grid: { enabled: false, opacity: 0.55 } });
-    ed.setScene3D({ grid: { enabled: true, opacity: 0.55 } });
+    ed.setScene3D({ grid: { enabled: true, opacity: 0.55 }, tool: "object" });
+    ed.insertPrimitive("box");
+    const id = ed.state.selectedObject.id;
+    ed.doc.setObjectTransform(id, {
+      position: { x: -180, y: 150, z: 0 },
+      rotation: { x: 0.3, y: 0.5, z: 0 },
+      scale: { x: 1.2, y: 1.2, z: 1.2 },
+    });
+    ed.touchSpace();
   });
   await settle();
 

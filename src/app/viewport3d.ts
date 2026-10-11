@@ -33,12 +33,10 @@ import type { History } from "../app/history";
 import {
   CameraController3D,
   clampZoomFactor,
-  rayToDepthPlane,
   snapDepth,
 } from "../scene3d/controls3d";
 import {
   DEFAULT_CAMERA_3D,
-  forwardOf,
   projectPoint,
   rightOf,
   upOf,
@@ -63,8 +61,56 @@ import {
   FLOOR_Y,
   type SnapAxis,
 } from "../scene3d/snap";
+import { drawPlane, planeNormalFor, planePoint, screenRay } from "../scene3d/drawplane";
+import { alongRay, placedPlanePoint, strokeDepthAt } from "../scene3d/placement";
+import {
+  beginGizmo,
+  dragGizmo,
+  gizmoWorldSize,
+  pickAxis,
+  GIZMO_MODE_ORDER,
+  GIZMO_MODE_LABELS,
+  type GizmoGrab,
+  type GizmoMode,
+  type Ray,
+} from "../scene3d/gizmo";
+import {
+  makeObject,
+  DEFAULT_PRIMITIVE_SIZE,
+  type Object3D,
+  type PrimitiveKind,
+} from "../scene3d/objects";
+import { shadowLight } from "../scene3d/lights";
+
+/** Radio de la esfera que encierra una primitiva a su escala, para el picking. */
+const objectRadius = (o: Object3D): number => {
+  const s = o.transform.scale;
+  // El toro es el mas ancho a igual escala; el resto cabe en media diagonal del
+  // cubo base. Se toma el eje mayor para no quedarse corto.
+  const k = o.kind === "torus" ? 0.56 : 0.87;
+  return DEFAULT_PRIMITIVE_SIZE * k * Math.max(Math.abs(s.x), Math.abs(s.y), Math.abs(s.z));
+};
+
+/** Distancia a la que un rayo entra en una esfera, o `null` si no la toca. */
+const raySphere = (ray: Ray, center: V3, radius: number): number | null => {
+  const ox = ray.origin.x - center.x;
+  const oy = ray.origin.y - center.y;
+  const oz = ray.origin.z - center.z;
+  const b = ox * ray.dir.x + oy * ray.dir.y + oz * ray.dir.z;
+  const c = ox * ox + oy * oy + oz * oz - radius * radius;
+  const disc = b * b - c;
+  if (disc < 0) return null;
+  const t = -b - Math.sqrt(disc);
+  return t >= 0 ? t : null;
+};
 import { Rng, uid } from "../core/rng";
 import { v3, type V3 } from "../scene3d/vec3";
+import { icon } from "../ui/icons";
+
+/** Tecla estandar de cada modo del gizmo, para el tooltip de la barra. */
+const GIZMO_MODE_KEYS: Record<GizmoMode, string> = { move: "W", rotate: "E", scale: "R" };
+/** Icono de cada modo del gizmo en la barra flotante. */
+const GIZMO_MODE_ICONS: Record<GizmoMode, string> = { move: "move", rotate: "rotate", scale: "scale" };
 
 /** Distancia entre dos puntos. Se usa para medir el avance del gesto. */
 const distancia = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number =>
@@ -153,6 +199,13 @@ type Gesture =
     }
   | { kind: "erase"; erasing: boolean }
   | { kind: "smooth" }
+  | {
+      kind: "gizmo";
+      /** El objeto que se esta transformando. */
+      objectId: string;
+      /** Lo que se guardo al agarrar el eje, para medir el arrastre contra ello. */
+      grab: GizmoGrab;
+    }
   | null;
 
 /** Rejilla de profundidad, en unidades de mundo. */
@@ -169,6 +222,9 @@ const ERASE_SLOP = 10;
  * el anclaje" de "trazar con el eje bloqueado".
  */
 const ANCHOR_CLICK_SLOP = 2;
+
+/** Opacidad de las sombras proyectadas sobre el suelo. */
+const SHADOW_OPACITY = 0.28;
 
 export interface Viewport3DHost {
   /** Color activo del editor. */
@@ -187,6 +243,14 @@ export interface Viewport3DHost {
   settingsRevision(): number;
   /** Marca o quita el punto de anclaje del ajuste (`null` lo quita). */
   setAnchor(p: V3 | null): void;
+  /** El objeto seleccionado en el panel, o `null`. */
+  selectedObject(): string | null;
+  /** Selecciona (o deselecciona con `null`) un objeto del espacio. */
+  selectObject(id: string | null): void;
+  /** Cambia el modo del gizmo (W/E/R desde el teclado del visor). */
+  setGizmoMode(mode: GizmoMode): void;
+  /** Borra el objeto seleccionado (Supr desde el visor). */
+  deleteObject(): void;
   /** Avisa al editor de algo que el usuario debe leer. */
   status(message: string): void;
   /** Avisa de que el estado cambio (para refrescar la interfaz). */
@@ -274,10 +338,14 @@ export class Viewport3D {
    * con ello cuanto pesa todavia la tangente del anterior-.
    */
   private lastRaw: V3 | null = null;
+  /** Eje del gizmo bajo el cursor, resaltado. Solo con la herramienta de objetos. */
+  private hoverAxis: import("../scene3d/gizmo").GizmoAxis | null = null;
   private depth = 0;
   private space = false;
   private dirty = true;
   private disposers: Array<() => void> = [];
+  /** Barra flotante de modos del gizmo (estilo ZBrush), sobre el objeto. */
+  private readonly gizmoBar: HTMLElement;
 
   constructor(host: HTMLElement, api: Viewport3DHost) {
     this.api = api;
@@ -286,10 +354,44 @@ export class Viewport3D {
     this.canvas.className = "layer layer-3d";
     host.appendChild(this.canvas);
 
+    this.gizmoBar = this.buildGizmoBar();
+    host.appendChild(this.gizmoBar);
+
     this.backend = new Scene3DBackend(this.canvas);
 
     this.attach(host);
     this.setActive(false);
+  }
+
+  /**
+   * Barra flotante del gizmo, al estilo de ZBrush: los modos del manipulador
+   * (mover, rotar, escalar) como botones sobre el objeto seleccionado, para
+   * cambiarlos sin ir al panel. Se coloca cada fotograma sobre la proyeccion del
+   * objeto; vive en el anfitrion -no en el lienzo WebGL- porque es interfaz, no
+   * dibujo, y asi recibe clics y se lee nitida.
+   */
+  private buildGizmoBar(): HTMLElement {
+    const bar = document.createElement("div");
+    bar.className = "gizmo-bar";
+    bar.style.display = "none";
+    for (const mode of GIZMO_MODE_ORDER) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "gizmo-bar-btn";
+      b.dataset.mode = mode;
+      b.title = `${GIZMO_MODE_LABELS[mode]} (${GIZMO_MODE_KEYS[mode]})`;
+      b.innerHTML = icon(GIZMO_MODE_ICONS[mode]);
+      // pointerdown, no click: el lienzo captura el puntero en captura, y un
+      // click llegaria tarde o se lo comeria el gesto del visor.
+      b.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        this.api.setGizmoMode(mode);
+        this.refreshState();
+      });
+      bar.appendChild(b);
+    }
+    return bar;
   }
 
   get available(): boolean {
@@ -332,6 +434,8 @@ export class Viewport3D {
     } else {
       this.saveCamera();
       this.cancelGesture();
+      // Al soltar el espacio, la barra del gizmo no se queda flotando sobre el 2D.
+      this.gizmoBar.style.display = "none";
     }
   }
 
@@ -489,6 +593,28 @@ export class Viewport3D {
     const paintOf = (id: string): LayerPaint => paint.get(id) ?? HIDDEN_PAINT;
     this.backend.sync(this.scene.all, paintOf);
     this.backend.syncFills(this.fills.all, paintOf);
+    this.backend.syncObjects(doc.objects3d, paintOf);
+    // Sombras de contacto sobre el suelo: un disco difuso bajo cada objeto segun
+    // la luz principal. Solo con la rejilla puesta, que es la que hace de suelo
+    // visible; sin suelo a la vista, una sombra flotando sola confunde mas que
+    // ayuda.
+    const grid = this.api.settings().grid;
+    const key = grid.enabled ? shadowLight(doc.lights3d) : null;
+    this.backend.syncShadows(
+      doc.objects3d,
+      paintOf,
+      key,
+      FLOOR_Y,
+      (o) => ({ center: o.transform.position, radius: objectRadius(o) }),
+      SHADOW_OPACITY,
+    );
+    // El gizmo solo aparece con la herramienta de objetos y uno seleccionado. El
+    // eje resaltado es el que haya bajo el cursor cuando no se esta arrastrando;
+    // en pleno arrastre, el que se agarro.
+    const gd = this.gizmoDraw();
+    this.backend.drawGizmo(gd);
+    // La barra flotante de modos acompaña al gizmo: encima del objeto, en pantalla.
+    this.placeGizmoBar(gd);
     // La marca del anclaje solo se enseña cuando el ajuste esta puesto en el: si
     // no, seria un adorno mas en medio del dibujo.
     const s = this.api.settings().snap;
@@ -496,7 +622,6 @@ export class Viewport3D {
     // La rejilla se centra en el punto de mira: asi siempre hay suelo bajo lo que
     // se esta dibujando, se mire donde se mire. Su paso es el MISMO que el del
     // enganche, para que lo que se ve sea exactamente a lo que se pega el trazo.
-    const grid = this.api.settings().grid;
     this.backend.syncGrid(
       grid.enabled
         ? {
@@ -529,9 +654,71 @@ export class Viewport3D {
    * transparente de mas, que no se ve.
    */
   private hasVisibleSpace(doc: SceneDocument): boolean {
-    if (doc.strokes3d.length === 0 && doc.fills3d.length === 0) return false;
+    if (doc.strokes3d.length === 0 && doc.fills3d.length === 0 && doc.objects3d.length === 0) {
+      return false;
+    }
     for (const l of doc.scene3dLayers) if (doc.layerVisible(l.id)) return true;
     return false;
+  }
+
+  /**
+   * Lo que hay que pasarle al backend para dibujar el gizmo, o `null`.
+   *
+   * Solo con la herramienta de objetos y uno seleccionado que exista y se vea. El
+   * eje resaltado es, en reposo, el que esta bajo el cursor; en pleno arrastre, el
+   * que se agarro -no tiene sentido que el resalte salte a otro mientras se mueve-.
+   */
+  private gizmoDraw(): import("../render3d/backend").GizmoDraw | null {
+    if (this.api.settings().tool !== "object") return null;
+    const id = this.api.selectedObject();
+    if (!id) return null;
+    const doc = this.api.doc();
+    const obj = doc.objectById(id);
+    if (!obj || obj.hidden || !doc.layerVisible(obj.layerId)) return null;
+
+    const g = this.gesture;
+    const hover = g?.kind === "gizmo" ? g.grab.axis : this.hoverAxis;
+    return {
+      center: { ...obj.transform.position },
+      size: this.gizmoSize(),
+      mode: this.api.settings().gizmo,
+      hover,
+    };
+  }
+
+  /**
+   * Coloca la barra de modos sobre el objeto, o la oculta.
+   *
+   * Se proyecta el centro del objeto a pantalla y se pone la barra un poco por
+   * encima. `gd` ya resolvio si hay gizmo que enseñar -misma condicion que el
+   * dibujo-, asi que basta con reusarlo. Si el punto queda detras de la camara
+   * (`w <= 0`), no se enseña. El modo activo se marca con una clase.
+   */
+  private placeGizmoBar(gd: import("../render3d/backend").GizmoDraw | null): void {
+    if (!gd || !this.live) {
+      if (this.gizmoBar.style.display !== "none") this.gizmoBar.style.display = "none";
+      return;
+    }
+    const r = this.rect();
+    const aspect = Math.max(1, r.width) / Math.max(1, r.height);
+    const vp = viewProjection(this.camera, aspect);
+    const p = projectPoint(vp, gd.center.x, gd.center.y, gd.center.z);
+    if (p.w <= 0) {
+      this.gizmoBar.style.display = "none";
+      return;
+    }
+    // NDC (-1..1) a pixeles del lienzo. La barra sube un poco por encima del gizmo
+    // -su tamano en pantalla ronda el 14% del alto-, para no taparlo.
+    const sx = (p.x * 0.5 + 0.5) * r.width;
+    const sy = (1 - (p.y * 0.5 + 0.5)) * r.height;
+    const lift = r.height * 0.12 + 46;
+    this.gizmoBar.style.display = "flex";
+    this.gizmoBar.style.left = `${Math.round(sx)}px`;
+    this.gizmoBar.style.top = `${Math.round(sy - lift)}px`;
+    const active = this.api.settings().gizmo;
+    for (const b of Array.from(this.gizmoBar.children) as HTMLElement[]) {
+      b.classList.toggle("is-active", b.dataset.mode === active);
+    }
   }
 
   stats(): {
@@ -569,6 +756,7 @@ export class Viewport3D {
     this.disposers = [];
     this.backend.dispose();
     this.canvas.remove();
+    this.gizmoBar.remove();
   }
 
   // ------------------------------------------------------------- entrada
@@ -618,6 +806,23 @@ export class Viewport3D {
         this.adjustDepth(-1);
       } else if (e.code === "KeyF") {
         this.frameAll();
+      } else if (this.api.settings().tool === "object" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // W / E / R: mover, rotar, escalar. La fila de teclas estandar en 3D -la
+        // misma que Blender, Unity o Maya-. Solo con la herramienta de objetos,
+        // para no robarle la W a nada del lienzo.
+        if (e.code === "KeyW") {
+          this.api.setGizmoMode("move");
+          e.stopPropagation();
+        } else if (e.code === "KeyE") {
+          this.api.setGizmoMode("rotate");
+          e.stopPropagation();
+        } else if (e.code === "KeyR") {
+          this.api.setGizmoMode("scale");
+          e.stopPropagation();
+        } else if ((e.code === "Delete" || e.code === "Backspace") && this.api.selectedObject()) {
+          this.api.deleteObject();
+          e.stopPropagation();
+        }
       }
     };
     const keyUp = (e: KeyboardEvent): void => {
@@ -668,8 +873,12 @@ export class Viewport3D {
 
     // El borrador del lapiz llega como boton 5; Alt hace lo mismo con cualquier
     // puntero. Se mira ANTES de descartar los botones que no son el izquierdo, y
-    // borra un trazo entero de un golpe sea cual sea el modo activo.
-    if (e.button === 5 || (e.button === 0 && e.altKey)) {
+    // borra un trazo entero de un golpe. Con la herramienta de objetos no: alli
+    // Alt no deberia borrar trazos a la espalda de quien esta moviendo un cubo.
+    if (
+      this.api.settings().tool !== "object" &&
+      (e.button === 5 || (e.button === 0 && e.altKey))
+    ) {
       e.preventDefault();
       this.eraseAt(e);
       return;
@@ -706,9 +915,35 @@ export class Viewport3D {
       this.dirty = true;
       return;
     }
-    if (!this.gesture) return;
+    if (!this.gesture) {
+      // Sin gesto en marcha, con la herramienta de objetos se sigue el raton para
+      // resaltar el eje del gizmo que hay debajo: la pista visual de que se puede
+      // agarrar. Barato -un picking de tres ejes- y solo cuando toca.
+      this.updateHoverAxis(e);
+      return;
+    }
     e.preventDefault();
     this.moveGesture(e);
+  }
+
+  /** Resalta el eje del gizmo bajo el cursor, para la herramienta de objetos. */
+  private updateHoverAxis(e: PointerEvent): void {
+    if (this.api.settings().tool !== "object") {
+      if (this.hoverAxis !== null) {
+        this.hoverAxis = null;
+        this.dirty = true;
+      }
+      return;
+    }
+    const id = this.api.selectedObject();
+    const obj = id ? this.api.doc().objectById(id) : undefined;
+    const axis = obj
+      ? pickAxis(this.api.settings().gizmo, this.rayAt(e), obj.transform.position, this.gizmoSize())
+      : null;
+    if (axis !== this.hoverAxis) {
+      this.hoverAxis = axis;
+      this.dirty = true;
+    }
   }
 
   private onUp(e: PointerEvent): void {
@@ -744,7 +979,12 @@ export class Viewport3D {
    * asi que manda sobre el modo.
    */
   private beginGesture(e: PointerEvent): void {
-    if (this.api.settings().tool === "smooth") {
+    const tool = this.api.settings().tool;
+    if (tool === "object") {
+      this.beginObject(e);
+      return;
+    }
+    if (tool === "smooth") {
       this.beginEdit(e);
       return;
     }
@@ -784,6 +1024,10 @@ export class Viewport3D {
     }
     if (g.kind === "erase") {
       this.eraseAlong(e);
+      return;
+    }
+    if (g.kind === "gizmo") {
+      this.moveObject(e);
       return;
     }
     const p = this.worldPoint(e);
@@ -843,6 +1087,12 @@ export class Viewport3D {
       return;
     }
 
+    if (g.kind === "gizmo") {
+      this.endObject(g);
+      this.refreshState();
+      return;
+    }
+
     if (g.kind === "erase") {
       // Si el gesto no se llevo nada, no hay nada que deshacer.
       if (g.erasing) history.commit("Borrar en el espacio");
@@ -882,7 +1132,7 @@ export class Viewport3D {
     const brush = this.api.brush();
     this.builder.settings = brush;
     this.builder.setZoom(1);
-    const planeNormal = forwardOf(this.camera, { x: 0, y: 0, z: 0 });
+    const planeNormal = this.planeNormal();
 
     // De donde arranca el trazo y con que direccion sale lo decide el ajuste:
     // puede engancharse al extremo de otro trazo, a la rejilla o a un anclaje, y
@@ -1013,7 +1263,7 @@ export class Viewport3D {
   private beginFill(e: PointerEvent): void {
     const p = this.worldPoint(e);
     if (!p) return;
-    const planeNormal = forwardOf(this.camera, { x: 0, y: 0, z: 0 });
+    const planeNormal = this.planeNormal();
     const brush = this.api.brush();
     this.gesture = {
       kind: "fill",
@@ -1245,7 +1495,7 @@ export class Viewport3D {
     }
     // La forma vive en el plano de dibujo, asi que su normal es la mirada de la
     // camara: no hace falta deducirla del contorno.
-    const planeNormal = forwardOf(this.camera, v3());
+    const planeNormal = this.planeNormal();
     if (outlineArea(outline, puntos.length, planeNormal) < MIN_FILL_AREA) {
       this.api.status("Arrastre: el recorrido no llega a formar una figura");
       return;
@@ -1295,7 +1545,7 @@ export class Viewport3D {
    */
   private previewOutline(puntos: readonly V3[]): void {
     if (puntos.length < 2) return;
-    const planeNormal = forwardOf(this.camera, v3());
+    const planeNormal = this.planeNormal();
     const muestra = (p: V3, t: number): Sample3D => ({
       x: p.x,
       y: p.y,
@@ -1315,6 +1565,125 @@ export class Viewport3D {
     const resto: Sample3D[] = [];
     for (let i = 1; i < puntos.length; i++) resto.push(muestra(puntos[i], i * 8));
     this.outline.push(resto, true);
+  }
+
+  // -------------------------------------------------------------- objetos
+
+  /**
+   * Rayo del mundo que sale por un punto de pantalla. Lo usa el gizmo y el
+   * picking de objetos: proyectar el cursor en el espacio.
+   */
+  private rayAt(e: PointerEvent): Ray {
+    const r = this.rect();
+    const ndcX = ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1;
+    const ndcY = -(((e.clientY - r.top) / Math.max(1, r.height)) * 2 - 1);
+    const { origin, dir } = screenRay(this.camera, ndcX, ndcY, r.width / Math.max(1, r.height));
+    return { origin: { ...origin }, dir: { ...dir } };
+  }
+
+  /** Tamano del gizmo en el mundo, para el objeto seleccionado. */
+  private gizmoSize(): number {
+    return gizmoWorldSize(this.camera.distance);
+  }
+
+  /**
+   * Empieza un gesto con la herramienta de objetos.
+   *
+   * Si hay un objeto seleccionado y el cursor agarra un eje de su gizmo, empieza a
+   * transformar. Si no, hace picking: selecciona el objeto bajo el cursor, o
+   * deselecciona si no hay ninguno. Mover la camara sigue siendo con el boton
+   * central o el derecho, asi que aqui solo llega el izquierdo.
+   */
+  private beginObject(e: PointerEvent): void {
+    const ray = this.rayAt(e);
+    const doc = this.api.doc();
+    const sel = this.api.selectedObject();
+    const mode = this.api.settings().gizmo;
+
+    if (sel) {
+      const obj = doc.objectById(sel);
+      if (obj) {
+        const axis = pickAxis(mode, ray, obj.transform.position, this.gizmoSize());
+        if (axis) {
+          this.api.history().begin();
+          this.gesture = { kind: "gizmo", objectId: sel, grab: beginGizmo(mode, axis, obj.transform, ray) };
+          return;
+        }
+      }
+    }
+
+    // Sin eje agarrado: picking. El objeto cuya esfera envolvente corta el rayo
+    // mas cerca de la camara.
+    const hit = this.pickObject(ray);
+    this.api.selectObject(hit);
+    this.dirty = true;
+    this.refreshState();
+  }
+
+  /** Transforma el objeto agarrado siguiendo el cursor. */
+  private moveObject(e: PointerEvent): void {
+    const g = this.gesture;
+    if (!g || g.kind !== "gizmo") return;
+    const t = dragGizmo(g.grab, this.rayAt(e));
+    this.api.doc().setObjectTransform(g.objectId, t);
+    this.dirty = true;
+    this.refreshState();
+    this.api.changed();
+  }
+
+  /** Cierra la transformacion: un solo paso de historial para todo el arrastre. */
+  private endObject(g: Gesture & { kind: "gizmo" }): void {
+    void g;
+    this.api.history().commit("Transformar objeto");
+    this.api.changed();
+  }
+
+  /**
+   * Objeto bajo el cursor, por su esfera envolvente.
+   *
+   * Barato y suficiente para seleccionar: la esfera que encierra la primitiva a su
+   * escala. El que la corte mas cerca de la camara gana. Un picking por triangulo
+   * seria mas fino, pero para agarrar un objeto y moverlo la esfera basta y no se
+   * nota la diferencia.
+   */
+  private pickObject(ray: Ray): string | null {
+    const doc = this.api.doc();
+    let best: string | null = null;
+    let bestT = Infinity;
+    for (const o of doc.objects3d) {
+      if (o.hidden || !doc.layerVisible(o.layerId)) continue;
+      const c = o.transform.position;
+      const radius = objectRadius(o);
+      const t = raySphere(ray, c, radius);
+      if (t !== null && t < bestT) {
+        bestT = t;
+        best = o.id;
+      }
+    }
+    return best;
+  }
+
+  /** Inserta una primitiva en la capa del espacio, delante de la camara. */
+  insertPrimitive(kind: PrimitiveKind): void {
+    const doc = this.api.doc();
+    const layer = doc.scene3dTarget();
+    // Delante del punto de mira: a la vista, no en un rincon del espacio.
+    const at = v3(this.camera.px, this.camera.py, this.camera.pz);
+    const obj = makeObject(kind, uid(), layer.id, {
+      transform: {
+        position: at,
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    });
+    const history = this.api.history();
+    history.begin();
+    doc.addObject3D(obj);
+    history.commit("Insertar objeto");
+    this.api.selectObject(obj.id);
+    this.dirty = true;
+    this.refreshState();
+    this.api.changed();
   }
 
   // ------------------------------------------------------------- borrador
@@ -1422,14 +1791,44 @@ export class Viewport3D {
     if (r.width <= 0 || r.height <= 0) return null;
     const ndcX = ((e.clientX - r.left) / r.width) * 2 - 1;
     const ndcY = -(((e.clientY - r.top) / r.height) * 2 - 1);
-    return rayToDepthPlane(
-      this.camera,
-      ndcX,
-      ndcY,
-      r.width / r.height,
-      this.depth,
-      { x: 0, y: 0, z: 0 },
-    );
+    const aspect = r.width / Math.max(1, r.height);
+    const s = this.api.settings();
+    const anchor = s.snap.anchor;
+
+    // Dos ejes independientes deciden donde cae el trazo:
+    //  - el PLANO de dibujo da la orientacion de la superficie (hacia la camara,
+    //    uno del mundo, o el del ancla);
+    //  - la COLOCACION la mueve en profundidad (en el plano, en el origen, en el
+    //    ancla, o pegada al trazo que haya debajo).
+    const plane = drawPlane(s.drawPlane, this.camera, { depth: this.depth, anchor });
+
+    // Modo "sobre el trazo": la profundidad sale del trazo que esta debajo del
+    // cursor. Si no hay ninguno a tiro, se cae al plano, que es el respaldo
+    // razonable: dibujar en el aire a la profundidad de la vista.
+    if (s.placement.mode === "stroke") {
+      const ray = screenRay(this.camera, ndcX, ndcY, aspect);
+      const t = strokeDepthAt(
+        this.api.doc().strokes3d,
+        ray.origin,
+        ray.dir,
+        s.placement.radius,
+        s.placement.target,
+      );
+      if (t !== null) return alongRay(ray.origin, ray.dir, t);
+      return planePoint(plane, this.camera, ndcX, ndcY, aspect);
+    }
+
+    // Los demas modos solo desplazan el plano en profundidad.
+    const movido = {
+      point: placedPlanePoint(s.placement.mode, plane.point, anchor),
+      normal: plane.normal,
+    };
+    return planePoint(movido, this.camera, ndcX, ndcY, aspect);
+  }
+
+  /** Normal del plano de dibujo activo, para que el trazo la guarde. */
+  private planeNormal(): V3 {
+    return planeNormalFor(this.api.settings().drawPlane, this.camera, this.api.settings().snap.anchor);
   }
 
   private sampleOf(e: PointerEvent, p: V3): Sample3D {

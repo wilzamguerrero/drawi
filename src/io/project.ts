@@ -10,6 +10,7 @@ import type { ShapeDef } from "../physics/shapes";
 import { DEFAULT_CAMERA_3D, type Camera3DState } from "../scene3d/camera3d";
 import { outlineBounds, type Fill3D } from "../scene3d/fill";
 import { DEFAULT_LIGHTS, type Light3D } from "../scene3d/lights";
+import { cloneObject, type Object3D } from "../scene3d/objects";
 import type { V3 } from "../scene3d/vec3";
 import { POINT_FLOATS, boundsOf, type Stroke3D } from "../scene3d/types";
 
@@ -41,6 +42,8 @@ export interface ProjectFile {
   fills3d?: Fill3DFile[];
   /** Luces de la escena (v7+). Son datos planos: viajan tal cual. */
   lights3d?: Light3D[];
+  /** Primitivas del espacio (v7+). Objetos planos con su transformacion. */
+  objects3d?: Object3D[];
   /** Punto de vista del visor espacial (v7+). */
   camera3d?: Camera3DState;
   bodies: BodySnapshot[];
@@ -246,6 +249,7 @@ export function serializeProject({ doc, brush, camera }: SerializeInput): string
     strokes3d: doc.strokes3d.map(encodeStroke3D),
     fills3d: doc.fills3d.map(encodeFill3D),
     lights3d: doc.lights3d.map((l) => ({ ...l })),
+    objects3d: doc.objects3d.map(cloneObject),
     camera3d: { ...doc.camera3d },
     bodies: doc.bodies.map(snapshotBody),
     symmetry: { ...doc.symmetry },
@@ -291,6 +295,7 @@ export function applyProject(doc: SceneDocument, file: ProjectFile): void {
     Array.isArray(file.lights3d) && file.lights3d.length > 0
       ? file.lights3d.map((l) => ({ ...l }))
       : DEFAULT_LIGHTS.map((l) => ({ ...l }));
+  doc.objects3d = Array.isArray(file.objects3d) ? file.objects3d.map(cloneObject) : [];
   doc.camera3d = { ...DEFAULT_CAMERA_3D, ...(file.camera3d ?? {}) };
   // Los cuerpos entran primero para que `ensureLayers` sepa a qué capa de
   // materia reasignar los que vengan sin `layerId` (proyectos v1/v2).

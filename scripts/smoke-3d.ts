@@ -82,7 +82,24 @@ import {
   trianglesArea,
   triangulateOutline,
 } from "../src/scene3d/fill";
+import { drawPlane, planeNormalFor, planePoint } from "../src/scene3d/drawplane";
+import { alongRay, placedPlanePoint, strokeDepthAt } from "../src/scene3d/placement";
+import {
+  AXIS_VECTORS,
+  beginGizmo,
+  closestOnAxis,
+  dragGizmo,
+  gizmoWorldSize,
+  pickAxis,
+  rayPlane,
+} from "../src/scene3d/gizmo";
+import {
+  IDENTITY_TRANSFORM,
+  makeObject,
+  type Transform3D,
+} from "../src/scene3d/objects";
 import { SceneDocument } from "../src/scene/document";
+import { contactShadow } from "../src/scene3d/shadow";
 import {
   DEFAULT_LIGHTS,
   MAX_LIGHTS,
@@ -2451,7 +2468,108 @@ const strokeOf = (pts: readonly [number, number, number][]): Stroke3D => {
   );
 }
 
-// ----------------------------------------------------------------- luces --
+// ---------------------------------------------------- colocacion del trazo --
+
+{
+  const camFrente = { ...DEFAULT_CAMERA_3D, yaw: 0, pitch: 0, distance: 500 };
+
+  // Un trazo plano a z = 100, delante de la camara.
+  const trazo = strokeOf([[-50, 0, 100], [0, 0, 100], [50, 0, 100]]);
+
+  // El rayo del centro: desde el ojo hacia el punto de mira (-Z con esta camara).
+  const eye = eyeOf(camFrente, v3());
+  const dir = forwardOf(camFrente, v3());
+
+  // "Sobre el trazo": la profundidad sale del trazo que esta debajo. El punto que
+  // devuelve tiene que caer A LA MISMA profundidad que el trazo, z = 100.
+  const t = strokeDepthAt([trazo], eye, dir, 60, "all");
+  ok("sobre el trazo se encuentra la profundidad", t !== null, `${t}`);
+  const punto = t !== null ? alongRay(eye, dir, t) : null;
+  ok(
+    "y el punto cae a la profundidad del trazo",
+    punto !== null && Math.abs(punto.z - 100) < 1e-3,
+    `z ${f(punto?.z ?? -999, 3)}`,
+  );
+
+  // Fuera del radio no hay trazo al que pegarse.
+  const lejos = strokeOf([[900, 0, 100], [1000, 0, 100]]);
+  ok("fuera del radio no se encuentra nada", strokeDepthAt([lejos], eye, dir, 20, "all") === null);
+
+  // El objetivo filtra que puntos cuentan. Un trazo cuyo primer punto esta lejos
+  // del rayo pero cuyo centro esta cerca: con "first" no engancha, con "all" si.
+  const curva = strokeOf([[200, 0, 100], [0, 0, 100], [-200, 0, 100]]);
+  ok("con 'todos' engancha por el punto medio", strokeDepthAt([curva], eye, dir, 60, "all") !== null);
+  ok("con 'el primero' no, porque su primer punto esta lejos", strokeDepthAt([curva], eye, dir, 60, "first") === null);
+
+  // La colocacion desplaza el plano en profundidad.
+  const base = v3(5, 5, 5);
+  ok("en el plano no se mueve", placedPlanePoint("plane", base, null).x === 5);
+  const origen = placedPlanePoint("origin", base, v3(9, 9, 9));
+  ok("al origen va a cero", origen.x === 0 && origen.y === 0 && origen.z === 0);
+  const ancla = placedPlanePoint("cursor", base, v3(9, 9, 9));
+  ok("al ancla va al punto marcado", ancla.x === 9 && ancla.y === 9 && ancla.z === 9);
+  ok("al ancla sin punto marcado se queda en el plano", placedPlanePoint("cursor", base, null).x === 5);
+}
+
+// ----------------------------------------------------------- plano de dibujo --
+
+{
+  const camFrente = { ...DEFAULT_CAMERA_3D, yaw: 0, pitch: 0 };
+
+  // Los tres planos del mundo tienen la normal del eje que les toca.
+  ok("el plano Frente mira a +Z", drawPlane("front").normal.z === 1);
+  ok("el plano Lado mira a +X", drawPlane("side").normal.x === 1);
+  ok("la Planta mira a +Y", drawPlane("top").normal.y === 1);
+  ok("y la Planta esta en el suelo", drawPlane("top").point.y === 0);
+
+  // El de la vista mira a la camara: su normal es la contraria a la mirada.
+  const vista = drawPlane("view", camFrente);
+  const mirada = forwardOf(camFrente, v3());
+  ok(
+    "el plano de la vista mira a la camara",
+    Math.abs(vista.normal.z + mirada.z) < 1e-6 && Math.abs(vista.normal.x + mirada.x) < 1e-6,
+  );
+
+  // La profundidad adelanta el plano de la vista por la mirada.
+  const cerca = drawPlane("view", camFrente, { depth: 0 });
+  const lejos = drawPlane("view", camFrente, { depth: 100 });
+  const avance = Math.hypot(
+    lejos.point.x - cerca.point.x,
+    lejos.point.y - cerca.point.y,
+    lejos.point.z - cerca.point.z,
+  );
+  ok("la profundidad adelanta el plano de la vista", Math.abs(avance - 100) < 1e-4, f(avance, 4));
+
+  // El del ancla pasa por el punto marcado.
+  const ancla = v3(10, 20, 30);
+  const porAncla = drawPlane("cursor", camFrente, { anchor: ancla });
+  ok(
+    "el plano del ancla pasa por el punto marcado",
+    porAncla.point.x === 10 && porAncla.point.y === 20 && porAncla.point.z === 30,
+  );
+}
+
+/** La interseccion rayo-plano: donde cae de verdad el trazo. */
+{
+  const camFrente = { ...DEFAULT_CAMERA_3D, yaw: 0, pitch: 0, distance: 500 };
+  const front = drawPlane("front");
+
+  // El centro de la pantalla, sobre el plano Frente, cae en z=0 y cerca del eje.
+  const centro = planePoint(front, camFrente, 0, 0, 16 / 9);
+  ok("el centro cae en el plano Frente", centro !== null && Math.abs(centro.z) < 1e-4, `${f(centro?.z ?? -1, 4)}`);
+
+  // Un rayo paralelo al plano no lo corta: mirar el plano de canto.
+  const canto = { point: v3(0, 0, 0), normal: v3(0, 1, 0) };
+  ok("mirar un plano de canto no da punto", planePoint(canto, camFrente, 0, 0, 16 / 9) === null);
+
+  // Dos puntos de pantalla distintos caen en sitios distintos del plano.
+  const izq = planePoint(front, camFrente, -0.5, 0, 16 / 9);
+  const der = planePoint(front, camFrente, 0.5, 0, 16 / 9);
+  ok("izquierda y derecha caen separadas", izq !== null && der !== null && der.x > izq.x);
+
+  // La normal que guarda el trazo es la del plano, no otra.
+  ok("la normal del trazo es la del plano", planeNormalFor("top", camFrente).y === 1);
+}
 
 /** Empaquetado de las luces a uniformes: lo que el shader va a recorrer. */
 {
@@ -2575,6 +2693,184 @@ const strokeOf = (pts: readonly [number, number, number][]): Stroke3D => {
 
   doc.resetLights3D();
   ok("reiniciar deja la luz de estudio", doc.lights3d.length === DEFAULT_LIGHTS.length);
+}
+
+// ---------------------------------------------------- objetos y gizmo --
+
+/** Un rayo que sale de `from` hacia `to`, normalizado. */
+const rayFromTo = (from: V3, to: V3): { origin: V3; dir: V3 } => {
+  const d = v3(to.x - from.x, to.y - from.y, to.z - from.z);
+  const l = Math.hypot(d.x, d.y, d.z) || 1;
+  return { origin: { ...from }, dir: v3(d.x / l, d.y / l, d.z / l) };
+};
+
+{
+  // El punto del eje mas cercano a un rayo. Un rayo que baja recto por -Z sobre
+  // (10,5,0) tiene su punto mas cercano al eje X exactamente en x = 10.
+  const ray = rayFromTo(v3(10, 5, 100), v3(10, 5, 0));
+  const r = closestOnAxis(ray, v3(0, 0, 0), AXIS_VECTORS.x);
+  ok("el punto mas cercano al eje cae donde debe", Math.abs(r.s - 10) < 1e-3, f(r.s, 3));
+
+  // Un rayo que cruza el eje lo toca a distancia cero.
+  const cruza = rayFromTo(v3(50, -100, 0), v3(50, 100, 0));
+  ok("un rayo que cruza el eje da distancia cero", closestOnAxis(cruza, v3(0, 0, 0), AXIS_VECTORS.x).dist < 1e-3);
+
+  // Interseccion con un plano: el plano z=0, normal Z, cortado por un rayo que
+  // viene de +Z.
+  const hit = rayPlane(rayFromTo(v3(7, 3, 100), v3(7, 3, 0)), v3(0, 0, 0), v3(0, 0, 1));
+  ok("el rayo corta el plano donde toca", hit !== null && Math.abs(hit.z) < 1e-3 && Math.abs(hit.x - 7) < 1e-3);
+  // Un rayo paralelo al plano no lo corta.
+  ok("un rayo paralelo al plano no lo corta", rayPlane(rayFromTo(v3(0, 0, 10), v3(10, 0, 10)), v3(0, 0, 0), v3(0, 0, 1)) === null);
+}
+
+/** El picking del gizmo: que eje hay bajo el cursor. */
+{
+  const center = v3(0, 0, 0);
+  const size = 100;
+
+  // Un rayo que roza el eje X -pasa cerca de su cuerpo- lo agarra.
+  const sobreX = rayFromTo(v3(50, -200, 0), v3(50, 2, 0));
+  ok("agarra el eje X al apuntar a su cuerpo", pickAxis("move", sobreX, center, size) === "x");
+
+  // Un rayo lejos de los tres ejes no agarra ninguno.
+  const lejos = rayFromTo(v3(500, 500, 500), v3(400, 480, 500));
+  ok("lejos de los ejes no agarra nada", pickAxis("move", lejos, center, size) === null);
+
+  // Rotar: un aro de radio `size` en el plano del eje. Un rayo que corta el plano
+  // X a radio ~size agarra el aro X.
+  const aroX = rayFromTo(v3(300, 0, size), v3(0, 0, size));
+  ok("agarra el aro de rotacion al cruzarlo", pickAxis("rotate", aroX, center, size) === "x");
+}
+
+/** Mover: el objeto se corre lo que se corre el cursor proyectado sobre el eje. */
+{
+  const t: Transform3D = IDENTITY_TRANSFORM();
+  // Agarre: el cursor sobre el eje X en x = 20.
+  const grab = beginGizmo("move", "x", t, rayFromTo(v3(20, -200, 0), v3(20, 0, 0)));
+  // Arrastre: el cursor ahora en x = 70. El objeto debe moverse 50 en X.
+  const movido = dragGizmo(grab, rayFromTo(v3(70, -200, 0), v3(70, 0, 0)));
+  ok("mover corre el objeto a lo largo del eje", Math.abs(movido.position.x - 50) < 1e-2, f(movido.position.x, 3));
+  ok("y no toca los otros ejes", movido.position.y === 0 && movido.position.z === 0);
+
+  // Volver al punto de partida devuelve el objeto a su sitio: el arrastre es
+  // absoluto sobre el agarre, no acumulado.
+  const vuelta = dragGizmo(grab, rayFromTo(v3(20, -200, 0), v3(20, 0, 0)));
+  ok("volver al agarre deja el objeto donde estaba", Math.abs(vuelta.position.x) < 1e-6, f(vuelta.position.x, 6));
+}
+
+/** Escalar: el factor es cuanto crece la distancia al centro a lo largo del eje. */
+{
+  const t: Transform3D = IDENTITY_TRANSFORM();
+  const grab = beginGizmo("scale", "x", t, rayFromTo(v3(50, -200, 0), v3(50, 0, 0)));
+  const doblado = dragGizmo(grab, rayFromTo(v3(100, -200, 0), v3(100, 0, 0)));
+  // De 50 a 100 es el doble: la escala X debe acabar en ~2.
+  ok("escalar multiplica por la razon de distancias", Math.abs(doblado.scale.x - 2) < 1e-2, f(doblado.scale.x, 3));
+  ok("y no toca las otras escalas", doblado.scale.y === 1 && doblado.scale.z === 1);
+  // Nunca se invierte ni colapsa a cero: hay un suelo.
+  const colapso = dragGizmo(grab, rayFromTo(v3(50, -200, 0), v3(50, 0, 0)));
+  ok("escalar no colapsa a cero", colapso.scale.x > 0, f(colapso.scale.x, 3));
+}
+
+/** Rotar: el angulo que gira el cursor sobre el plano del eje. */
+{
+  const t: Transform3D = IDENTITY_TRANSFORM();
+  // Eje Y: el plano es el XZ. Agarre en +X, arrastre a +Z: 90 grados.
+  const grab = beginGizmo("rotate", "y", t, rayFromTo(v3(100, 200, 0), v3(100, 0, 0)));
+  const girado = dragGizmo(grab, rayFromTo(v3(0, 200, 100), v3(0, 0, 100)));
+  ok(
+    "rotar gira el objeto el angulo barrido",
+    Math.abs(Math.abs(girado.rotation.y) - Math.PI / 2) < 0.05,
+    f(girado.rotation.y, 3),
+  );
+}
+
+/** El gizmo escala con la distancia para medir parecido en pantalla. */
+{
+  ok("el gizmo crece con la distancia", gizmoWorldSize(1000) > gizmoWorldSize(200));
+  ok("y nunca es cero", gizmoWorldSize(0) >= 1);
+}
+
+/** Los objetos viven en el documento: se insertan, editan, deshacen y viajan. */
+{
+  const doc = new SceneDocument();
+  const capa = doc.scene3dTarget();
+  const cubo = makeObject("box", "obj1", capa.id);
+  doc.addObject3D(cubo);
+  ok("el objeto entra en su capa", doc.objectsOf(capa.id).length === 1 && doc.objects3d.length === 1);
+  ok("el documento deja de estar vacio", doc.isEmpty === false);
+
+  const snap = doc.snapshot();
+  doc.setObjectTransform(cubo.id, {
+    position: { x: 10, y: 20, z: 30 },
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 2, y: 2, z: 2 },
+  });
+  ok("mover el objeto cambia su transformacion", doc.objectById(cubo.id)?.transform.position.x === 10);
+
+  doc.restore(snap);
+  ok(
+    "deshacer devuelve el objeto a su sitio",
+    doc.objectById(cubo.id)?.transform.position.x === 0,
+    `${doc.objectById(cubo.id)?.transform.position.x}`,
+  );
+  // La instantanea guarda una COPIA honda: mover el objeto del documento no debe
+  // tocar el de la instantanea.
+  const copiaIndependiente = snap.objects3d[0] !== doc.objects3d[0];
+  ok("la instantanea es copia honda, no referencia", copiaIndependiente);
+
+  // Huerfano: se reagrupa en una capa del espacio.
+  doc.objects3d.push(makeObject("sphere", "huerfano", "no-existe"));
+  doc.ensureLayers();
+  ok(
+    "un objeto huerfano se reagrupa",
+    doc.objects3d.every((o) => doc.scene3dLayers.some((l) => l.id === o.layerId)),
+  );
+
+  ok("borrar la capa se lleva sus objetos", (doc.removeLayer(capa.id), doc.objects3d.length === 0));
+}
+
+// ------------------------------------------------------------- sombras --
+
+{
+  // Luz direccional recta hacia abajo: la sombra de contacto cae justo debajo del
+  // objeto, sin correrse.
+  const sol = makeLight("directional", "sol", { x: 0, y: 1, z: 0 });
+  const disc = contactShadow(sol, v3(10, 100, -20), 60, 0, 0.3);
+  ok("una luz cenital proyecta sombra", disc !== null);
+  if (disc) {
+    ok("la sombra cae debajo del objeto", Math.abs(disc.cx - 10) < 1e-3 && Math.abs(disc.cz + 20) < 1e-3, `(${f(disc.cx, 2)}, ${f(disc.cz, 2)})`);
+    ok("y una luz cenital casi no la estira", disc.rx / disc.rz < 1.1, f(disc.rx / disc.rz, 2));
+  }
+
+  // Luz oblicua: la sombra se corre en la direccion contraria a de donde viene.
+  // La luz esta arriba y a la derecha (x>0), asi que viaja hacia -x al bajar, y la
+  // sombra se corre hacia -x y se alarga en ese eje.
+  const lado = makeLight("directional", "lado", { x: 1, y: 1, z: 0 });
+  const disc2 = contactShadow(lado, v3(0, 100, 0), 60, 0, 0.3);
+  ok("una luz oblicua tambien proyecta", disc2 !== null);
+  if (disc2) {
+    ok("y se corre en la direccion del viaje de la luz", disc2.cx < -1, f(disc2.cx, 2));
+    ok("y se estira a lo largo de la luz", disc2.rx > disc2.rz, `${f(disc2.rx, 1)} vs ${f(disc2.rz, 1)}`);
+  }
+
+  // Luz desde abajo o rasante: no hay sombra sobre el suelo.
+  ok("una luz desde debajo no proyecta", contactShadow(makeLight("directional", "x", { x: 0, y: -1, z: 0 }), v3(0, 100, 0), 60, 0, 0.3) === null);
+  ok("una luz rasante tampoco", contactShadow(makeLight("directional", "x", { x: 1, y: 0, z: 0 }), v3(0, 100, 0), 60, 0, 0.3) === null);
+
+  // Objeto por debajo del suelo: no proyecta sombra sobre el.
+  ok("un objeto bajo el suelo no proyecta", contactShadow(sol, v3(0, -50, 0), 60, 0, 0.3) === null);
+
+  // Cuanto mas alto el objeto, mas grande y mas tenue la sombra.
+  const bajo = contactShadow(sol, v3(0, 60, 0), 60, 0, 0.3);
+  const alto = contactShadow(sol, v3(0, 240, 0), 60, 0, 0.3);
+  ok("una sombra alta proyecta", bajo !== null && alto !== null);
+  if (bajo && alto) {
+    ok("y crece con la altura del objeto", alto.rz > bajo.rz, `${f(bajo.rz, 1)} vs ${f(alto.rz, 1)}`);
+    ok("y se vuelve mas tenue", alto.opacity < bajo.opacity, `${f(bajo.opacity, 3)} vs ${f(alto.opacity, 3)}`);
+  }
+
+  // Una luz apagada no da sombra.
+  ok("una luz apagada no proyecta", contactShadow(makeLight("directional", "x", { x: 0, y: 1, z: 0, enabled: false }), v3(0, 100, 0), 60, 0, 0.3) === null);
 }
 
 console.log(out.join("\n"));

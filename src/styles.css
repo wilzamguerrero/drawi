@@ -2638,3 +2638,51 @@ body {
    lotes, instancias y profundidad del plano- vive en la barra de estado, con el
    resto de la informacion del editor. Alli no tapa el dibujo, y no hay dos sitios
    diciendo lo mismo. */
+
+/* Barra flotante de modos del gizmo (estilo ZBrush): botones sobre el objeto
+   seleccionado para mover / rotar / escalar sin ir al panel. Se coloca cada
+   fotograma sobre la proyeccion del objeto; su esquina de anclaje es el centro
+   inferior, de ahi el translate. */
+.gizmo-bar {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(20, 20, 24, 0.86);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.gizmo-bar-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #cdd2db;
+  cursor: pointer;
+}
+
+.gizmo-bar-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.gizmo-bar-btn.is-active {
+  background: #3a6ff0;
+  color: #fff;
+}
+
+.gizmo-bar-btn svg {
+  width: 18px;
+  height: 18px;
+}

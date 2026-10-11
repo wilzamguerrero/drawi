@@ -534,6 +534,21 @@
 .layer-row.depth-3 { margin-left: 42px; }
 .layer-row.depth-4 { margin-left: 56px; }
 
+/* Sub-fila de un objeto o una luz dentro de una capa del espacio: más baja, sin
+   miniatura, y con el cursor de clic -no se arrastra para reordenar-. */
+.layer-row.layer-child {
+  padding: 2px 6px 2px 0;
+  background: #171719;
+  cursor: pointer;
+  font-size: 12px;
+}
+.layer-row.layer-child:hover {
+  background: #1e1e24;
+}
+.layer-row.layer-child .layer-child-kind {
+  opacity: 0.72;
+}
+
 .layer-row.is-hidden-layer .layer-thumb,
 .layer-row.is-hidden-layer .layer-name,
 .layer-row.is-hidden-layer .layer-kind {

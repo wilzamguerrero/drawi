@@ -68,9 +68,8 @@ Total del proyecto: **319 comprobaciones** (68 motor 2D + 110 interfaz + 141 del
 
 ## 3. Qué NO está construido
 
-- **Sombras.** Las luces iluminan, pero no proyectan sombra sobre el suelo.
-- **Materiales y primitivas.** No hay objetos que insertar, ni materiales que
-  asignar más allá del color de cada trazo.
+- **Materiales.** No hay materiales que asignar más allá del color y la opacidad de
+  cada objeto o trazo (brillo, emisivo, texturas quedan pendientes).
 - **Lista de luces en el panel.** Hoy se edita la luz principal y el ambiente; no
   se pueden añadir una segunda direccional o una puntual desde la interfaz, aunque
   el documento y el shader ya las soportan. Falta el editor de lista.
@@ -406,13 +405,70 @@ cero: así no hay ni una rama por píxel. En una cinta, que cubre mucha pantalla
 importa. Las ambientales no ocupan hueco en el bucle: no tienen dirección ni
 posición, así que se suman a un color base.
 
-Los materiales del visor comparten los mismos uniformes de luz -cinta, manchas y
-rejilla-, porque una escena con dos luces distintas se nota en seguida: un trazo y
-una mancha del mismo color saldrían de tonos diferentes.
+Los materiales del visor comparten los mismos uniformes de luz -cinta, manchas,
+objetos y rejilla-, porque una escena con dos luces distintas se nota en seguida:
+un trazo y una mancha del mismo color saldrían de tonos diferentes. Un fallo que
+costó encontrar vivía justo aquí: un material nace cuando aparece su primer trazo,
+con la luz en su valor por defecto, y si la firma de las luces no había cambiado
+desde entonces nunca recibía la de verdad. Por eso ahora las luces se **escriben
+en todos los materiales cada fotograma** (empaquetadas una sola vez), en vez de
+solo al cambiar.
 
-**Las luces todavía no dan sombra.** Está el sombreado directo, que es lo que hace
-que un trazo se lea como materia. Las sombras proyectadas necesitan proyectar la
-geometría sobre el suelo, y van aparte.
+### 4.17 Primitivas, gizmo y objetos como sub-ítem de la capa
+
+Las primitivas (`objects.ts`) guardan parámetros, no mallas -un cubo es "cubo de
+lado tal"-, y la malla la deriva el backend, igual que los segmentos de un trazo.
+La transformación se guarda descompuesta -posición, euler, escala- porque es lo
+que el gizmo manipula y la interfaz enseña; la matriz se compone al dibujar.
+
+El gizmo (`gizmo.ts`) es, en el fondo, **dos proyecciones del cursor sobre el eje
+agarrado**: una al empezar y otra en cada movimiento, y la diferencia es lo que se
+aplica. Hacerlo así -y no "mover el objeto hacia donde va el ratón"- es lo que
+mantiene el eje pegado al cursor por mucho que gire la cámara. Mover y escalar
+proyectan sobre la recta del eje; rotar, sobre el plano perpendicular a él, con el
+delta de ángulo llevado al camino corto para que no pegue un salto al cruzar ±π. La
+geometría del gizmo -varillas con cuerpo, conos para mover, cubos para escalar,
+aros de tubo para rotar- vive en el backend (`buildGizmoAxis`), con grosores
+puestos para que a la escala a la que se planta en pantalla se lea como un
+manipulador de verdad y no como alambres. Es **un solo gizmo que alterna modo**:
+W/E/R cambian entre mover/rotar/escalar, y una **barra flotante** sobre el objeto
+(estilo ZBrush, `placeGizmoBar`) ofrece los tres modos a un clic. La barra es
+interfaz del editor -vive en el DOM del anfitrión, no en el lienzo WebGL-, se
+coloca cada fotograma proyectando el centro del objeto a pantalla, y nunca se
+exporta.
+
+Los objetos y las luces aparecen como **sub-filas de la capa del espacio** en el
+panel de capas, que es lo que se pidió: seleccionarlos desde ahí, con su ojo
+propio. Al pulsar un objeto, se entra al espacio y se pone la herramienta de
+objetos, para que el gizmo salga sin un paso extra. Es estado de interfaz, no del
+documento: la selección no entra en el historial ni se guarda. Una primitiva nace
+**opaca** (`opacity: 1`): es un objeto sólido de la escena, no un andamio; la
+transparencia, si se quiere, se ajusta desde la opacidad de su capa, sin un control
+propio que duplique esa opción.
+
+### 4.18 Las sombras son de contacto, no mapas ni geometría aplastada
+
+**Sí hay sombras sobre el suelo** (`shadow.ts`), y la decisión de fondo explica por
+qué son como son. Hubo dos descartes antes de acertar:
+
+- **Mapa de sombra**: necesita el z-buffer que el visor no usa -los trazos son
+  coplanares y el z-fighting los destrozaría-, así que queda fuera de raíz.
+- **Geometría aplastada contra el suelo** con una matriz de proyección plana: es
+  correcta como física, pero se ve mal. Una caja aplastada vista en 3/4 es un
+  cuadrilátero inclinado de bordes duros, no una sombra, y sin z-buffer los solapes
+  de sus caras manchan de doble tinta.
+
+Lo que se lee de inmediato en una escena de ilustración es una **sombra de
+contacto**: un disco oscuro, suave en el borde, bajo el objeto (`contactShadow`).
+Se coloca donde la luz lo tira, se agranda con la altura del objeto y se estira en
+la dirección de la luz, de modo que una luz rasante alarga la sombra y un objeto
+alto la da más grande y más tenue. Todo es aritmética -se prueba en Node- y el
+disco es un quad difuso con el borde desvanecido en el shader. El quad se tumba al
+plano del suelo con una matriz que mapea su eje Y local al **eje Z del mundo**, no
+al Y (la altura): mapearlo al Y dejaba el disco de pie, un sliver vertical
+invisible en picado. Todas las sombras comparten un único quad, así que cuesta una
+malla más por objeto, no una geometría más. Se dibuja debajo de todo y solo con la
+rejilla puesta, que es la que hace de suelo visible.
 
 ## 5. Medido
 
@@ -439,15 +495,18 @@ Con el navegador (`npm run verify:3d`, 1100×760):
 | Píxeles pintados | 26.037 (3,11 % del lienzo) |
 | Borrar un trazo | −1.506 píxeles |
 | Orbitar | cambia la imagen y añade **0 trazos** |
+| Insertar un cubo | 20.709 píxeles, 1 objeto en la escena |
+| Arrastrar su eje X con el gizmo | el objeto corre a x≈132, Y/Z intactos |
+| Sombra de un cubo elevado, con rejilla | +15.000 píxeles frente a la luz apagada |
 
 **Esto se mide con el rasterizador por software de Chrome, no con una GPU.** El
 rendimiento real está sin medir: falta presupuestar los 60 fps con 20.000 trazos.
 
 ## 6. Fases pendientes
 
-1. Sombras proyectadas sobre el suelo, a partir de la luz principal.
-2. Editor de lista de luces: añadir, quitar y elegir una segunda.
-3. Primitivas y materiales: objetos que insertar y materiales que asignar.
+1. Editor de lista de luces: añadir, quitar y elegir una segunda desde el panel.
+2. Materiales asignables (brillo, emisivo) más allá del color por objeto.
+3. "Superficie" en la colocación del trazo: dibujar sobre la cara de un objeto.
 4. Conectar `cull.ts` al bucle de dibujado, con el descarte por lotes primero.
 5. Incluir el espacio en la exportación.
 6. Respaldo por CPU, solo como visor.

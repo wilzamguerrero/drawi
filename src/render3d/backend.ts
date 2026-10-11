@@ -49,6 +49,92 @@ import {
   type FloorGrid,
   type GridOptions,
 } from "./grid";
+import {
+  createObjectEntry,
+  createShadowEntry,
+  disposeObjectEntry,
+  objectRevision,
+  shadowQuadGeometry,
+  applyObject,
+  type ObjectEntry,
+  type ShadowEntry,
+} from "./objects";
+import type { Object3D } from "../scene3d/objects";
+import { contactShadow, type ShadowDisc } from "../scene3d/shadow";
+import { AXIS_COLORS, type GizmoAxis as GizmoAxisName, type GizmoMode } from "../scene3d/gizmo";
+
+/** Lo que hace falta para dibujar el gizmo: donde, de que tamano y que resaltar. */
+export interface GizmoDraw {
+  center: V3;
+  size: number;
+  mode: GizmoMode;
+  /** Eje bajo el cursor, resaltado en blanco. */
+  hover: GizmoAxisName | null;
+}
+
+/** Centro de un objeto y su radio envolvente, para colocar su sombra de contacto. */
+export interface V3Radius {
+  center: V3;
+  radius: number;
+}
+
+/**
+ * Piezas de un eje del gizmo, en coordenadas unitarias -el grupo las escala-.
+ *
+ * El grosor no es decorativo y costo verlo: con la varilla a 0.016 y la punta a
+ * 0.06, a la escala a la que se planta el gizmo en pantalla ambos caian por debajo
+ * del pixel, y el manipulador se veia como bolitas sueltas unidas por hilos. Las
+ * medidas de abajo estan puestas para que a esa misma escala la varilla tenga un
+ * par de pixeles de ancho y la punta se lea como una flecha o un cubo.
+ *
+ * Se construye en el eje +Y -de donde nacen las geometrias de three- y se gira a
+ * cada eje; la punta arranca donde acaba la varilla para que no quede hueco.
+ */
+const buildGizmoAxis = (mode: GizmoMode, axis: GizmoAxisName): THREE.Mesh[] => {
+  const color = AXIS_COLORS[axis];
+  const mat = (): THREE.MeshBasicMaterial =>
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+      depthWrite: false,
+    });
+
+  // Rotacion del eje unitario +Y a cada eje: las geometrias de three nacen en Y.
+  const orient = (m: THREE.Mesh): void => {
+    if (axis === "x") m.rotation.z = -Math.PI / 2;
+    else if (axis === "z") m.rotation.x = Math.PI / 2;
+  };
+
+  if (mode === "rotate") {
+    // Aro en el plano perpendicular al eje: un toro de tubo grueso, que es lo que
+    // se ve como un aro de verdad y no como un alambre.
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.045, 10, 72), mat());
+    // El toro nace en el plano XY (normal Z); se gira para que su normal sea el eje.
+    if (axis === "x") ring.rotation.y = Math.PI / 2;
+    else if (axis === "y") ring.rotation.x = Math.PI / 2;
+    return [ring];
+  }
+
+  const meshes: THREE.Mesh[] = [];
+  // Varilla: un cilindro del centro a 0.8 por el eje.
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.8, 12), mat());
+  shaft.position.y = 0.4;
+  orient(shaft);
+  meshes.push(shaft);
+
+  // Punta: cono para mover, cubo para escalar. Arranca en 0.8 y llega a ~1.0, para
+  // que el brazo mida 1 unidad exacta y el picking -que mide sobre el eje- encaje.
+  const tip =
+    mode === "scale"
+      ? new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), mat())
+      : new THREE.Mesh(new THREE.ConeGeometry(0.095, 0.3, 16), mat());
+  tip.position.y = 0.95;
+  orient(tip);
+  meshes.push(tip);
+  return meshes;
+};
 
 interface BatchEntry {
   mesh: THREE.Mesh;
@@ -136,12 +222,21 @@ export class Scene3DBackend {
   private readonly dummy = new THREE.PerspectiveCamera();
   private readonly entries = new Map<string, BatchEntry>();
   private readonly fillEntries = new Map<string, FillEntry>();
+  private readonly objectEntries = new Map<string, ObjectEntry>();
+  private readonly shadowEntries = new Map<string, ShadowEntry>();
+  /** Quad del disco de sombra, compartido por todas las sombras de contacto. */
+  private readonly shadowQuad = shadowQuadGeometry();
   /** Marca del punto de anclaje, si lo hay. */
   private anchorMark: THREE.LineSegments | null = null;
   private anchorAt: V3 | null = null;
   private grid: FloorGrid | null = null;
+  private gizmoGroup: THREE.Group | null = null;
+  /** Modo con el que esta construido el gizmo actual, para rehacerlo al cambiar. */
+  private gizmoMode: GizmoMode | null = null;
   /** Firma de las luces ya repartidas: evita reempaquetarlas en cada fotograma. */
   private lightSignature = "";
+  /** Luces ya empaquetadas, para reescribirlas en los materiales nuevos. */
+  private packedLights: ReturnType<typeof packLights> | null = null;
   private readonly mat = new THREE.Matrix4();
   private live: LiveEntry | null = null;
   private width = 1;
@@ -367,6 +462,8 @@ export class Scene3DBackend {
     // esto se dibujaria con la proyeccion identidad, es decir, no se veria.
     const materiales = [...this.entries.values()].map((e) => e.material);
     for (const entry of this.fillEntries.values()) materiales.push(entry.material);
+    for (const entry of this.objectEntries.values()) materiales.push(entry.material);
+    for (const entry of this.shadowEntries.values()) materiales.push(entry.material);
     if (this.live) materiales.push(this.live.material);
     if (this.grid) materiales.push(this.grid.material);
 
@@ -445,6 +542,138 @@ export class Scene3DBackend {
   }
 
   /**
+   * Pone las mallas de las primitivas de acuerdo con los objetos del documento.
+   *
+   * Como las manchas: una capa oculta no entra -y la limpieza del final se lleva
+   * su malla-. A diferencia de los trazos, cada objeto es su propia malla: son
+   * pocos y cada uno tiene su geometria, asi que no hay lotes que valgan.
+   *
+   * El orden de dibujado los pone por DEBAJO de los trazos y las manchas de su
+   * capa: un objeto es casi siempre el andamio sobre el que se dibuja, asi que las
+   * lineas tienen que leerse por encima.
+   */
+  syncObjects(objects: readonly Object3D[], paintOf: (layerId: string) => LayerPaint): void {
+    if (!this.renderer) return;
+    const live = new Set<string>();
+
+    for (const o of objects) {
+      const paint = paintOf(o.layerId);
+      if (!paint.visible || o.hidden) continue;
+      live.add(o.id);
+
+      let entry = this.objectEntries.get(o.id);
+      // Cambiar de primitiva (cubo a esfera) es otra geometria: se rehace. Lo
+      // demas -mover, color, opacidad- se actualiza en sitio.
+      if (entry && entry.kind !== o.kind) {
+        this.destroyObjectEntry(entry);
+        this.objectEntries.delete(o.id);
+        entry = undefined;
+      }
+      if (!entry) {
+        entry = createObjectEntry(o);
+        this.scene.add(entry.mesh);
+        this.objectEntries.set(o.id, entry);
+      } else if (entry.revision !== objectRevision(o)) {
+        applyObject(entry.mesh, entry.material, o);
+        entry.revision = objectRevision(o);
+      }
+      // La opacidad de la capa multiplica a la del objeto: ocultar a medias una
+      // capa atenua todo lo suyo, objetos incluidos.
+      entry.material.uniforms.uOpacity.value = o.opacity * paint.opacity;
+      // Muy por debajo de trazos y manchas: el andamio va al fondo de su capa.
+      entry.mesh.renderOrder = paint.order * FILL_ORDER_STEP - 1;
+    }
+
+    for (const [id, entry] of [...this.objectEntries]) {
+      if (live.has(id)) continue;
+      this.destroyObjectEntry(entry);
+      this.objectEntries.delete(id);
+    }
+  }
+
+  /**
+   * Pone bajo cada objeto una sombra de contacto sobre el suelo.
+   *
+   * No son mapas de sombra ni geometria aplastada: es un disco difuso por objeto
+   * (`contactShadow` de `shadow.ts`), colocado donde la luz lo tira, agrandado con
+   * la altura y estirado en la direccion de la luz. Todas comparten UN quad -el
+   * disco base-, asi que tener sombra de todo cuesta una malla mas por objeto, no
+   * una geometria mas.
+   *
+   * `light` es la luz principal, o `null` si no hay con que proyectar: entonces no
+   * hay sombras y se quitan todas. `floorY` es la altura del suelo.
+   */
+  syncShadows(
+    objects: readonly Object3D[],
+    paintOf: (layerId: string) => LayerPaint,
+    light: Light3D | null,
+    floorY: number,
+    radiusOf: (o: Object3D) => V3Radius,
+    opacity: number,
+  ): void {
+    if (!this.renderer) return;
+    const live = new Set<string>();
+
+    if (light && opacity > 0.002) {
+      for (const o of objects) {
+        const paint = paintOf(o.layerId);
+        if (!paint.visible || o.hidden) continue;
+        const { center, radius } = radiusOf(o);
+        const disc = contactShadow(light, center, radius, floorY, opacity * paint.opacity);
+        if (!disc) continue;
+        live.add(o.id);
+
+        let sh = this.shadowEntries.get(o.id);
+        if (!sh) {
+          sh = createShadowEntry(this.shadowQuad, 0);
+          this.scene.add(sh.mesh);
+          this.shadowEntries.set(o.id, sh);
+        }
+        this.placeShadowDisc(sh, disc, floorY);
+        // Debajo de TODO lo de la capa, incluso de la rejilla no -esa es el suelo-:
+        // la sombra se posa sobre el suelo y bajo cualquier trazo u objeto.
+        sh.mesh.renderOrder = paint.order * FILL_ORDER_STEP - 2;
+      }
+    }
+
+    for (const [id, sh] of [...this.shadowEntries]) {
+      if (live.has(id)) continue;
+      this.destroyShadowEntry(sh);
+      this.shadowEntries.delete(id);
+    }
+  }
+
+  /**
+   * Coloca el quad del disco en el suelo segun el `ShadowDisc`.
+   *
+   * El disco base vive en el plano XY (de -1 a 1). Hay que TUMBARLO al plano del
+   * suelo: su X local va al plano del suelo, su Y local **al eje Z del mundo** -no
+   * al Y, que es la altura-, y su normal pasa a apuntar hacia arriba. Ese giro es
+   * el detalle: mapear la Y del quad a la Y del mundo dejaba el disco de pie, un
+   * sliver vertical invisible visto en picado. Ademas se escala a los semiejes
+   * `rx`/`rz` y se gira hacia donde se estira la sombra. Todo en una matriz.
+   */
+  private placeShadowDisc(sh: ShadowEntry, disc: ShadowDisc, floorY: number): void {
+    const cos = Math.cos(disc.angle);
+    const sin = Math.sin(disc.angle);
+    const m = sh.mesh.matrix as THREE.Matrix4;
+    // `set` toma los numeros en orden de fila (lo que se lee), aunque los guarde
+    // por columnas. Un vertice (x, y, 0) del quad va a:
+    //   worldX = cos·rx·x − sin·rz·y + cx
+    //   worldY = floorY                      (plano del suelo; la Y del quad no sube)
+    //   worldZ = sin·rx·x + cos·rz·y + cz
+    // La tercera columna (0,1,0) es la normal del disco, hacia arriba.
+    m.set(
+      cos * disc.rx, -sin * disc.rz, 0, disc.cx,
+      0, 0, 1, floorY,
+      sin * disc.rx, cos * disc.rz, 0, disc.cz,
+      0, 0, 0, 1,
+    );
+    (sh.material.uniforms.uModel.value as THREE.Matrix4).copy(m);
+    sh.material.uniforms.uOpacity.value = disc.opacity;
+  }
+
+  /**
    * Marca del punto de anclaje, o `null` para quitarla.
    *
    * Sin una marca visible, "arrancar desde el anclaje" es una opcion que no se
@@ -504,6 +733,80 @@ export class Scene3DBackend {
   }
 
   /**
+   * Dibuja el gizmo de transformacion alrededor de un objeto, o lo quita.
+   *
+   * Es geometria de ayuda, no parte del dibujo: lineas para mover y escalar, aros
+   * para rotar. El eje bajo el cursor se resalta -lo decide el llamante, que es
+   * quien hace el picking-. Va por encima de todo lo demas para poder agarrarlo
+   * aunque quede detras de un trazo.
+   */
+  /**
+   * Dibuja el gizmo de transformacion alrededor de un objeto, o lo quita.
+   *
+   * El gizmo es geometria de verdad -flechas con punta de cono para mover, cubos
+   * para escalar, aros de tubo para rotar-, no lineas sueltas: a un pixel de
+   * grosor el gizmo se veia como un garabato, y lo que hace que parezca el de un
+   * programa serio es que los brazos tengan cuerpo. Se construye UNA vez por modo
+   * y se guarda; cada fotograma solo se recoloca -una matriz- y se recolorea el
+   * eje que esta bajo el cursor. Rehacer la geometria en cada fotograma, con conos
+   * y toros, era justo el desperdicio que no hace falta.
+   */
+  drawGizmo(gizmo: GizmoDraw | null): void {
+    if (!this.renderer) return;
+    if (!gizmo) {
+      if (this.gizmoGroup) this.gizmoGroup.visible = false;
+      return;
+    }
+    // Se rehace solo al cambiar de modo; mover el objeto o alejar la camara no
+    // tocan la geometria, solo la matriz del grupo.
+    if (!this.gizmoGroup || this.gizmoMode !== gizmo.mode) {
+      this.rebuildGizmo(gizmo.mode);
+      this.gizmoMode = gizmo.mode;
+    }
+    const group = this.gizmoGroup as THREE.Group;
+    group.visible = true;
+
+    // Matriz del grupo: lleva las piezas unitarias al centro del objeto y las
+    // escala al tamano que toca. Asi el gizmo mide parecido en pantalla a
+    // cualquier zoom sin recalcular ni un vertice.
+    group.matrix.makeScale(gizmo.size, gizmo.size, gizmo.size);
+    group.matrix.setPosition(gizmo.center.x, gizmo.center.y, gizmo.center.z);
+    group.renderOrder = LIVE_RENDER_ORDER + 1;
+
+    // Resalte del eje bajo el cursor: se aclara su color, el resto vuelve al suyo.
+    for (const child of group.children) {
+      const axis = child.userData.axis as GizmoAxisName;
+      const mat = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      const base = AXIS_COLORS[axis];
+      mat.color.set(axis === gizmo.hover ? 0xffe36b : base);
+      mat.opacity = axis === gizmo.hover ? 1 : 0.9;
+    }
+  }
+
+  /** Construye las piezas del gizmo para un modo, en coordenadas unitarias. */
+  private rebuildGizmo(mode: GizmoMode): void {
+    if (this.gizmoGroup) {
+      for (const child of [...this.gizmoGroup.children]) {
+        this.gizmoGroup.remove(child);
+        (child as THREE.Mesh).geometry.dispose();
+        ((child as THREE.Mesh).material as THREE.Material).dispose();
+      }
+      this.scene.remove(this.gizmoGroup);
+    }
+    const group = new THREE.Group();
+    group.matrixAutoUpdate = false;
+    this.gizmoGroup = group;
+    this.scene.add(group);
+
+    for (const axis of ["x", "y", "z"] as GizmoAxisName[]) {
+      for (const mesh of buildGizmoAxis(mode, axis)) {
+        mesh.userData.axis = axis;
+        group.add(mesh);
+      }
+    }
+  }
+
+  /**
    * Rejilla del suelo: la enciende, la coloca bajo la camara o la aparta.
    *
    * Se llama en cada fotograma, asi que lo barato importa: mientras esta apagada
@@ -533,17 +836,33 @@ export class Scene3DBackend {
    * La firma evita reempaquetar en cada fotograma: las luces cambian cuando
    * alguien las toca, no sesenta veces por segundo.
    */
+  /**
+   * Reparte las luces del documento entre todos los materiales del visor.
+   *
+   * Se empaqueta una sola vez por cambio -eso lo guarda la firma-, pero se ESCRIBE
+   * en todos los materiales cada vez. Es la correccion de un fallo que hacia que
+   * las luces "no se vieran": un material nace cuando aparece su primer lote, con
+   * los uniformes de luz en su valor plano por defecto; si la firma no habia
+   * cambiado desde entonces, nunca recibia la luz de verdad, asi que cada trazo
+   * nuevo salia sin iluminar y mover la luz no le hacia nada. Escribir siempre
+   * cuesta unas pocas asignaciones de vector por material -un punado- y quita de
+   * raiz esa clase de fallo.
+   */
   private applyLights(lights: readonly Light3D[]): void {
     let firma = "";
     for (const l of lights) {
       firma += `${l.id}${l.enabled ? 1 : 0}${l.color}${l.intensity}${l.x},${l.y},${l.z};`;
     }
-    if (firma === this.lightSignature) return;
-    this.lightSignature = firma;
+    if (firma !== this.lightSignature) {
+      this.lightSignature = firma;
+      this.packedLights = packLights(lights);
+    }
+    const packed = this.packedLights;
+    if (!packed) return;
 
-    const packed = packLights(lights);
     const materiales: THREE.ShaderMaterial[] = [...this.entries.values()].map((e) => e.material);
     for (const entry of this.fillEntries.values()) materiales.push(entry.material);
+    for (const entry of this.objectEntries.values()) materiales.push(entry.material);
     if (this.live) materiales.push(this.live.material);
 
     for (const material of materiales) {
@@ -647,6 +966,12 @@ export class Scene3DBackend {
     this.destroyLive();
     for (const entry of this.fillEntries.values()) this.destroyFillEntry(entry);
     this.fillEntries.clear();
+    for (const entry of this.objectEntries.values()) this.destroyObjectEntry(entry);
+    this.objectEntries.clear();
+    for (const sh of this.shadowEntries.values()) this.destroyShadowEntry(sh);
+    this.shadowEntries.clear();
+    // El quad del disco de sombra es compartido: se suelta una sola vez al cerrar.
+    this.shadowQuad.dispose();
     if (this.anchorMark) {
       this.scene.remove(this.anchorMark);
       this.anchorMark.geometry.dispose();
@@ -657,6 +982,15 @@ export class Scene3DBackend {
       this.scene.remove(this.grid.mesh);
       disposeFloorGrid(this.grid);
       this.grid = null;
+    }
+    if (this.gizmoGroup) {
+      for (const child of [...this.gizmoGroup.children]) {
+        const m = child as THREE.Mesh | THREE.LineSegments;
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+      }
+      this.scene.remove(this.gizmoGroup);
+      this.gizmoGroup = null;
     }
     this.renderer?.dispose();
     this.renderer = null;
@@ -688,6 +1022,18 @@ export class Scene3DBackend {
     this.scene.remove(entry.mesh);
     entry.fill.geometry.dispose();
     entry.material.dispose();
+  }
+
+  private destroyObjectEntry(entry: ObjectEntry): void {
+    this.scene.remove(entry.mesh);
+    disposeObjectEntry(entry);
+  }
+
+  private destroyShadowEntry(sh: ShadowEntry): void {
+    // La geometria NO se toca: es prestada del objeto, que la libera el. Solo se
+    // suelta el material propio de la sombra.
+    this.scene.remove(sh.mesh);
+    sh.material.dispose();
   }
 
   private destroyLive(): void {
