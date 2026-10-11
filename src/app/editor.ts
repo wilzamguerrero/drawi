@@ -631,6 +631,20 @@ export class Editor {
   }
 
   /**
+   * Cambia una propiedad del objeto seleccionado -material, opacidad-.
+   *
+   * No abre paso de historial por cada tirón de un deslizador -eso dejaría ochenta
+   * entradas por ajustar la rugosidad-: escribe directo y refresca, como el resto
+   * de ajustes continuos del espacio (ver `touchSpace`).
+   */
+  setSelectedObject(patch: Partial<Object3D>): void {
+    const id = this.selectedObject3dId;
+    if (!id) return;
+    if (!this.doc.updateObject3D(id, patch)) return;
+    this.touchSpace();
+  }
+
+  /**
    * Selecciona un objeto desde el panel de capas.
    *
    * Ademas de marcarlo, entra al espacio y pone la herramienta de objetos: el

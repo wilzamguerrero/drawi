@@ -10,7 +10,7 @@ import type { ShapeDef } from "../physics/shapes";
 import { DEFAULT_CAMERA_3D, type Camera3DState } from "../scene3d/camera3d";
 import { outlineBounds, type Fill3D } from "../scene3d/fill";
 import { DEFAULT_LIGHTS, type Light3D } from "../scene3d/lights";
-import { cloneObject, type Object3D } from "../scene3d/objects";
+import { cloneObject, normalizeObject3D, type Object3D } from "../scene3d/objects";
 import type { V3 } from "../scene3d/vec3";
 import { POINT_FLOATS, boundsOf, type Stroke3D } from "../scene3d/types";
 
@@ -295,7 +295,9 @@ export function applyProject(doc: SceneDocument, file: ProjectFile): void {
     Array.isArray(file.lights3d) && file.lights3d.length > 0
       ? file.lights3d.map((l) => ({ ...l }))
       : DEFAULT_LIGHTS.map((l) => ({ ...l }));
-  doc.objects3d = Array.isArray(file.objects3d) ? file.objects3d.map(cloneObject) : [];
+  doc.objects3d = Array.isArray(file.objects3d)
+    ? file.objects3d.map((o) => cloneObject(normalizeObject3D(o)))
+    : [];
   doc.camera3d = { ...DEFAULT_CAMERA_3D, ...(file.camera3d ?? {}) };
   // Los cuerpos entran primero para que `ensureLayers` sepa a qué capa de
   // materia reasignar los que vengan sin `layerId` (proyectos v1/v2).

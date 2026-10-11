@@ -211,18 +211,19 @@ export const createRibbonMaterial = (opts: RibbonMaterialOptions): THREE.ShaderM
     },
     transparent: true,
     premultipliedAlpha: true,
-    // Orden de pintado, NO z-buffer.
+    // Lee la profundidad, pero NO la escribe.
     //
-    // Todos los trazos de una misma sesion viven sobre el mismo plano de dibujo,
-    // asi que son coplanares. Con el z-buffer activo eso es z-fighting puro, y
-    // ademas el rango de profundidad util (de 4 a 54.000 unidades) deja muy poca
-    // precision a la distancia de trabajo: dos trazos coplanares acaban
-    // rechazandose unos a otros de forma intermitente.
+    // Todos los trazos de una misma sesion son coplanares; si escribieran
+    // profundidad se rechazarian unos a otros (z-fighting) y, al ser
+    // semitransparentes, taparian lo de detras con un borde duro. Por eso NO
+    // escriben: se dibujan en orden de creacion y se superponen como materia
+    // puesta encima de otra -el look "pintura" de Tilt Brush y Feather-.
     //
-    // Se dibujan en orden de creacion y se dejan superponer, que es justo lo que
-    // hace que un trazo se lea como materia puesta encima de otra. Es la misma
-    // decision que toma el look "pintura" de Tilt Brush y Feather.
-    depthTest: false,
+    // Pero SI leen: asi un objeto solido -que si escribe profundidad- oculta el
+    // trozo de trazo que queda detras de el. Es el patron pase-opaco + pase-
+    // transparente: los objetos van primero y dejan su profundidad; los trazos
+    // despues, tapados por lo que tienen delante pero sin pelearse entre si.
+    depthTest: true,
     depthWrite: false,
     side: THREE.DoubleSide,
   });

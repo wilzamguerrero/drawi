@@ -1,15 +1,17 @@
 /**
- * Mallas de las primitivas y su material.
+ * Mallas de las primitivas y su material PBR.
  *
- * three.js ya trae las geometrias -caja, esfera, cilindro...-, asi que aqui lo que
- * se resuelve es lo propio del visor: que el objeto se vea con las MISMAS luces
- * que las cintas y las manchas, y con el mismo orden de pintado sin z-buffer, para
- * que no pelee con el resto de la escena.
+ * three.js ya trae las geometrias -caja, esfera, cilindro...-, y tambien el
+ * material fisico: las primitivas usan `MeshStandardMaterial`, el mismo PBR que el
+ * motor de 8th Wall y que el visor de inre. No es un shader propio como la cinta:
+ * una primitiva es un solido de verdad, con volumen, y lo que se quiere es que
+ * reciba la luz como un objeto real -con rugosidad, metalicidad y sombras-, no el
+ * sombreado plano de un trazo.
  *
- * Una primitiva, a diferencia de un trazo, SI tiene volumen de verdad: su normal
- * sale de la geometria, no de un truco de sombreado. Por eso el shader es mas
- * sencillo que el de la cinta -no finge ser un tubo- pero comparte los uniformes
- * de luz para que un cubo y un trazo del mismo color se lean igual.
+ * Esto es lo que hace que los objetos proyecten sombra con su FORMA (shadow maps),
+ * se ensombrezcan entre si, y respondan a un entorno. Los trazos siguen con su
+ * shader propio y su orden de pintor; conviven porque el pase de objetos se dibuja
+ * con la camara y las luces nativas de three, y el de trazos despues con su matriz.
  */
 
 import * as THREE from "three";
@@ -19,58 +21,6 @@ import {
   type PrimitiveKind,
   type Transform3D,
 } from "../scene3d/objects";
-import { lightUniforms } from "./ribbon";
-
-const VERT = /* glsl */ `
-precision highp float;
-
-uniform mat4 uViewProjection;
-uniform mat4 uModel;
-uniform mat3 uNormalMatrix;
-
-varying vec3 vNormal;
-varying vec3 vWorld;
-
-void main() {
-  vec4 world = uModel * vec4(position, 1.0);
-  vWorld = world.xyz;
-  vNormal = normalize(uNormalMatrix * normal);
-  gl_Position = uViewProjection * world;
-}
-`;
-
-const FRAG = /* glsl */ `
-precision highp float;
-
-varying vec3 vNormal;
-varying vec3 vWorld;
-
-uniform vec3 uColor;
-uniform vec3 uCameraPos;
-uniform float uOpacity;
-
-#define NUM_LUCES 4
-uniform vec4 uLightVec[NUM_LUCES];
-uniform vec3 uLightColor[NUM_LUCES];
-uniform vec3 uAmbient;
-
-void main() {
-  vec3 n = normalize(vNormal);
-  vec3 view = normalize(uCameraPos - vWorld);
-  // Translucida y de dos caras: una primitiva de referencia se mira por dentro
-  // tanto como por fuera, asi que la cara de atras tambien se sombrea.
-  if (dot(n, view) < 0.0) n = -n;
-
-  vec3 difusa = uAmbient;
-  for (int i = 0; i < NUM_LUCES; i++) {
-    vec4 lv = uLightVec[i];
-    vec3 L = lv.w < 0.5 ? normalize(lv.xyz) : normalize(lv.xyz - vWorld);
-    difusa += uLightColor[i] * max(dot(n, L), 0.0);
-  }
-
-  gl_FragColor = vec4(uColor * difusa * uOpacity, uOpacity);
-}
-`;
 
 /**
  * Geometria unitaria de cada primitiva, centrada en el origen.
@@ -98,29 +48,39 @@ const buildGeometry = (kind: PrimitiveKind): THREE.BufferGeometry => {
   }
 };
 
-export const createObjectMaterial = (color: string, opacity: number): THREE.ShaderMaterial =>
-  new THREE.ShaderMaterial({
-    vertexShader: VERT,
-    fragmentShader: FRAG,
-    uniforms: {
-      uViewProjection: { value: new THREE.Matrix4() },
-      uModel: { value: new THREE.Matrix4() },
-      uNormalMatrix: { value: new THREE.Matrix3() },
-      uColor: { value: new THREE.Color(color) },
-      uCameraPos: { value: new THREE.Vector3() },
-      ...lightUniforms(),
-      uOpacity: { value: opacity },
-    },
-    transparent: true,
-    premultipliedAlpha: true,
-    // Las primitivas SI escriben profundidad entre ellas y respetan la del z-buffer
-    // local: un objeto solido tiene interior, y sin esto una cara de atras se
-    // pintaria sobre una de delante. El plano de los trazos sigue sin z-buffer; los
-    // objetos se dibujan antes, asi que el trazo cae encima igual.
-    depthTest: true,
-    depthWrite: true,
+/**
+ * Material PBR de una primitiva: `MeshStandardMaterial` de three.
+ *
+ * Es el mismo que usa el motor para su material `basic` -que, pese al nombre, es
+ * PBR- y el que inre monta en el visor. three se encarga de la iluminacion fisica
+ * (GGX, Fresnel), de leer el mapa de entorno y de recibir y proyectar las sombras;
+ * no hay que escribir ni una linea de shader. `transparent` solo cuando hace falta:
+ * un material opaco con `transparent: true` paga el orden de transparencia sin
+ * motivo y puede pelear con el z-buffer.
+ */
+export const createObjectMaterial = (o: Object3D): THREE.MeshStandardMaterial => {
+  const m = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(o.color),
+    roughness: o.roughness,
+    metalness: o.metalness,
+    emissive: new THREE.Color(o.emissive),
+    emissiveIntensity: o.emissiveIntensity,
+    // De dos caras: una primitiva de referencia se mira por dentro tanto como por
+    // fuera, y asi un plano o un objeto abierto no desaparece al verlo de canto.
     side: THREE.DoubleSide,
   });
+  applyMaterialOpacity(m, o.opacity);
+  return m;
+};
+
+/** Ajusta la transparencia del material sin dejarlo en modo transparente de balde. */
+const applyMaterialOpacity = (m: THREE.MeshStandardMaterial, opacity: number): void => {
+  m.opacity = opacity;
+  m.transparent = opacity < 0.999;
+  // Un material translucido no debe escribir profundidad -taparia lo de detras-,
+  // pero uno opaco si, para que las sombras y el z-buffer lo traten como solido.
+  m.depthWrite = !m.transparent;
+};
 
 /** Compone la matriz de modelo de una transformacion (TRS, euler XYZ). */
 export const composeMatrix = (t: Transform3D, out = new THREE.Matrix4()): THREE.Matrix4 => {
@@ -135,7 +95,7 @@ export const composeMatrix = (t: Transform3D, out = new THREE.Matrix4()): THREE.
 export interface ObjectEntry {
   mesh: THREE.Mesh;
   geometry: THREE.BufferGeometry;
-  material: THREE.ShaderMaterial;
+  material: THREE.MeshStandardMaterial;
   kind: PrimitiveKind;
   /** Firma del objeto ya subido, para no rehacer nada si no cambio. */
   revision: string;
@@ -148,6 +108,10 @@ export const objectRevision = (o: Object3D): string => {
     o.kind,
     o.color,
     o.opacity,
+    o.roughness,
+    o.metalness,
+    o.emissive,
+    o.emissiveIntensity,
     o.hidden ? 1 : 0,
     t.position.x, t.position.y, t.position.z,
     t.rotation.x, t.rotation.y, t.rotation.z,
@@ -157,27 +121,34 @@ export const objectRevision = (o: Object3D): string => {
 
 export const createObjectEntry = (o: Object3D): ObjectEntry => {
   const geometry = buildGeometry(o.kind);
-  const material = createObjectMaterial(o.color, o.opacity);
+  const material = createObjectMaterial(o);
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   mesh.matrixAutoUpdate = false;
+  // Un objeto solido proyecta y recibe sombra: es lo que hace que un cubo tire su
+  // sombra con forma de cubo y que un objeto ensombrezca a otro.
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
   applyObject(mesh, material, o);
   return { mesh, geometry, material, kind: o.kind, revision: objectRevision(o) };
 };
 
-/** Pone al dia la malla con el objeto (matriz, color, opacidad, visibilidad). */
+/** Pone al dia la malla con el objeto (matriz, material, visibilidad). */
 export const applyObject = (
   mesh: THREE.Mesh,
-  material: THREE.ShaderMaterial,
+  material: THREE.MeshStandardMaterial,
   o: Object3D,
 ): void => {
   composeMatrix(o.transform, mesh.matrix);
-  (material.uniforms.uModel.value as THREE.Matrix4).copy(mesh.matrix);
-  // La matriz de normales es la inversa traspuesta de la parte 3x3: sin ella, una
-  // escala no uniforme torceria las normales y el sombreado saldria mal.
-  (material.uniforms.uNormalMatrix.value as THREE.Matrix3).getNormalMatrix(mesh.matrix);
-  (material.uniforms.uColor.value as THREE.Color).set(o.color);
-  material.uniforms.uOpacity.value = o.opacity;
+  // El material es nativo de three: necesita la matriz de mundo poblada para que
+  // la iluminacion y las sombras usen la posicion y la normal correctas.
+  mesh.matrixWorld.copy(mesh.matrix);
+  material.color.set(o.color);
+  material.roughness = o.roughness;
+  material.metalness = o.metalness;
+  material.emissive.set(o.emissive);
+  material.emissiveIntensity = o.emissiveIntensity;
+  applyMaterialOpacity(material, o.opacity);
   mesh.visible = !o.hidden;
 };
 
@@ -186,113 +157,7 @@ export const disposeObjectEntry = (entry: ObjectEntry): void => {
   entry.material.dispose();
 };
 
-/**
- * Material de la sombra de contacto: un disco oscuro con el borde difuminado.
- *
- * El disco es un quad unitario -de -1 a 1 en XY-; el shader lo convierte en una
- * elipse suave con la distancia al centro. No se ilumina ni escribe profundidad
- * -es una mancha en el suelo-, y su borde se desvanece para que no parezca un
- * recorte. Es lo que hace que la sombra se lea como contacto y no como una
- * pegatina negra. El quad se coloca, se escala y se gira sobre el suelo con la
- * matriz de modelo, que calcula el backend a partir del `ShadowDisc`.
- *
- * `uHardness` gradua el borde: el radio al que empieza a caer el alfa. A 0 el
- * disco se desvanece casi desde el centro -muy difuso-; cerca de 1 el nucleo
- * opaco llega casi hasta el borde y la caida es corta -sombra dura-. Es el control
- * que faltaba, el que decide si la sombra es blanda o marcada.
- */
-const SHADOW_VERT = /* glsl */ `
-precision highp float;
-uniform mat4 uViewProjection;
-uniform mat4 uModel;
-varying vec2 vUv;
-void main() {
-  // El quad base va de -1 a 1 en XY; se usa como coordenada radial.
-  vUv = position.xy;
-  gl_Position = uViewProjection * uModel * vec4(position, 1.0);
-}
-`;
+// Las sombras de los objetos ya no viven aqui: son sombras reales por mapa de
+// sombra de three, configuradas en el backend (setupStudio) y recibidas por un
+// plano de suelo. No hace falta geometria ni material propios de sombra.
 
-const SHADOW_FRAG = /* glsl */ `
-precision highp float;
-uniform float uOpacity;
-uniform float uHardness;
-varying vec2 vUv;
-void main() {
-  // Distancia al centro del disco (0 dentro, 1 en el borde). El alfa es pleno
-  // hasta inner y cae hasta el borde; inner sube con la dureza, asi que un valor
-  // alto deja un nucleo opaco grande y una orilla fina -sombra dura-, y uno bajo
-  // difumina casi desde el centro -sombra blanda-.
-  float r = length(vUv);
-  float inner = mix(0.0, 0.92, clamp(uHardness, 0.0, 1.0));
-  float a = (1.0 - smoothstep(inner, 1.0, r)) * uOpacity;
-  if (a <= 0.002) discard;
-  // Negro premultiplicado: rgb ya viene multiplicado por el alfa (rgb = 0), asi
-  // que la mezcla premultiplicada oscurece el suelo sin aclarar de rebote.
-  gl_FragColor = vec4(0.0, 0.0, 0.0, a);
-}
-`;
-
-export const createShadowMaterial = (opacity: number, hardness: number): THREE.ShaderMaterial =>
-  new THREE.ShaderMaterial({
-    vertexShader: SHADOW_VERT,
-    fragmentShader: SHADOW_FRAG,
-    uniforms: {
-      uViewProjection: { value: new THREE.Matrix4() },
-      uModel: { value: new THREE.Matrix4() },
-      uOpacity: { value: opacity },
-      uHardness: { value: hardness },
-    },
-    transparent: true,
-    premultipliedAlpha: true,
-    // Sin z-buffer y sin escribirlo: la sombra vive en el plano del suelo, con el
-    // resto de lo coplanar. El orden de pintado la pone debajo de todo.
-    depthTest: false,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-
-/**
- * Entrada de sombra: el disco de contacto bajo un objeto.
- *
- * Todas las sombras comparten UN quad -el disco base de -1 a 1-, asi que una
- * sombra cuesta una malla mas, no una geometria mas. Lo unico propio por sombra es
- * su material, que lleva su matriz de colocacion y su opacidad.
- */
-export interface ShadowEntry {
-  mesh: THREE.Mesh;
-  material: THREE.ShaderMaterial;
-}
-
-/** El quad del disco de sombra: de -1 a 1 en XY. Lo tumba al suelo la matriz. */
-export const shadowQuadGeometry = (): THREE.BufferGeometry => {
-  const g = new THREE.BufferGeometry();
-  g.setAttribute(
-    "position",
-    new THREE.BufferAttribute(
-      new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, -1, 0, 1, 1, 0, -1, 1, 0]),
-      3,
-    ),
-  );
-  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 2);
-  return g;
-};
-
-/**
- * Monta la sombra de un objeto sobre la geometria del disco compartido.
- *
- * Descartar por frustum se apaga: el disco se coloca y escala con la matriz, y la
- * esfera envolvente de la geometria base -radio 2- no describe donde acaba
- * pintando, asi que el descarte de three lo cortaria sin motivo.
- */
-export const createShadowEntry = (
-  geometry: THREE.BufferGeometry,
-  opacity: number,
-  hardness: number,
-): ShadowEntry => {
-  const material = createShadowMaterial(opacity, hardness);
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.frustumCulled = false;
-  mesh.matrixAutoUpdate = false;
-  return { mesh, material };
-};

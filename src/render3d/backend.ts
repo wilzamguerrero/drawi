@@ -21,12 +21,13 @@
  */
 
 import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { INSTANCE_FLOATS, packSegments, segmentsOf, type StrokeBatch } from "../scene3d/batch";
 import type { FillBatch } from "../scene3d/fill";
 import { packLights, type Light3D } from "../scene3d/lights";
 import { eyeOf, forwardOf, viewProjection, type Camera3DState } from "../scene3d/camera3d";
 import { boundsRadius, type Stroke3D } from "../scene3d/types";
-import type { V3 } from "../scene3d/vec3";
+import { v3, type V3 } from "../scene3d/vec3";
 import {
   bindInstances,
   createRibbonGeometry,
@@ -51,16 +52,12 @@ import {
 } from "./grid";
 import {
   createObjectEntry,
-  createShadowEntry,
   disposeObjectEntry,
   objectRevision,
-  shadowQuadGeometry,
   applyObject,
   type ObjectEntry,
-  type ShadowEntry,
 } from "./objects";
 import type { Object3D } from "../scene3d/objects";
-import { contactShadow, type ShadowDisc } from "../scene3d/shadow";
 import { AXIS_COLORS, type GizmoAxis as GizmoAxisName, type GizmoMode } from "../scene3d/gizmo";
 
 /** Lo que hace falta para dibujar el gizmo: donde, de que tamano y que resaltar. */
@@ -70,12 +67,6 @@ export interface GizmoDraw {
   mode: GizmoMode;
   /** Eje bajo el cursor, resaltado en blanco. */
   hover: GizmoAxisName | null;
-}
-
-/** Centro de un objeto y su radio envolvente, para colocar su sombra de contacto. */
-export interface V3Radius {
-  center: V3;
-  radius: number;
 }
 
 /**
@@ -122,9 +113,9 @@ const buildGizmoAxis = (mode: GizmoMode, axis: GizmoAxisName): THREE.Mesh[] => {
   };
 
   if (mode === "rotate") {
-    // Aro en el plano perpendicular al eje: un toro de tubo grueso, que es lo que
-    // se ve como un aro de verdad y no como un alambre.
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.045, 10, 72), mat());
+    // Aro en el plano perpendicular al eje: un toro de tubo fino, como el de
+    // `TransformControls` de three. Delgado pero con cuerpo, no un alambre.
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.022, 8, 72), mat());
     // El toro nace en el plano XY (normal Z); se gira para que su normal sea el eje.
     if (axis === "x") ring.rotation.y = Math.PI / 2;
     else if (axis === "y") ring.rotation.x = Math.PI / 2;
@@ -132,17 +123,17 @@ const buildGizmoAxis = (mode: GizmoMode, axis: GizmoAxisName): THREE.Mesh[] => {
   }
 
   const meshes: THREE.Mesh[] = [];
-  // Varilla: un cilindro del centro a 0.8 por el eje, centrada en 0.4.
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.8, 12), mat());
-  place(shaft, 0.4);
+  // Varilla fina, como la de un gizmo de editor 3D de verdad: del centro a 0.82.
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.82, 10), mat());
+  place(shaft, 0.41);
   meshes.push(shaft);
 
-  // Punta: cono para mover, cubo para escalar. Centrada en 0.95, al final del brazo.
+  // Punta: cono esbelto para mover, cubo pequeno para escalar. Al final del brazo.
   const tip =
     mode === "scale"
-      ? new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), mat())
-      : new THREE.Mesh(new THREE.ConeGeometry(0.095, 0.3, 16), mat());
-  place(tip, 0.95);
+      ? new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), mat())
+      : new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.2, 16), mat());
+  place(tip, mode === "scale" ? 0.9 : 0.92);
   meshes.push(tip);
   return meshes;
 };
@@ -234,14 +225,16 @@ export class Scene3DBackend {
   private readonly entries = new Map<string, BatchEntry>();
   private readonly fillEntries = new Map<string, FillEntry>();
   private readonly objectEntries = new Map<string, ObjectEntry>();
-  private readonly shadowEntries = new Map<string, ShadowEntry>();
-  /** Quad del disco de sombra, compartido por todas las sombras de contacto. */
-  private readonly shadowQuad = shadowQuadGeometry();
   /** Marca del punto de anclaje, si lo hay. */
   private anchorMark: THREE.LineSegments | null = null;
   private anchorAt: V3 | null = null;
   private grid: FloorGrid | null = null;
   private gizmoGroup: THREE.Group | null = null;
+  /** Luz direccional de three que proyecta el mapa de sombra. */
+  private keyLight: THREE.DirectionalLight | null = null;
+  /** Plano del suelo que recibe las sombras con forma de los objetos. */
+  private shadowFloor: THREE.Mesh | null = null;
+  private shadowFloorMat: THREE.ShadowMaterial | null = null;
   /** Modo con el que esta construido el gizmo actual, para rehacerlo al cambiar. */
   private gizmoMode: GizmoMode | null = null;
   /** Firma de las luces ya repartidas: evita reempaquetarlas en cada fotograma. */
@@ -293,12 +286,90 @@ export class Scene3DBackend {
     try {
       this.renderer = new THREE.WebGLRenderer({ canvas, context: gl });
       this.renderer.setClearAlpha(0);
+      // Sombras reales por mapa de sombra, suaves (PCF) como en el visor de inre.
+      // Es lo que hace que un cubo proyecte una sombra con forma de cubo y que un
+      // objeto ensombrezca a otro, en vez del disco de contacto que no sabe de
+      // formas. Solo afecta a los objetos solidos; los trazos no proyectan.
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      // Igual que el motor y que inre: tono plano, para que el color que se ve sea
+      // el que se pinta y no una version con mapeado de tonos ACES por encima.
+      this.renderer.toneMapping = THREE.NoToneMapping;
+      this.setupStudio();
       this.available = true;
     } catch (err) {
       this.available = false;
       this.lastError = err instanceof Error ? err.message : String(err);
       console.warn("[drawi] Visor 3D: fallo la inicializacion de WebGL2:", this.lastError);
     }
+  }
+
+  /**
+   * Luz de estudio y entorno para el PBR de los objetos, al estilo de inre.
+   *
+   * Tres piezas, y ninguna sustituye a las luces del documento -esas dan la
+   * direccion de la sombra y el tono-; estas son el estudio del editor:
+   *
+   *  - **Hemisferio** flojo, para que un objeto sin ninguna luz no sea una silueta
+   *    negra.
+   *  - **Direccional con sombra**, que es la que proyecta el mapa de sombra. Su
+   *    direccion y color se actualizan cada fotograma desde la luz principal del
+   *    documento (`applyLights`).
+   *  - **Mapa de entorno** generado en memoria (`RoomEnvironment` + PMREM), sin
+   *    descargar ningun HDRI: el PBR sin entorno no tiene nada que reflejar y un
+   *    objeto metalico se ve plano y muerto.
+   */
+  private setupStudio(): void {
+    const r = this.renderer;
+    if (!r) return;
+
+    const hemi = new THREE.HemisphereLight(0xcfd4ff, 0x2a2a36, 0.55);
+    this.scene.add(hemi);
+
+    const key = new THREE.DirectionalLight(0xffffff, 2.0);
+    key.castShadow = true;
+    // El mapa de sombra: resolucion alta para que el borde no salga a bloques, y un
+    // frustum amplio que cubre el volumen de trabajo. El sesgo quita el moare de
+    // sombra ('shadow acne') sin desprender la sombra del objeto.
+    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.bias = -0.0005;
+    key.shadow.normalBias = 2;
+    const cam = key.shadow.camera;
+    cam.near = 1;
+    cam.far = 4000;
+    cam.left = -1200;
+    cam.right = 1200;
+    cam.top = 1200;
+    cam.bottom = -1200;
+    cam.updateProjectionMatrix();
+    this.scene.add(key);
+    this.scene.add(key.target);
+    this.keyLight = key;
+
+    // Entorno: se cocina una vez y se asigna a la escena, asi todos los materiales
+    // PBR lo usan como reflejo e iluminacion indirecta sin tocar cada material.
+    const pmrem = new THREE.PMREMGenerator(r);
+    const env = pmrem.fromScene(new RoomEnvironment(), 0.04);
+    this.scene.environment = env.texture;
+    this.scene.environmentIntensity = 0.5;
+    pmrem.dispose();
+
+    // Suelo que RECIBE la sombra. Es un plano con `ShadowMaterial`: invisible salvo
+    // donde cae una sombra, que es lo que hace que la sombra del cubo aparezca con
+    // su forma sobre el suelo -no un disco-. Como en el `ShadowFloor` de inre. Va a
+    // la altura del suelo (`FLOOR_Y`, que es 0) y no intercepta nada: es puro
+    // receptor. Su opacidad y la suavidad del borde las gradua el usuario.
+    const floorMat = new THREE.ShadowMaterial({ opacity: 0.35, transparent: true });
+    floorMat.depthWrite = false;
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = 0;
+    floor.receiveShadow = true;
+    floor.renderOrder = -900; // justo encima de la rejilla (-1000), debajo de todo lo demas
+    floor.visible = false;
+    this.scene.add(floor);
+    this.shadowFloor = floor;
+    this.shadowFloorMat = floorMat;
   }
 
   get error(): string | null {
@@ -467,21 +538,16 @@ export class Scene3DBackend {
     this.dummy.updateProjectionMatrix();
     this.dummy.updateMatrixWorld();
 
-    // Todos los materiales del visor son shaders propios y comparten los mismos
-    // uniformes de camara, asi que se recorren en un solo sitio. La cinta
-    // provisional entra aqui igual: no esta en `entries` -no es un lote-, y sin
-    // esto se dibujaria con la proyeccion identidad, es decir, no se veria.
-    const materiales = [...this.entries.values()].map((e) => e.material);
+    // Los materiales PROPIOS del visor -cinta, manchas, rejilla, sombra de
+    // contacto y la cinta provisional- comparten los mismos uniformes de camara,
+    // asi que se recorren en un solo sitio. Los objetos NO entran aqui: usan
+    // `MeshStandardMaterial` de three, que deriva sus matrices de la camara nativa
+    // (`this.dummy`) y no tiene `uniforms` que escribir.
+    const materiales: THREE.ShaderMaterial[] = [...this.entries.values()].map((e) => e.material);
     for (const entry of this.fillEntries.values()) materiales.push(entry.material);
-    for (const entry of this.objectEntries.values()) materiales.push(entry.material);
-    for (const entry of this.shadowEntries.values()) materiales.push(entry.material);
     if (this.live) materiales.push(this.live.material);
     if (this.grid) materiales.push(this.grid.material);
 
-    // Cada material declara SOLO los uniformes que usa, asi que aqui se comprueba
-    // cual esta antes de tocarlo. La rejilla, por ejemplo, no esta iluminada y no
-    // necesita la posicion de la camara; pedirsela a ciegas lanzaba una excepcion
-    // en cada fotograma y el visor se quedaba sin dibujar nada.
     for (const material of materiales) {
       const u = material.uniforms;
       if (u.uViewProjection) (u.uViewProjection.value as THREE.Matrix4).copy(this.mat);
@@ -590,7 +656,10 @@ export class Scene3DBackend {
       }
       // La opacidad de la capa multiplica a la del objeto: ocultar a medias una
       // capa atenua todo lo suyo, objetos incluidos.
-      entry.material.uniforms.uOpacity.value = o.opacity * paint.opacity;
+      const op = o.opacity * paint.opacity;
+      entry.material.opacity = op;
+      entry.material.transparent = op < 0.999;
+      entry.material.depthWrite = !entry.material.transparent;
       // Muy por debajo de trazos y manchas: el andamio va al fondo de su capa.
       entry.mesh.renderOrder = paint.order * FILL_ORDER_STEP - 1;
     }
@@ -603,91 +672,30 @@ export class Scene3DBackend {
   }
 
   /**
-   * Pone bajo cada objeto una sombra de contacto sobre el suelo.
+   * Gradua las sombras REALES de los objetos sobre el suelo.
    *
-   * No son mapas de sombra ni geometria aplastada: es un disco difuso por objeto
-   * (`contactShadow` de `shadow.ts`), colocado donde la luz lo tira, agrandado con
-   * la altura y estirado en la direccion de la luz. Todas comparten UN quad -el
-   * disco base-, asi que tener sombra de todo cuesta una malla mas por objeto, no
-   * una geometria mas.
+   * Ya no son discos de contacto: los objetos proyectan su silueta de verdad con
+   * el mapa de sombra de three (configurado en `setupStudio`), y este plano la
+   * recibe. Aqui solo se ajusta lo que el usuario gradua -encendido, opacidad- y
+   * la suavidad del borde del mapa de sombra, que es lo que decide si la sombra
+   * sale blanda o marcada. La forma y donde cae las ponen el objeto y la luz.
    *
-   * `light` es la luz principal, o `null` si no hay con que proyectar: entonces no
-   * hay sombras y se quitan todas. `s` lleva los valores que el usuario gradua:
-   * opacidad, dureza del borde y tamano del disco.
+   * `enabled` apaga el suelo receptor; `opacity` es la del `ShadowMaterial`;
+   * `softness` 0..1 gradua el radio de desenfoque PCF de la luz.
    */
-  syncShadows(
-    objects: readonly Object3D[],
-    paintOf: (layerId: string) => LayerPaint,
-    light: Light3D | null,
-    floorY: number,
-    radiusOf: (o: Object3D) => V3Radius,
-    s: { opacity: number; hardness: number; size: number },
-  ): void {
+  syncShadows(enabled: boolean, opacity: number, softness: number): void {
     if (!this.renderer) return;
-    const live = new Set<string>();
-
-    if (light && s.opacity > 0.002) {
-      for (const o of objects) {
-        const paint = paintOf(o.layerId);
-        if (!paint.visible || o.hidden) continue;
-        const { center, radius } = radiusOf(o);
-        // El tamano del usuario multiplica el radio del objeto: una sombra mas
-        // ancha o mas ajustada sin tocar el objeto.
-        const disc = contactShadow(light, center, radius * s.size, floorY, s.opacity * paint.opacity);
-        if (!disc) continue;
-        live.add(o.id);
-
-        let sh = this.shadowEntries.get(o.id);
-        if (!sh) {
-          sh = createShadowEntry(this.shadowQuad, 0, s.hardness);
-          this.scene.add(sh.mesh);
-          this.shadowEntries.set(o.id, sh);
-        }
-        // La dureza puede cambiar fotograma a fotograma -es un deslizador-, asi que
-        // se reescribe siempre, no solo al crear la entrada.
-        sh.material.uniforms.uHardness.value = s.hardness;
-        this.placeShadowDisc(sh, disc, floorY);
-        // Debajo de TODO lo de la capa, incluso de la rejilla no -esa es el suelo-:
-        // la sombra se posa sobre el suelo y bajo cualquier trazo u objeto.
-        sh.mesh.renderOrder = paint.order * FILL_ORDER_STEP - 2;
-      }
+    const floor = this.shadowFloor;
+    const mat = this.shadowFloorMat;
+    if (floor && mat) {
+      floor.visible = enabled && opacity > 0.002;
+      mat.opacity = opacity;
     }
-
-    for (const [id, sh] of [...this.shadowEntries]) {
-      if (live.has(id)) continue;
-      this.destroyShadowEntry(sh);
-      this.shadowEntries.delete(id);
+    if (this.keyLight) {
+      // El radio de desenfoque del mapa de sombra: 0 = borde neto, mas = penumbra.
+      // Es el equivalente "real" de la dureza del disco que habia antes.
+      this.keyLight.shadow.radius = 1 + softness * 12;
     }
-  }
-
-  /**
-   * Coloca el quad del disco en el suelo segun el `ShadowDisc`.
-   *
-   * El disco base vive en el plano XY (de -1 a 1). Hay que TUMBARLO al plano del
-   * suelo: su X local va al plano del suelo, su Y local **al eje Z del mundo** -no
-   * al Y, que es la altura-, y su normal pasa a apuntar hacia arriba. Ese giro es
-   * el detalle: mapear la Y del quad a la Y del mundo dejaba el disco de pie, un
-   * sliver vertical invisible visto en picado. Ademas se escala a los semiejes
-   * `rx`/`rz` y se gira hacia donde se estira la sombra. Todo en una matriz.
-   */
-  private placeShadowDisc(sh: ShadowEntry, disc: ShadowDisc, floorY: number): void {
-    const cos = Math.cos(disc.angle);
-    const sin = Math.sin(disc.angle);
-    const m = sh.mesh.matrix as THREE.Matrix4;
-    // `set` toma los numeros en orden de fila (lo que se lee), aunque los guarde
-    // por columnas. Un vertice (x, y, 0) del quad va a:
-    //   worldX = cos·rx·x − sin·rz·y + cx
-    //   worldY = floorY                      (plano del suelo; la Y del quad no sube)
-    //   worldZ = sin·rx·x + cos·rz·y + cz
-    // La tercera columna (0,1,0) es la normal del disco, hacia arriba.
-    m.set(
-      cos * disc.rx, -sin * disc.rz, 0, disc.cx,
-      0, 0, 1, floorY,
-      sin * disc.rx, cos * disc.rz, 0, disc.cz,
-      0, 0, 0, 1,
-    );
-    (sh.material.uniforms.uModel.value as THREE.Matrix4).copy(m);
-    sh.material.uniforms.uOpacity.value = disc.opacity;
   }
 
   /**
@@ -877,9 +885,11 @@ export class Scene3DBackend {
     const packed = this.packedLights;
     if (!packed) return;
 
+    // Los materiales PROPIOS -cinta, manchas, cinta provisional- llevan la luz en
+    // sus uniformes. Los objetos usan `MeshStandardMaterial`, que se ilumina con
+    // las luces nativas de three (el estudio) y no tiene estos uniformes.
     const materiales: THREE.ShaderMaterial[] = [...this.entries.values()].map((e) => e.material);
     for (const entry of this.fillEntries.values()) materiales.push(entry.material);
-    for (const entry of this.objectEntries.values()) materiales.push(entry.material);
     if (this.live) materiales.push(this.live.material);
 
     for (const material of materiales) {
@@ -901,6 +911,28 @@ export class Scene3DBackend {
         packed.ambient[1],
         packed.ambient[2],
       );
+    }
+
+    // La luz direccional de three -la que proyecta el mapa de sombra sobre los
+    // objetos PBR- sigue a la luz principal del documento: su direccion es la del
+    // sol de la escena, para que la sombra con forma caiga hacia donde el usuario
+    // puso la luz. Se coloca lejos en esa direccion y apunta al origen.
+    const key = this.keyLight;
+    if (key) {
+      const sun = lights.find((l) => l.enabled && l.kind !== "ambient") ?? null;
+      if (sun) {
+        key.visible = true;
+        const d = v3(sun.x, sun.y, sun.z);
+        const len = Math.hypot(d.x, d.y, d.z) || 1;
+        const dist = 2000;
+        key.position.set((d.x / len) * dist, (d.y / len) * dist, (d.z / len) * dist);
+        key.target.position.set(0, 0, 0);
+        key.target.updateMatrixWorld();
+        key.color.set(sun.color);
+        key.intensity = 2.0 * Math.max(0, sun.intensity);
+      } else {
+        key.visible = false;
+      }
     }
   }
 
@@ -985,10 +1017,6 @@ export class Scene3DBackend {
     this.fillEntries.clear();
     for (const entry of this.objectEntries.values()) this.destroyObjectEntry(entry);
     this.objectEntries.clear();
-    for (const sh of this.shadowEntries.values()) this.destroyShadowEntry(sh);
-    this.shadowEntries.clear();
-    // El quad del disco de sombra es compartido: se suelta una sola vez al cerrar.
-    this.shadowQuad.dispose();
     if (this.anchorMark) {
       this.scene.remove(this.anchorMark);
       this.anchorMark.geometry.dispose();
@@ -1009,6 +1037,8 @@ export class Scene3DBackend {
       this.scene.remove(this.gizmoGroup);
       this.gizmoGroup = null;
     }
+    // El entorno PBR es una textura cocinada; se suelta al cerrar.
+    this.scene.environment?.dispose();
     this.renderer?.dispose();
     this.renderer = null;
     this.available = false;
@@ -1044,13 +1074,6 @@ export class Scene3DBackend {
   private destroyObjectEntry(entry: ObjectEntry): void {
     this.scene.remove(entry.mesh);
     disposeObjectEntry(entry);
-  }
-
-  private destroyShadowEntry(sh: ShadowEntry): void {
-    // La geometria NO se toca: es prestada del objeto, que la libera el. Solo se
-    // suelta el material propio de la sombra.
-    this.scene.remove(sh.mesh);
-    sh.material.dispose();
   }
 
   private destroyLive(): void {

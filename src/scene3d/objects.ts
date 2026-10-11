@@ -52,6 +52,20 @@ export interface Object3D {
   color: string;
   /** Opacidad propia, 0..1: una primitiva de referencia suele querer ir translucida. */
   opacity: number;
+  /**
+   * Material PBR, al estilo del motor y de three (`MeshStandardMaterial`).
+   *
+   * `roughness` 0..1: liso y brillante a 0, mate a 1. `metalness` 0..1: dielectrico
+   * (plastico, yeso) a 0, metal a 1. Son los dos mandos que de verdad cambian como
+   * se lee una superficie bajo la luz, y los que un sistema PBR necesita para que
+   * un objeto no salga plano y muerto.
+   */
+  roughness: number;
+  metalness: number;
+  /** Color de emision: lo que el material irradia por si mismo, sin luz. */
+  emissive: string;
+  /** Fuerza de la emision, 0..n. A 0 el objeto no brilla por su cuenta. */
+  emissiveIntensity: number;
   /** No se dibuja, pero sigue en la escena -util para andamiajes que estorban-. */
   hidden: boolean;
 }
@@ -81,6 +95,12 @@ export const makeObject = (
   // opacidad de su capa en el panel.
   color: "#8aa0c0",
   opacity: 1,
+  // PBR por defecto: un dielectrico medio mate -ni espejo ni plastico-, que es lo
+  // que se lee bien con la luz de estudio sin ajustar nada.
+  roughness: 0.6,
+  metalness: 0,
+  emissive: "#000000",
+  emissiveIntensity: 0,
   hidden: false,
   ...over,
 });
@@ -95,4 +115,21 @@ export const cloneTransform = (t: Transform3D): Transform3D => ({
 export const cloneObject = (o: Object3D): Object3D => ({
   ...o,
   transform: cloneTransform(o.transform),
+});
+
+/**
+ * Rellena los campos PBR que un proyecto viejo no traia.
+ *
+ * Los objetos guardados antes del material PBR no tienen `roughness`, `metalness`
+ * ni emision. Abrir uno sin esto dejaria esos campos en `undefined` y el material
+ * de three saldria negro o roto. Se completan con los valores por defecto, que es
+ * lo mismo que haria `makeObject`.
+ */
+export const normalizeObject3D = (o: Object3D): Object3D => ({
+  ...o,
+  roughness: o.roughness ?? 0.6,
+  metalness: o.metalness ?? 0,
+  emissive: o.emissive ?? "#000000",
+  emissiveIntensity: o.emissiveIntensity ?? 0,
+  opacity: o.opacity ?? 1,
 });

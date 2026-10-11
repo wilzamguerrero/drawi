@@ -79,26 +79,25 @@ export interface Scene3DSettings {
     opacity: number;
   };
   /**
-   * Sombras de contacto sobre el suelo.
+   * Sombras de los objetos sobre el suelo.
    *
-   * Van aparte de las luces porque no son fisica: son un recurso de dibujo que el
-   * usuario quiere poder graduar -una ilustracion pide una sombra mas o menos
-   * marcada segun el gusto, no segun la luz-. Por eso aqui hay valores, y no se
-   * deducen de la intensidad de la luz.
+   * Son sombras REALES: el mapa de sombra de three proyecta la silueta del objeto
+   * y un plano receptor la recibe. Van aparte de las luces porque, aunque la luz
+   * decide hacia donde caen, su presencia e intensidad son un recurso de dibujo que
+   * el usuario gradua -una ilustracion pide una sombra mas o menos marcada segun el
+   * gusto, no segun la fisica-.
    */
   shadow: {
     enabled: boolean;
-    /** Opacidad en el centro del disco, 0..1. */
+    /** Opacidad de la sombra sobre el suelo, 0..1. */
     opacity: number;
     /**
-     * Dureza del borde, 0..1.
+     * Suavidad del borde, 0..1.
      *
-     * A 0, el disco se desvanece desde el centro -muy difuso-; a 1, el borde es
-     * casi neto. Es lo que faltaba: sin esto la sombra salia siempre blanda.
+     * A 0 el borde es neto; subiendo, el mapa de sombra se desenfoca (penumbra) y
+     * la sombra se ablanda. Es el equivalente real del antiguo disco difuso.
      */
-    hardness: number;
-    /** Tamano del disco respecto al objeto, un multiplicador 0.3..3. */
-    size: number;
+    softness: number;
   };
   /** Modo del gizmo cuando la herramienta es `object`: mover, rotar o escalar. */
   gizmo: GizmoMode;
@@ -116,7 +115,7 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
   drawPlane: "view",
   placement: { ...DEFAULT_PLACEMENT },
   grid: { enabled: false, opacity: 0.55 },
-  shadow: { enabled: true, opacity: 0.35, hardness: 0.5, size: 1 },
+  shadow: { enabled: true, opacity: 0.4, softness: 0.4 },
   gizmo: "move",
   primitive: "box",
 };

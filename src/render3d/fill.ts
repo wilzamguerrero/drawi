@@ -82,11 +82,10 @@ export const createFillMaterial = (color: string, opacity: number): THREE.Shader
     },
     transparent: true,
     premultipliedAlpha: true,
-    // Las mismas decisiones que la cinta, y por los mismos motivos: los trazos de
-    // una sesion son coplanares con su plano de dibujo, asi que el z-buffer daria
-    // z-fighting, y el orden de pintado es lo que hace que una mancha se lea como
-    // materia puesta encima de otra.
-    depthTest: false,
+    // Como la cinta: lee la profundidad para que un objeto solido oculte la mancha
+    // que queda detras, pero no la escribe, para que las manchas coplanares de una
+    // sesion se superpongan por orden de pintado sin z-fighting ni bordes duros.
+    depthTest: true,
     depthWrite: false,
     side: THREE.DoubleSide,
   });

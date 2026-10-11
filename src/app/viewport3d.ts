@@ -80,7 +80,6 @@ import {
   type Object3D,
   type PrimitiveKind,
 } from "../scene3d/objects";
-import { shadowLight } from "../scene3d/lights";
 
 /** Radio de la esfera que encierra una primitiva a su escala, para el picking. */
 const objectRadius = (o: Object3D): number => {
@@ -593,21 +592,17 @@ export class Viewport3D {
     this.backend.syncFills(this.fills.all, paintOf);
     this.backend.syncObjects(doc.objects3d, paintOf);
     // Sombras de contacto sobre el suelo: un disco difuso bajo cada objeto segun
-    // la luz principal. Solo con la rejilla puesta, que es la que hace de suelo
-    // visible; sin suelo a la vista, una sombra flotando sola confunde mas que
-    // ayuda. Y solo si el usuario las tiene encendidas: la sombra es un recurso de
-    // dibujo que se gradua, no una obligacion de la luz.
+    // Sombras reales de los objetos sobre el suelo: el mapa de sombra de three las
+    // proyecta con la forma del objeto y las recibe un plano receptor. El usuario
+    // gradua encendido, opacidad y suavidad; la forma y donde caen las ponen el
+    // objeto y la luz principal. Solo con la rejilla puesta, que hace de suelo.
     const settings = this.api.settings();
     const grid = settings.grid;
     const shadow = settings.shadow;
-    const key = grid.enabled && shadow.enabled ? shadowLight(doc.lights3d) : null;
     this.backend.syncShadows(
-      doc.objects3d,
-      paintOf,
-      key,
-      FLOOR_Y,
-      (o) => ({ center: o.transform.position, radius: objectRadius(o) }),
-      { opacity: shadow.opacity, hardness: shadow.hardness, size: shadow.size },
+      grid.enabled && shadow.enabled,
+      shadow.opacity,
+      shadow.softness,
     );
     // El gizmo solo aparece con la herramienta de objetos y uno seleccionado. El
     // eje resaltado es el que haya bajo el cursor cuando no se esta arrastrando;
