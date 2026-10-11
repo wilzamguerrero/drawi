@@ -249,6 +249,12 @@ export class Scene3DBackend {
   private occludeStrokes = true;
   /** Si los trazos proyectan su sombra sobre el suelo y los objetos. */
   private strokeCastShadow = false;
+  /** Si los trazos reciben sombra de objetos y otros trazos. */
+  private strokeReceiveShadow = false;
+  /** Cuanto oscurece la sombra recibida en los trazos, 0..1. */
+  private strokeReceiveStrength = 0.5;
+  /** Ultima suavidad aplicada: recrear el mapa VSM solo cuando cambia de verdad. */
+  private lastSoftness = -1;
   private width = 1;
   private height = 1;
 
@@ -292,12 +298,15 @@ export class Scene3DBackend {
     try {
       this.renderer = new THREE.WebGLRenderer({ canvas, context: gl });
       this.renderer.setClearAlpha(0);
-      // Sombras reales por mapa de sombra, suaves (PCF) como en el visor de inre.
-      // Es lo que hace que un cubo proyecte una sombra con forma de cubo y que un
-      // objeto ensombrezca a otro, en vez del disco de contacto que no sabe de
-      // formas. Solo afecta a los objetos solidos; los trazos no proyectan.
+      // Sombras reales por mapa de sombra. VSM (Variance Shadow Maps): su mapa
+      // guarda profundidad y profundidad al cuadrado en una textura normal, no una
+      // de comparacion. Eso trae dos cosas que PCF no daba aqui: el radio de
+      // desenfoque responde de verdad al ajuste de suavidad, y -clave- el mapa se
+      // puede MUESTREAR desde un shader propio, que es lo que permite que los
+      // trazos reciban sombra. Ademas trata mejor las superficies curvas, donde
+      // PCF perdia la sombra en el cilindro.
       this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      this.renderer.shadowMap.type = THREE.VSMShadowMap;
       // Igual que el motor y que inre: tono plano, para que el color que se ve sea
       // el que se pinta y no una version con mapeado de tonos ACES por encima.
       this.renderer.toneMapping = THREE.NoToneMapping;
@@ -335,11 +344,13 @@ export class Scene3DBackend {
     const key = new THREE.DirectionalLight(0xffffff, 2.0);
     key.castShadow = true;
     // El mapa de sombra: resolucion alta para que el borde no salga a bloques, y un
-    // frustum amplio que cubre el volumen de trabajo. El sesgo quita el moare de
-    // sombra ('shadow acne') sin desprender la sombra del objeto.
+    // frustum amplio que cubre el volumen de trabajo. Con VSM el sesgo va fino -el
+    // moare lo controla la varianza, no un empujon de profundidad- y el desenfoque
+    // sale del radio y de las muestras.
     key.shadow.mapSize.set(2048, 2048);
-    key.shadow.bias = -0.0005;
-    key.shadow.normalBias = 2;
+    key.shadow.bias = -0.0003;
+    key.shadow.normalBias = 1;
+    key.shadow.blurSamples = 16;
     const cam = key.shadow.camera;
     cam.near = 1;
     cam.far = 4000;
@@ -408,6 +419,12 @@ export class Scene3DBackend {
     this.strokeCastShadow = on;
     for (const e of this.entries.values()) e.mesh.castShadow = on;
     for (const e of this.fillEntries.values()) e.mesh.castShadow = on;
+  }
+
+  /** Enciende o apaga que los trazos reciban sombra, y con que fuerza. */
+  setStrokeReceiveShadow(on: boolean, strength: number): void {
+    this.strokeReceiveShadow = on;
+    this.strokeReceiveStrength = strength;
   }
 
   /**
@@ -600,6 +617,25 @@ export class Scene3DBackend {
       if (u.uCameraPos) (u.uCameraPos.value as THREE.Vector3).set(eye.x, eye.y, eye.z);
     }
 
+    // Sombra RECIBIDA por trazos y manchas: se les pasa el mapa de sombra de la luz
+    // y su matriz a espacio de luz. El mapa solo existe despues de que three dibuje
+    // el pase de sombra, asi que la primera vez va nulo y el shader lo ignora; a
+    // partir del segundo fotograma ya esta. Se escribe en los materiales que lo
+    // declaran -cinta y manchas-, no en la rejilla.
+    const key = this.keyLight;
+    const shadowTex = key?.shadow.map?.texture ?? null;
+    const receive = this.strokeReceiveShadow && key?.visible === true && shadowTex !== null;
+    for (const material of materiales) {
+      const u = material.uniforms;
+      if (!u.uShadowOn) continue;
+      u.uShadowOn.value = receive ? 1 : 0;
+      if (receive) {
+        u.uShadowMap.value = shadowTex;
+        (u.uShadowMatrix.value as THREE.Matrix4).copy(key!.shadow.matrix);
+        u.uShadowStrength.value = this.strokeReceiveStrength;
+      }
+    }
+
     renderer.render(this.scene, this.dummy);
   }
 
@@ -725,25 +761,58 @@ export class Scene3DBackend {
    *
    * Ya no son discos de contacto: los objetos proyectan su silueta de verdad con
    * el mapa de sombra de three (configurado en `setupStudio`), y este plano la
-   * recibe. Aqui solo se ajusta lo que el usuario gradua -encendido, opacidad- y
-   * la suavidad del borde del mapa de sombra, que es lo que decide si la sombra
-   * sale blanda o marcada. La forma y donde cae las ponen el objeto y la luz.
-   *
-   * `enabled` apaga el suelo receptor; `opacity` es la del `ShadowMaterial`;
-   * `softness` 0..1 gradua el radio de desenfoque PCF de la luz.
+   * recibe. Aqui se aplica lo que el usuario gradua: encendido, opacidad, color,
+   * suavidad del borde, alcance del mapa y su nitidez. La forma y donde cae las
+   * ponen el objeto y la luz.
    */
-  syncShadows(enabled: boolean, opacity: number, softness: number): void {
+  syncShadows(s: {
+    enabled: boolean;
+    opacity: number;
+    softness: number;
+    color: string;
+    extent: number;
+    resolution: number;
+  }): void {
     if (!this.renderer) return;
     const floor = this.shadowFloor;
     const mat = this.shadowFloorMat;
     if (floor && mat) {
-      floor.visible = enabled && opacity > 0.002;
-      mat.opacity = opacity;
+      floor.visible = s.enabled && s.opacity > 0.002;
+      mat.opacity = s.opacity;
+      mat.color.set(s.color);
     }
-    if (this.keyLight) {
-      // El radio de desenfoque del mapa de sombra: 0 = borde neto, mas = penumbra.
-      // Es el equivalente "real" de la dureza del disco que habia antes.
-      this.keyLight.shadow.radius = 1 + softness * 12;
+    const key = this.keyLight;
+    if (key) {
+      // Desenfoque del mapa de sombra. Con VSM el radio actua de verdad -no como
+      // con PCF, donde apenas se notaba-, asi que la "suavidad" del usuario mapea a
+      // un rango amplio: 0 deja el borde neto, 1 una penumbra ancha. Las muestras
+      // suben con la suavidad para que una sombra muy blanda no salga a bandas.
+      if (s.softness !== this.lastSoftness) {
+        this.lastSoftness = s.softness;
+        key.shadow.radius = 0.5 + s.softness * 24;
+        key.shadow.blurSamples = Math.round(8 + s.softness * 16);
+        // `blurSamples` solo surte efecto al recrear el mapa; se tira el anterior.
+        key.shadow.map?.dispose();
+        key.shadow.map = null;
+      }
+      // Alcance: el frustum ortografico que la luz abarca. Reescribirlo cada vez es
+      // barato -cuatro numeros y una matriz-, y es lo que deja al usuario ajustar
+      // "hasta donde llega" la sombra sin recrear la luz.
+      const cam = key.shadow.camera;
+      if (cam.right !== s.extent) {
+        cam.left = -s.extent;
+        cam.right = s.extent;
+        cam.top = s.extent;
+        cam.bottom = -s.extent;
+        cam.updateProjectionMatrix();
+      }
+      // Nitidez: cambiar el tamano del mapa exige tirar el anterior -three no lo
+      // redimensiona-, igual que hace el motor y el visor de inre.
+      if (key.shadow.mapSize.width !== s.resolution) {
+        key.shadow.mapSize.set(s.resolution, s.resolution);
+        key.shadow.map?.dispose();
+        key.shadow.map = null;
+      }
     }
   }
 

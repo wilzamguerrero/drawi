@@ -99,6 +99,16 @@ export interface Scene3DSettings {
    */
   strokeShadow: boolean;
   /**
+   * Los trazos y manchas reciben sombra.
+   *
+   * Cuando esta encendido -y la sombra lo esta-, un trazo que queda bajo la sombra
+   * de un objeto o de otro trazo se oscurece, con el mismo mapa de sombra. Es el
+   * complemento de `strokeShadow` (proyectar): uno tira la sombra, el otro la
+   * recibe. Va aparte porque muestrea el mapa en el shader del trazo y no siempre
+   * se quiere -a veces el dibujo debe leerse plano por encima de la escena-.
+   */
+  strokeReceiveShadow: boolean;
+  /**
    * Sombras de los objetos sobre el suelo.
    *
    * Son sombras REALES: el mapa de sombra de three proyecta la silueta del objeto
@@ -118,6 +128,23 @@ export interface Scene3DSettings {
      * la sombra se ablanda. Es el equivalente real del antiguo disco difuso.
      */
     softness: number;
+    /** Color de la sombra. Negra por defecto; un tinte frio o calido la integra. */
+    color: string;
+    /**
+     * Alcance del mapa de sombra, en unidades de mundo.
+     *
+     * Es el radio del volumen que la luz abarca al proyectar: una escena pequeña
+     * quiere poco alcance -mas resolucion efectiva, borde mas fino-, y una grande
+     * necesita mas para que la sombra no se corte. Es el "hasta donde llega".
+     */
+    extent: number;
+    /**
+     * Nitidez del mapa de sombra: lado de la textura, en texeles.
+     *
+     * Mas texeles = borde mas limpio y detalle mas fino, a cambio de memoria y
+     * coste. Cambiarlo obliga a tirar el mapa anterior (three no lo redimensiona).
+     */
+    resolution: number;
   };
   /** Modo del gizmo cuando la herramienta es `object`: mover, rotar o escalar. */
   gizmo: GizmoMode;
@@ -135,9 +162,10 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
   drawPlane: "view",
   placement: { ...DEFAULT_PLACEMENT },
   grid: { enabled: false, opacity: 0.55 },
-  shadow: { enabled: true, opacity: 0.4, softness: 0.4 },
+  shadow: { enabled: true, opacity: 0.4, softness: 0.4, color: "#000000", extent: 1200, resolution: 2048 },
   occludeStrokes: true,
   strokeShadow: false,
+  strokeReceiveShadow: false,
   gizmo: "move",
   primitive: "box",
 };

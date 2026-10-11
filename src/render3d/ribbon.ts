@@ -61,11 +61,13 @@ attribute float aExtA;
 attribute float aExtB;
 
 uniform mat4 uViewProjection;
+uniform mat4 uShadowMatrix;
 
 varying vec3 vFacing;
 varying vec3 vWidth;
 varying vec3 vWorld;
 varying float vSide;
+varying vec4 vShadowCoord;
 
 void main() {
   float side = position.y;
@@ -105,6 +107,10 @@ void main() {
   vWidth = width;
   vWorld = world;
   vSide = side;
+  // Posicion del punto en el espacio de la luz, para muestrear el mapa de sombra
+  // en el fragmento. Si no hay sombra, uShadowMatrix es cero y vShadowCoord sale
+  // nulo -se ignora en el fragmento-.
+  vShadowCoord = uShadowMatrix * vec4(world, 1.0);
 
   gl_Position = uViewProjection * vec4(world, 1.0);
 }
@@ -117,11 +123,18 @@ varying vec3 vFacing;
 varying vec3 vWidth;
 varying vec3 vWorld;
 varying float vSide;
+varying vec4 vShadowCoord;
 
 uniform vec3 uColor;
 uniform vec3 uCameraPos;
 uniform float uOpacity;
 uniform float uGloss;
+
+// Mapa de sombra VSM de la luz principal, para que el trazo RECIBA sombra. Si
+// uShadowOn es 0, no se muestrea nada -el trazo no recibe-.
+uniform sampler2D uShadowMap;
+uniform float uShadowOn;
+uniform float uShadowStrength;
 
 // Luces de la escena. Se recorren SIEMPRE las cuatro: las que no se usan llevan
 // color cero, asi que no hay ni una rama por fragmento y el bucle vale para
@@ -130,6 +143,27 @@ uniform float uGloss;
 uniform vec4 uLightVec[NUM_LUCES];
 uniform vec3 uLightColor[NUM_LUCES];
 uniform vec3 uAmbient;
+
+// VSM: el mapa guarda profundidad y profundidad^2 empaquetadas en RGBA. La
+// desigualdad de Chebyshev da la probabilidad de que el punto este iluminado,
+// que es lo que da el borde suave sin muestrear muchas veces.
+vec2 unpack2Half(vec4 v) { return vec2(v.x + v.y / 255.0, v.z + v.w / 255.0); }
+float shadowFactor() {
+  if (uShadowOn < 0.5) return 1.0;
+  // uShadowMatrix es la de three (light.shadow.matrix): ya lleva el sesgo a
+  // [0,1], asi que NO se vuelve a reescalar. Solo la division por w, que para una
+  // luz direccional (ortografica) es 1.
+  vec3 coord = vShadowCoord.xyz / vShadowCoord.w;
+  if (coord.z > 1.0 || coord.x < 0.0 || coord.x > 1.0 || coord.y < 0.0 || coord.y > 1.0) return 1.0;
+  vec2 dist = unpack2Half(texture2D(uShadowMap, coord.xy));
+  float compare = coord.z;
+  if (compare <= dist.x) return 1.0;
+  float d = compare - dist.x;
+  float variance = max(0.0001, dist.y * dist.y - dist.x * dist.x);
+  float p = variance / (variance + d * d);
+  p = clamp((p - 0.3) / 0.7, 0.0, 1.0);
+  return mix(1.0 - uShadowStrength, 1.0, p);
+}
 
 void main() {
   // Perfil circular: la cinta se sombrea como un tubo del ancho de la cinta.
@@ -144,6 +178,10 @@ void main() {
   vec3 difusa = uAmbient;
   vec3 brillo = vec3(0.0);
 
+  // La sombra recibida afecta solo a la luz directa, no al ambiente: una zona a
+  // la sombra sigue recibiendo el relleno, como en la realidad.
+  float sh = shadowFactor();
+
   for (int i = 0; i < NUM_LUCES; i++) {
     vec4 lv = uLightVec[i];
     // w = 0: la luz es una direccion -hacia donde esta-. w = 1: es un punto.
@@ -152,10 +190,10 @@ void main() {
     // Sombreado envolvente: la luz rodea el trazo en vez de cortarlo en seco, que
     // es lo que hace que una cinta se lea como materia y no como una cuchilla.
     float wrap = clamp((dot(n, L) + 0.45) / 1.45, 0.0, 1.0);
-    difusa += uLightColor[i] * wrap;
+    difusa += uLightColor[i] * wrap * sh;
 
     vec3 H = normalize(L + view);
-    brillo += uLightColor[i] * pow(max(dot(n, H), 0.0), 48.0) * uGloss;
+    brillo += uLightColor[i] * pow(max(dot(n, H), 0.0), 48.0) * uGloss * sh;
   }
 
   // Contorno: oscurece el borde para despegar el trazo del fondo.
@@ -197,6 +235,19 @@ export const lightUniforms = (): Record<string, THREE.IUniform> => ({
   uAmbient: { value: new THREE.Vector3(0.34, 0.35, 0.4) },
 });
 
+/**
+ * Uniformes de la sombra recibida: el mapa de sombra VSM de la luz principal, su
+ * matriz de proyeccion a espacio de luz, y los interruptores. Van aparte de las
+ * luces porque la sombra recibida es opcional -el usuario la enciende- y porque el
+ * mapa y la matriz los pone el backend cada fotograma desde la luz de three.
+ */
+export const shadowUniforms = (): Record<string, THREE.IUniform> => ({
+  uShadowMap: { value: null },
+  uShadowMatrix: { value: new THREE.Matrix4() },
+  uShadowOn: { value: 0 },
+  uShadowStrength: { value: 0.5 },
+});
+
 export const createRibbonMaterial = (opts: RibbonMaterialOptions): THREE.ShaderMaterial =>
   new THREE.ShaderMaterial({
     vertexShader: VERT,
@@ -206,6 +257,7 @@ export const createRibbonMaterial = (opts: RibbonMaterialOptions): THREE.ShaderM
       uColor: { value: new THREE.Color(opts.color) },
       uCameraPos: { value: new THREE.Vector3() },
       ...lightUniforms(),
+      ...shadowUniforms(),
       uOpacity: { value: opts.opacity },
       uGloss: { value: opts.gloss },
     },

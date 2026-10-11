@@ -599,17 +599,25 @@ export class Viewport3D {
     const settings = this.api.settings();
     const grid = settings.grid;
     const shadow = settings.shadow;
-    this.backend.syncShadows(
-      grid.enabled && shadow.enabled,
-      shadow.opacity,
-      shadow.softness,
-    );
+    this.backend.syncShadows({
+      enabled: grid.enabled && shadow.enabled,
+      opacity: shadow.opacity,
+      softness: shadow.softness,
+      color: shadow.color,
+      extent: shadow.extent,
+      resolution: shadow.resolution,
+    });
     // Oclusion de trazos: que un objeto solido tape el trazo que tiene detras, o
     // que los trazos vayan siempre por encima. Lo decide el usuario.
     this.backend.setOccludeStrokes(settings.occludeStrokes);
     // Que los trazos proyecten su sombra sobre el suelo, los objetos y otros
     // trazos. Solo tiene efecto con la sombra encendida.
     this.backend.setStrokeCastShadow(shadow.enabled && settings.strokeShadow);
+    // Que los trazos y manchas RECIBAN sombra de objetos y otros trazos.
+    this.backend.setStrokeReceiveShadow(
+      shadow.enabled && settings.strokeReceiveShadow,
+      shadow.opacity,
+    );
     // El gizmo solo aparece con la herramienta de objetos y uno seleccionado. El
     // eje resaltado es el que haya bajo el cursor cuando no se esta arrastrando;
     // en pleno arrastre, el que se agarro.

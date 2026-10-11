@@ -13,7 +13,7 @@
 
 import * as THREE from "three";
 import type { FillBatch } from "../scene3d/fill";
-import { lightUniforms } from "./ribbon";
+import { lightUniforms, shadowUniforms } from "./ribbon";
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -21,13 +21,16 @@ precision highp float;
 attribute vec3 aNormal;
 
 uniform mat4 uViewProjection;
+uniform mat4 uShadowMatrix;
 
 varying vec3 vNormal;
 varying vec3 vWorld;
+varying vec4 vShadowCoord;
 
 void main() {
   vNormal = aNormal;
   vWorld = position;
+  vShadowCoord = uShadowMatrix * vec4(position, 1.0);
   gl_Position = uViewProjection * vec4(position, 1.0);
 }
 `;
@@ -37,6 +40,7 @@ precision highp float;
 
 varying vec3 vNormal;
 varying vec3 vWorld;
+varying vec4 vShadowCoord;
 
 uniform vec3 uColor;
 uniform vec3 uCameraPos;
@@ -49,6 +53,27 @@ uniform vec4 uLightVec[NUM_LUCES];
 uniform vec3 uLightColor[NUM_LUCES];
 uniform vec3 uAmbient;
 
+// Sombra recibida: igual que la cinta.
+uniform sampler2D uShadowMap;
+uniform float uShadowOn;
+uniform float uShadowStrength;
+
+vec2 unpack2Half(vec4 v) { return vec2(v.x + v.y / 255.0, v.z + v.w / 255.0); }
+float shadowFactor() {
+  if (uShadowOn < 0.5) return 1.0;
+  // uShadowMatrix es la de three, ya con el sesgo a [0,1]; solo la division por w.
+  vec3 coord = vShadowCoord.xyz / vShadowCoord.w;
+  if (coord.z > 1.0 || coord.x < 0.0 || coord.x > 1.0 || coord.y < 0.0 || coord.y > 1.0) return 1.0;
+  vec2 dist = unpack2Half(texture2D(uShadowMap, coord.xy));
+  float compare = coord.z;
+  if (compare <= dist.x) return 1.0;
+  float d = compare - dist.x;
+  float variance = max(0.0001, dist.y * dist.y - dist.x * dist.x);
+  float p = variance / (variance + d * d);
+  p = clamp((p - 0.3) / 0.7, 0.0, 1.0);
+  return mix(1.0 - uShadowStrength, 1.0, p);
+}
+
 void main() {
   vec3 n = normalize(vNormal);
   vec3 view = normalize(uCameraPos - vWorld);
@@ -56,12 +81,13 @@ void main() {
   // la contraria. Sin esto, una mancha girada sale en negro.
   if (dot(n, view) < 0.0) n = -n;
 
+  float sh = shadowFactor();
   vec3 difusa = uAmbient;
   for (int i = 0; i < NUM_LUCES; i++) {
     vec4 lv = uLightVec[i];
     vec3 L = lv.w < 0.5 ? normalize(lv.xyz) : normalize(lv.xyz - vWorld);
     float wrap = clamp((dot(n, L) + 0.45) / 1.45, 0.0, 1.0);
-    difusa += uLightColor[i] * wrap;
+    difusa += uLightColor[i] * wrap * sh;
   }
 
   vec3 col = uColor * difusa;
@@ -78,6 +104,7 @@ export const createFillMaterial = (color: string, opacity: number): THREE.Shader
       uColor: { value: new THREE.Color(color) },
       uCameraPos: { value: new THREE.Vector3() },
       ...lightUniforms(),
+      ...shadowUniforms(),
       uOpacity: { value: opacity },
     },
     transparent: true,
