@@ -195,6 +195,11 @@ export const disposeObjectEntry = (entry: ObjectEntry): void => {
  * recorte. Es lo que hace que la sombra se lea como contacto y no como una
  * pegatina negra. El quad se coloca, se escala y se gira sobre el suelo con la
  * matriz de modelo, que calcula el backend a partir del `ShadowDisc`.
+ *
+ * `uHardness` gradua el borde: el radio al que empieza a caer el alfa. A 0 el
+ * disco se desvanece casi desde el centro -muy difuso-; cerca de 1 el nucleo
+ * opaco llega casi hasta el borde y la caida es corta -sombra dura-. Es el control
+ * que faltaba, el que decide si la sombra es blanda o marcada.
  */
 const SHADOW_VERT = /* glsl */ `
 precision highp float;
@@ -211,12 +216,16 @@ void main() {
 const SHADOW_FRAG = /* glsl */ `
 precision highp float;
 uniform float uOpacity;
+uniform float uHardness;
 varying vec2 vUv;
 void main() {
-  // Distancia al centro del disco (0 dentro, 1 en el borde). El alfa cae suave
-  // del centro al borde: nucleo mas oscuro, orilla difusa.
+  // Distancia al centro del disco (0 dentro, 1 en el borde). El alfa es pleno
+  // hasta inner y cae hasta el borde; inner sube con la dureza, asi que un valor
+  // alto deja un nucleo opaco grande y una orilla fina -sombra dura-, y uno bajo
+  // difumina casi desde el centro -sombra blanda-.
   float r = length(vUv);
-  float a = (1.0 - smoothstep(0.35, 1.0, r)) * uOpacity;
+  float inner = mix(0.0, 0.92, clamp(uHardness, 0.0, 1.0));
+  float a = (1.0 - smoothstep(inner, 1.0, r)) * uOpacity;
   if (a <= 0.002) discard;
   // Negro premultiplicado: rgb ya viene multiplicado por el alfa (rgb = 0), asi
   // que la mezcla premultiplicada oscurece el suelo sin aclarar de rebote.
@@ -224,7 +233,7 @@ void main() {
 }
 `;
 
-export const createShadowMaterial = (opacity: number): THREE.ShaderMaterial =>
+export const createShadowMaterial = (opacity: number, hardness: number): THREE.ShaderMaterial =>
   new THREE.ShaderMaterial({
     vertexShader: SHADOW_VERT,
     fragmentShader: SHADOW_FRAG,
@@ -232,6 +241,7 @@ export const createShadowMaterial = (opacity: number): THREE.ShaderMaterial =>
       uViewProjection: { value: new THREE.Matrix4() },
       uModel: { value: new THREE.Matrix4() },
       uOpacity: { value: opacity },
+      uHardness: { value: hardness },
     },
     transparent: true,
     premultipliedAlpha: true,
@@ -275,8 +285,12 @@ export const shadowQuadGeometry = (): THREE.BufferGeometry => {
  * esfera envolvente de la geometria base -radio 2- no describe donde acaba
  * pintando, asi que el descarte de three lo cortaria sin motivo.
  */
-export const createShadowEntry = (geometry: THREE.BufferGeometry, opacity: number): ShadowEntry => {
-  const material = createShadowMaterial(opacity);
+export const createShadowEntry = (
+  geometry: THREE.BufferGeometry,
+  opacity: number,
+  hardness: number,
+): ShadowEntry => {
+  const material = createShadowMaterial(opacity, hardness);
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   mesh.matrixAutoUpdate = false;

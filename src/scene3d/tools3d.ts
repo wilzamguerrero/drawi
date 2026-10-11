@@ -78,6 +78,28 @@ export interface Scene3DSettings {
     /** Opacidad de las lineas, 0..1. */
     opacity: number;
   };
+  /**
+   * Sombras de contacto sobre el suelo.
+   *
+   * Van aparte de las luces porque no son fisica: son un recurso de dibujo que el
+   * usuario quiere poder graduar -una ilustracion pide una sombra mas o menos
+   * marcada segun el gusto, no segun la luz-. Por eso aqui hay valores, y no se
+   * deducen de la intensidad de la luz.
+   */
+  shadow: {
+    enabled: boolean;
+    /** Opacidad en el centro del disco, 0..1. */
+    opacity: number;
+    /**
+     * Dureza del borde, 0..1.
+     *
+     * A 0, el disco se desvanece desde el centro -muy difuso-; a 1, el borde es
+     * casi neto. Es lo que faltaba: sin esto la sombra salia siempre blanda.
+     */
+    hardness: number;
+    /** Tamano del disco respecto al objeto, un multiplicador 0.3..3. */
+    size: number;
+  };
   /** Modo del gizmo cuando la herramienta es `object`: mover, rotar o escalar. */
   gizmo: GizmoMode;
   /** Primitiva que inserta el boton "Insertar". */
@@ -94,6 +116,7 @@ export const DEFAULT_SCENE3D: Scene3DSettings = {
   drawPlane: "view",
   placement: { ...DEFAULT_PLACEMENT },
   grid: { enabled: false, opacity: 0.55 },
+  shadow: { enabled: true, opacity: 0.35, hardness: 0.5, size: 1 },
   gizmo: "move",
   primitive: "box",
 };

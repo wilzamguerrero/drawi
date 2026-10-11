@@ -87,8 +87,13 @@ export interface V3Radius {
  * medidas de abajo estan puestas para que a esa misma escala la varilla tenga un
  * par de pixeles de ancho y la punta se lea como una flecha o un cubo.
  *
- * Se construye en el eje +Y -de donde nacen las geometrias de three- y se gira a
- * cada eje; la punta arranca donde acaba la varilla para que no quede hueco.
+ * Cada pieza nace apuntando +Y -de donde salen las geometrias de three- y se
+ * ORIENTA Y COLOCA sobre su eje con la misma rotacion. El fallo que esto corrige:
+ * poner `position.y` y despues rotar la malla NO mueve la pieza -`position` es del
+ * padre, la rotacion gira la geometria sobre su origen-, asi que las tres varillas
+ * quedaban apiladas en el eje Y, solo giradas, y las puntas de X y Z aparecian
+ * amontonadas en la punta de la Y. Al rotar tambien el vector de posicion, cada
+ * brazo sale por su eje.
  */
 const buildGizmoAxis = (mode: GizmoMode, axis: GizmoAxisName): THREE.Mesh[] => {
   const color = AXIS_COLORS[axis];
@@ -101,10 +106,19 @@ const buildGizmoAxis = (mode: GizmoMode, axis: GizmoAxisName): THREE.Mesh[] => {
       depthWrite: false,
     });
 
-  // Rotacion del eje unitario +Y a cada eje: las geometrias de three nacen en Y.
-  const orient = (m: THREE.Mesh): void => {
-    if (axis === "x") m.rotation.z = -Math.PI / 2;
-    else if (axis === "z") m.rotation.x = Math.PI / 2;
+  // Orienta la pieza de +Y a su eje Y COLOCA su centro a distancia `d` sobre ese
+  // mismo eje. La rotacion y la traslacion van juntas: sin esto las puntas de X y
+  // Z saltaban a la punta de la Y.
+  const place = (m: THREE.Mesh, d: number): void => {
+    if (axis === "x") {
+      m.rotation.z = -Math.PI / 2;
+      m.position.set(d, 0, 0);
+    } else if (axis === "z") {
+      m.rotation.x = Math.PI / 2;
+      m.position.set(0, 0, d);
+    } else {
+      m.position.set(0, d, 0);
+    }
   };
 
   if (mode === "rotate") {
@@ -118,20 +132,17 @@ const buildGizmoAxis = (mode: GizmoMode, axis: GizmoAxisName): THREE.Mesh[] => {
   }
 
   const meshes: THREE.Mesh[] = [];
-  // Varilla: un cilindro del centro a 0.8 por el eje.
+  // Varilla: un cilindro del centro a 0.8 por el eje, centrada en 0.4.
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.8, 12), mat());
-  shaft.position.y = 0.4;
-  orient(shaft);
+  place(shaft, 0.4);
   meshes.push(shaft);
 
-  // Punta: cono para mover, cubo para escalar. Arranca en 0.8 y llega a ~1.0, para
-  // que el brazo mida 1 unidad exacta y el picking -que mide sobre el eje- encaje.
+  // Punta: cono para mover, cubo para escalar. Centrada en 0.95, al final del brazo.
   const tip =
     mode === "scale"
       ? new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), mat())
       : new THREE.Mesh(new THREE.ConeGeometry(0.095, 0.3, 16), mat());
-  tip.position.y = 0.95;
-  orient(tip);
+  place(tip, 0.95);
   meshes.push(tip);
   return meshes;
 };
@@ -601,7 +612,8 @@ export class Scene3DBackend {
    * una geometria mas.
    *
    * `light` es la luz principal, o `null` si no hay con que proyectar: entonces no
-   * hay sombras y se quitan todas. `floorY` es la altura del suelo.
+   * hay sombras y se quitan todas. `s` lleva los valores que el usuario gradua:
+   * opacidad, dureza del borde y tamano del disco.
    */
   syncShadows(
     objects: readonly Object3D[],
@@ -609,26 +621,31 @@ export class Scene3DBackend {
     light: Light3D | null,
     floorY: number,
     radiusOf: (o: Object3D) => V3Radius,
-    opacity: number,
+    s: { opacity: number; hardness: number; size: number },
   ): void {
     if (!this.renderer) return;
     const live = new Set<string>();
 
-    if (light && opacity > 0.002) {
+    if (light && s.opacity > 0.002) {
       for (const o of objects) {
         const paint = paintOf(o.layerId);
         if (!paint.visible || o.hidden) continue;
         const { center, radius } = radiusOf(o);
-        const disc = contactShadow(light, center, radius, floorY, opacity * paint.opacity);
+        // El tamano del usuario multiplica el radio del objeto: una sombra mas
+        // ancha o mas ajustada sin tocar el objeto.
+        const disc = contactShadow(light, center, radius * s.size, floorY, s.opacity * paint.opacity);
         if (!disc) continue;
         live.add(o.id);
 
         let sh = this.shadowEntries.get(o.id);
         if (!sh) {
-          sh = createShadowEntry(this.shadowQuad, 0);
+          sh = createShadowEntry(this.shadowQuad, 0, s.hardness);
           this.scene.add(sh.mesh);
           this.shadowEntries.set(o.id, sh);
         }
+        // La dureza puede cambiar fotograma a fotograma -es un deslizador-, asi que
+        // se reescribe siempre, no solo al crear la entrada.
+        sh.material.uniforms.uHardness.value = s.hardness;
         this.placeShadowDisc(sh, disc, floorY);
         // Debajo de TODO lo de la capa, incluso de la rejilla no -esa es el suelo-:
         // la sombra se posa sobre el suelo y bajo cualquier trazo u objeto.

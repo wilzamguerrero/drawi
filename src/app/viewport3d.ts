@@ -223,8 +223,6 @@ const ERASE_SLOP = 10;
  */
 const ANCHOR_CLICK_SLOP = 2;
 
-/** Opacidad de las sombras proyectadas sobre el suelo. */
-const SHADOW_OPACITY = 0.28;
 
 export interface Viewport3DHost {
   /** Color activo del editor. */
@@ -597,16 +595,19 @@ export class Viewport3D {
     // Sombras de contacto sobre el suelo: un disco difuso bajo cada objeto segun
     // la luz principal. Solo con la rejilla puesta, que es la que hace de suelo
     // visible; sin suelo a la vista, una sombra flotando sola confunde mas que
-    // ayuda.
-    const grid = this.api.settings().grid;
-    const key = grid.enabled ? shadowLight(doc.lights3d) : null;
+    // ayuda. Y solo si el usuario las tiene encendidas: la sombra es un recurso de
+    // dibujo que se gradua, no una obligacion de la luz.
+    const settings = this.api.settings();
+    const grid = settings.grid;
+    const shadow = settings.shadow;
+    const key = grid.enabled && shadow.enabled ? shadowLight(doc.lights3d) : null;
     this.backend.syncShadows(
       doc.objects3d,
       paintOf,
       key,
       FLOOR_Y,
       (o) => ({ center: o.transform.position, radius: objectRadius(o) }),
-      SHADOW_OPACITY,
+      { opacity: shadow.opacity, hardness: shadow.hardness, size: shadow.size },
     );
     // El gizmo solo aparece con la herramienta de objetos y uno seleccionado. El
     // eje resaltado es el que haya bajo el cursor cuando no se esta arrastrando;
