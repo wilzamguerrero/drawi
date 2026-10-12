@@ -80,6 +80,7 @@ import {
   outlineArea,
   outlineNormal,
   trianglesArea,
+  triangulateFill,
   triangulateOutline,
 } from "../src/scene3d/fill";
 import { drawPlane, planeNormalFor, planePoint } from "../src/scene3d/drawplane";
@@ -2142,6 +2143,31 @@ const PLANO_Z = v3(0, 0, 1);
   const linea = outlineOf([[0, 0], [50, 0], [100, 0]]);
   ok("un contorno sin area no rellena", triangulateOutline(linea, 3, PLANO_Z).length === 0);
   ok("y su area es cero", outlineArea(linea, 3, PLANO_Z) === 0);
+}
+
+/**
+ * Triangular una mancha con AGUJEROS: lo que nace al morder el centro con la goma.
+ *
+ * Un cuadrado de 100x100 (area 10000) con un hueco cuadrado de 40x40 en el medio
+ * (area 1600) debe triangularse al area neta: 8400. `earcut` resuelve el hueco; la
+ * comprobacion es que el area cubierta no cuente el agujero.
+ */
+{
+  const fuera = outlineOf([[0, 0], [100, 0], [100, 100], [0, 100]]);
+  const dentro = outlineOf([[30, 30], [70, 30], [70, 70], [30, 70]]);
+  const tris = triangulateFill(fuera, 4, [dentro], PLANO_Z);
+  const cubierto = trianglesArea(tris);
+  ok(
+    "una mancha con agujero cubre el area neta",
+    Math.abs(cubierto - 8400) < 1e-3,
+    `${f(cubierto, 3)} frente a 8400`,
+  );
+  // Sin agujeros, triangulateFill coincide con el relleno simple.
+  const lleno = trianglesArea(triangulateFill(fuera, 4, undefined, PLANO_Z));
+  ok("sin agujeros cubre el cuadrado entero", Math.abs(lleno - 10000) < 1e-3, f(lleno, 3));
+  // Un agujero de menos de tres puntos se ignora, no rompe.
+  const tris2 = triangulateFill(fuera, 4, [outlineOf([[30, 30], [70, 30]])], PLANO_Z);
+  ok("un agujero degenerado se ignora", Math.abs(trianglesArea(tris2) - 10000) < 1e-3);
 }
 
 /** Newell: la normal del contorno, para cuando se dibujo en el aire. */

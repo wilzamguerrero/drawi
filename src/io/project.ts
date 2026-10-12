@@ -180,8 +180,20 @@ export interface Fill3DFile {
   count: number;
   /** `count * 3` floats en base64: el contorno cerrado. */
   outline: string;
+  /** Agujeros: cada uno `n*3` floats en base64. Ausente si la mancha no tiene. */
+  holes?: string[];
   planeNormal?: V3 | null;
 }
+
+const floatsToBase64 = (a: Float32Array): string =>
+  bytesToBase64(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
+
+const base64ToFloats = (s: string): Float32Array => {
+  const bytes = base64ToBytes(s);
+  const out = new Float32Array(Math.floor(bytes.byteLength / 4));
+  new Uint8Array(out.buffer).set(bytes.subarray(0, out.byteLength));
+  return out;
+};
 
 export const encodeFill3D = (f: Fill3D): Fill3DFile => {
   const floats = f.outline.subarray(0, f.count * 3);
@@ -192,6 +204,7 @@ export const encodeFill3D = (f: Fill3D): Fill3DFile => {
     count: f.count,
     planeNormal: f.planeNormal ? { ...f.planeNormal } : null,
     outline: bytesToBase64(new Uint8Array(floats.buffer, floats.byteOffset, floats.byteLength)),
+    holes: f.holes && f.holes.length > 0 ? f.holes.map((h) => floatsToBase64(h)) : undefined,
   };
 };
 
@@ -199,6 +212,10 @@ export const decodeFill3D = (f: Fill3DFile): Fill3D => {
   const count = Math.max(0, Math.floor(f.count));
   const outline = new Float32Array(count * 3);
   new Uint8Array(outline.buffer).set(base64ToBytes(f.outline).subarray(0, outline.byteLength));
+  const holes =
+    Array.isArray(f.holes) && f.holes.length > 0
+      ? f.holes.map(base64ToFloats).filter((h) => h.length >= 9)
+      : undefined;
   return {
     id: f.id,
     color: f.color,
@@ -206,6 +223,7 @@ export const decodeFill3D = (f: Fill3DFile): Fill3D => {
     outline,
     count,
     bounds: outlineBounds(outline, count),
+    holes: holes && holes.length > 0 ? holes : undefined,
     planeNormal: f.planeNormal ? { ...f.planeNormal } : null,
   };
 };

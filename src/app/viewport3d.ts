@@ -27,7 +27,17 @@
 import { DEFAULT_BRUSH, type BrushSettings, type Polygon } from "../stroke/types";
 import { Stroke3DBuilder } from "../scene3d/builder";
 import { StrokeScene } from "../scene3d/batch";
-import { radiusAt, type Sample3D, type Stroke3D } from "../scene3d/types";
+import {
+  radiusAt,
+  boundsOf,
+  boundsCenter,
+  boundsRadius,
+  POINT_FLOATS,
+  RADIUS_OFFSET,
+  type Sample3D,
+  type Stroke3D,
+} from "../scene3d/types";
+import { computeFrames } from "../scene3d/frames";
 import type { SceneDocument } from "../scene/document";
 import type { History } from "../app/history";
 import {
@@ -51,6 +61,8 @@ import {
   FillScene,
   makeFill,
   outlineArea,
+  outlineNormal,
+  type Fill3D,
 } from "../scene3d/fill";
 import { placePullShape, pullShape, randomPullShape, type PullFamily } from "../tools/pull-shapes";
 import {
@@ -62,12 +74,14 @@ import {
   type SnapAxis,
 } from "../scene3d/snap";
 import { drawPlane, planeNormalFor, planePoint, screenRay } from "../scene3d/drawplane";
+import polygonClipping from "polygon-clipping";
 import { alongRay, placedPlanePoint, strokeDepthAt } from "../scene3d/placement";
 import {
   beginGizmo,
   dragGizmo,
   gizmoWorldSize,
   pickAxis,
+  rayPlane,
   GIZMO_MODE_ORDER,
   GIZMO_MODE_LABELS,
   type GizmoGrab,
@@ -111,9 +125,173 @@ const GIZMO_MODE_KEYS: Record<GizmoMode, string> = { move: "W", rotate: "E", sca
 /** Icono de cada modo del gizmo en la barra flotante. */
 const GIZMO_MODE_ICONS: Record<GizmoMode, string> = { move: "move", rotate: "rotate", scale: "scale" };
 
+/** Distancia de un punto `(px,py)` al segmento `(ax,ay)-(bx,by)`, en el plano. */
+const distPointToSegment2D = (
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number => {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  // Segmento degenerado (un punto): distancia al punto.
+  const t = len2 > 1e-12 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+  const cx = ax + dx * t;
+  const cy = ay + dy * t;
+  return Math.hypot(px - cx, py - cy);
+};
+
 /** Distancia entre dos puntos. Se usa para medir el avance del gesto. */
 const distancia = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number =>
   Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+
+/**
+ * Huella de la goma entre dos puntos, como poligono para el recorte de manchas.
+ *
+ * Es un "estadio" (dos circulos y el rectangulo entre sus centros), construido por
+ * union de esas tres piezas. Devolverlo ya unido evita que el recorte tenga que
+ * lidiar con solapes. Coordenadas en pantalla escaladas por `scale`.
+ */
+const eraserFootprint = (
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  radNdc: number,
+  scale: number,
+): number[][] => {
+  const ax = from.x * scale;
+  const ay = from.y * scale;
+  const bx = to.x * scale;
+  const by = to.y * scale;
+  const rad = radNdc * scale;
+  const K = 20;
+  const circle = (cx: number, cy: number): number[][] => {
+    const ring: number[][] = [];
+    for (let i = 0; i < K; i++) {
+      const a = (i / K) * Math.PI * 2;
+      ring.push([cx + Math.cos(a) * rad, cy + Math.sin(a) * rad]);
+    }
+    ring.push(ring[0]!);
+    return ring;
+  };
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return circle(ax, ay);
+  const px = (-dy / len) * rad;
+  const py = (dx / len) * rad;
+  const rect: number[][] = [
+    [ax + px, ay + py],
+    [bx + px, by + py],
+    [bx - px, by - py],
+    [ax - px, ay - py],
+    [ax + px, ay + py],
+  ];
+  const merged = polygonClipping.union(
+    [[circle(ax, ay)]] as unknown as Parameters<typeof polygonClipping.union>[0],
+    [[rect]] as unknown as Parameters<typeof polygonClipping.union>[0],
+    [[circle(bx, by)]] as unknown as Parameters<typeof polygonClipping.union>[0],
+  ) as unknown as number[][][][];
+  // La union puede devolver varias piezas; para la huella de la goma basta la
+  // primera -las piezas sueltas serian ruido numerico-.
+  return merged[0]?.[0] ?? rect;
+};
+
+/** Proyecta un anillo de mundo a pantalla escalada, o `null` si algo cae detras. */
+const projectRingScaled = (
+  vp: Float32Array,
+  ring: Float32Array,
+  count: number,
+  scale: number,
+): number[][] | null => {
+  const out: number[][] = [];
+  for (let i = 0; i < count; i++) {
+    const o = i * 3;
+    const p = projectPoint(vp, ring[o]!, ring[o + 1]!, ring[o + 2]!);
+    if (p.w <= 0) return null;
+    out.push([p.x * scale, p.y * scale]);
+  }
+  if (count > 0) out.push([out[0]![0]!, out[0]![1]!]); // cerrado para el recorte
+  return out;
+};
+
+/** Area con signo de un anillo (en el orden dado). */
+const ringArea = (ring: number[][]): number => {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += ring[j]![0]! * ring[i]![1]! - ring[i]![0]! * ring[j]![1]!;
+  }
+  return a * 0.5;
+};
+
+/** Area neta de un poligono con agujeros: exterior menos los huecos (en magnitud). */
+const ringsArea = (rings: number[][][]): number => {
+  if (rings.length === 0) return 0;
+  let a = Math.abs(ringArea(rings[0]!));
+  for (let i = 1; i < rings.length; i++) a -= Math.abs(ringArea(rings[i]!));
+  return a;
+};
+
+/** Area neta de un multipoligono (lista de poligonos con agujeros). */
+const ringsAreaMulti = (polys: number[][][][]): number => {
+  let a = 0;
+  for (const poly of polys) a += ringsArea(poly);
+  return a;
+};
+
+/** ¿La caja de un anillo roza el segmento engordado al radio? Descarte barato. */
+const bboxNearSegment = (
+  ring: number[][],
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  rad: number,
+): boolean => {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of ring) {
+    if (p[0]! < minX) minX = p[0]!;
+    if (p[0]! > maxX) maxX = p[0]!;
+    if (p[1]! < minY) minY = p[1]!;
+    if (p[1]! > maxY) maxY = p[1]!;
+  }
+  const segMinX = Math.min(ax, bx) - rad;
+  const segMaxX = Math.max(ax, bx) + rad;
+  const segMinY = Math.min(ay, by) - rad;
+  const segMaxY = Math.max(ay, by) + rad;
+  return !(maxX < segMinX || minX > segMaxX || maxY < segMinY || minY > segMaxY);
+};
+
+/** Caja de un anillo en pantalla escalada. */
+const bboxOfRing = (ring: number[][]): { minX: number; minY: number; maxX: number; maxY: number } => {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of ring) {
+    if (p[0]! < minX) minX = p[0]!;
+    if (p[0]! > maxX) maxX = p[0]!;
+    if (p[1]! < minY) minY = p[1]!;
+    if (p[1]! > maxY) maxY = p[1]!;
+  }
+  return { minX, minY, maxX, maxY };
+};
+
+const bboxesOverlap = (
+  a: { minX: number; minY: number; maxX: number; maxY: number },
+  b: { minX: number; minY: number; maxX: number; maxY: number },
+): boolean => !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+
+const pointInPoly2D = (poly: number[][], x: number, y: number): boolean => {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0]!, yi = poly[i][1]!, xj = poly[j][0]!, yj = poly[j][1]!;
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+};
 
 /** Recurso de un lote cuya capa ya no existe: no se dibuja. */
 const HIDDEN_PAINT: LayerPaint = { visible: false, opacity: 1, order: 0 };
@@ -183,19 +361,20 @@ type Gesture =
        * del anclaje. Decidirlo al pulsar obligaria a elegir entre las dos.
        */
       maybeAnchor: boolean;
-    }  | { kind: "fill"; planeNormal: V3; outline: number[]; minStep: number }
+    }  | { kind: "fill"; planeNormal: V3; outline: number[]; minStep: number; erasing: boolean }
   | {
-      kind: "pull";
-      /** Base del plano de dibujo: pasar del mundo a 2D y volver. */
-      origin: V3;
-      u: V3;
-      w: V3;
-      /** Donde se apoyo el lapiz y donde esta ahora, en coordenadas del plano. */
-      a: { x: number; y: number };
-      b: { x: number; y: number };
-      /** La forma de la familia activa, en espacio unitario. */
-      shape: Polygon;
-    }
+       kind: "pull";
+       /** Base del plano de dibujo: pasar del mundo a 2D y volver. */
+       origin: V3;
+       u: V3;
+       w: V3;
+       /** Donde se apoyo el lapiz y donde esta ahora, en coordenadas del plano. */
+       a: { x: number; y: number };
+       b: { x: number; y: number };
+       /** La forma de la familia activa, en espacio unitario. */
+       shape: Polygon;
+       erasing: boolean;
+     }
   | { kind: "erase"; erasing: boolean }
   | { kind: "smooth" }
   | {
@@ -1003,7 +1182,9 @@ export class Viewport3D {
     }
 
     const brush = this.api.brush();
-    if (brush.mode === "erase") {
+    const invert =
+      brush.invertErase && brush.mode !== "erase" && !brush.asMatter && !brush.asAqua && !brush.asRaster;
+    if (brush.mode === "erase" || (invert && brush.mode === "stroke")) {
       this.api.history().begin();
       this.gesture = { kind: "erase", erasing: false };
       this.eraseAlong(e);
@@ -1278,6 +1459,9 @@ export class Viewport3D {
     if (!p) return;
     const planeNormal = this.planeNormal();
     const brush = this.api.brush();
+    const invert =
+      brush.invertErase && brush.mode !== "erase" && !brush.asMatter && !brush.asAqua && !brush.asRaster;
+    const erasing = invert && brush.mode === "fill";
     this.gesture = {
       kind: "fill",
       planeNormal,
@@ -1285,6 +1469,7 @@ export class Viewport3D {
       // Mismo criterio de muestreo que el constructor: medio radio. Un contorno
       // con puntos mas juntos que eso solo engorda la triangulacion.
       minStep: Math.max(0.55, brush.size * 0.25),
+      erasing,
     };
     const sample = this.sampleOf(e, p);
     this.tail = sample;
@@ -1349,7 +1534,7 @@ export class Viewport3D {
    * rellenarlo dejaria una astilla que nadie pidio. Se avisa, en vez de no hacer
    * nada en silencio.
    */
-  private closeFill(g: { planeNormal: V3; outline: number[] }): void {
+  private closeFill(g: { planeNormal: V3; outline: number[]; erasing: boolean }): void {
     const count = g.outline.length / 3;
     if (count < 3) {
       this.api.status("El relleno necesita un contorno cerrado");
@@ -1358,6 +1543,25 @@ export class Viewport3D {
     const outline = new Float32Array(g.outline);
     if (outlineArea(outline, count, g.planeNormal) < MIN_FILL_AREA) {
       this.api.status("Ese gesto no encierra area: no hay nada que rellenar");
+      return;
+    }
+
+    // "Usar como borrador" con Relleno: el contorno recorta en vez de crear.
+    if (g.erasing) {
+      const poly: V3[] = [];
+      for (let i = 0; i < count; i++) poly.push(v3(g.outline[i * 3]!, g.outline[i * 3 + 1]!, g.outline[i * 3 + 2]!));
+      const history = this.api.history();
+      history.begin();
+      const changed = this.eraseWithWorldPolygon(poly);
+      if (changed) {
+        history.commit("Borrar con relleno");
+        this.dirty = true;
+        this.refreshState();
+        this.api.changed();
+      } else {
+        history.abort();
+        this.api.status("El borrado no toco nada");
+      }
       return;
     }
 
@@ -1453,7 +1657,11 @@ export class Viewport3D {
     const familia = this.api.pullFamily();
     const shape = familia === "random" ? randomPullShape(this.rng) : pullShape(familia, this.rng);
     const a = this.toPlane2d(p, origin, u, w);
-    this.gesture = { kind: "pull", origin, u, w, a, b: { ...a }, shape };
+    const brush = this.api.brush();
+    const invert =
+      brush.invertErase && brush.mode !== "erase" && !brush.asMatter && !brush.asAqua && !brush.asRaster;
+    const erasing = invert && brush.mode === "pull";
+    this.gesture = { kind: "pull", origin, u, w, a, b: { ...a }, shape, erasing };
     this.tail = this.sampleOf(e, p);
     this.dirty = true;
   }
@@ -1494,6 +1702,7 @@ export class Viewport3D {
     a: { x: number; y: number };
     b: { x: number; y: number };
     shape: Polygon;
+    erasing: boolean;
   }): void {
     const puntos = this.pullOutline(g);
     if (puntos.length < 3) {
@@ -1511,6 +1720,22 @@ export class Viewport3D {
     const planeNormal = this.planeNormal();
     if (outlineArea(outline, puntos.length, planeNormal) < MIN_FILL_AREA) {
       this.api.status("Arrastre: el recorrido no llega a formar una figura");
+      return;
+    }
+
+    if (g.erasing) {
+      const history = this.api.history();
+      history.begin();
+      const changed = this.eraseWithWorldPolygon(puntos);
+      if (changed) {
+        history.commit("Borrar con arrastre");
+        this.dirty = true;
+        this.refreshState();
+        this.api.changed();
+      } else {
+        history.abort();
+        this.api.status("El borrado no toco nada");
+      }
       return;
     }
 
@@ -1708,6 +1933,16 @@ export class Viewport3D {
    * margen. Sin ese barrido, un gesto rapido deja huecos entre muestra y muestra
    * y el borrador perdona justo lo que se queria quitar.
    */
+  /**
+   * Borra a lo largo del gesto de la goma, de forma libre.
+   *
+   * Tanto los trazos como las manchas (relleno y arrastre) se cortan por donde
+   * pasa la goma, con su forma -no se llevan enteros-:
+   *  - **Trazos**: se parten en los tramos que la goma no toca.
+   *  - **Manchas**: se les resta la region de la goma. Morder un borde las recorta,
+   *    cruzarlas de lado a lado las parte en dos, y morder el centro les deja un
+   *    agujero. Es una resta de poligonos de verdad.
+   */
   private eraseAlong(e: PointerEvent): void {
     const g = this.gesture;
     if (!g || g.kind !== "erase") return;
@@ -1717,35 +1952,442 @@ export class Viewport3D {
     const to = { x: ((e.clientX - r.left) / w) * 2 - 1, y: -(((e.clientY - r.top) / h) * 2 - 1) };
     const from = this.eraseFrom ?? to;
 
-    const steps = Math.max(
-      1,
-      Math.ceil((Math.hypot(to.x - from.x, to.y - from.y) * h) / (ERASE_SLOP * 0.5)),
-    );
-    const doc = this.api.doc();
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const sx = from.x + (to.x - from.x) * t;
-      const sy = from.y + (to.y - from.y) * t;
-      // El borrador quita lo que haya bajo la punta, lo de arriba primero: un
-      // trazo si lo hay, y si no, la mancha (relleno o arrastre) que lo cubra.
-      const strokeId = this.pickStroke(sx, sy);
-      if (strokeId) {
-        doc.removeStroke3D(strokeId);
-        g.erasing = true;
-        continue;
-      }
-      const fillId = this.pickFill(sx, sy);
-      if (fillId) {
-        doc.removeFill3D(fillId);
-        g.erasing = true;
-      }
-    }
+    // Trazos: se parte lo que la goma cruza entre la posicion anterior y la actual.
+    if (this.erasePartialStrokes(from, to)) g.erasing = true;
+    // Manchas: se les resta la region barrida por la goma en el mismo tramo.
+    if (this.carveFills(from, to)) g.erasing = true;
+
     this.eraseFrom = to;
     if (g.erasing) {
       this.dirty = true;
       this.refreshState();
       this.api.changed();
     }
+  }
+
+  /**
+   * Resta a cada mancha la region que la goma barre entre `from` y `to`.
+   *
+   * Todo ocurre en PANTALLA, que es donde la goma esta definida, y luego se
+   * devuelve al plano de la mancha. Por mancha:
+   *  1. Se proyectan sus anillos -contorno y agujeros- a pantalla.
+   *  2. Se construye la huella de la goma -dos circulos y el rectangulo entre
+   *     ellos, unidos- como poligono.
+   *  3. Se resta esa huella de la mancha con un recorte de poligonos de verdad.
+   *     El resultado puede ser varias piezas, cada una con sus agujeros.
+   *  4. Cada pieza se devuelve al plano de la mancha lanzando un rayo por cada
+   *     vertice y cortandolo con el plano -asi la perspectiva sale exacta-.
+   *
+   * Trabaja en coordenadas de pantalla escaladas (`CARVE_SCALE`) porque el recorte
+   * de poligonos pierde precision con numeros muy pequenos como los de NDC.
+   */
+  private carveFills(from: { x: number; y: number }, to: { x: number; y: number }): boolean {
+    const r = this.rect();
+    const w = Math.max(1, r.width);
+    const h = Math.max(1, r.height);
+    const aspect = w / h;
+    const vp = viewProjection(this.camera, aspect);
+    const doc = this.api.doc();
+    const eraseRad = (Math.max(ERASE_SLOP, this.api.brush().size * 0.5) / h) * 2;
+    const S = 1000; // escala para dar precision al recorte de poligonos
+    const eraser = eraserFootprint(from, to, eraseRad, S);
+
+    let changed = false;
+    for (const fill of [...doc.fills3d]) {
+      if (!doc.layerVisible(fill.layerId)) continue;
+
+      const outer = projectRingScaled(vp, fill.outline, fill.count, S);
+      if (!outer) continue; // algun vertice detras de la camara: no se toca
+      // Descarte rapido: si la caja del contorno no roza el rastro de la goma.
+      if (!bboxNearSegment(outer, from.x * S, from.y * S, to.x * S, to.y * S, eraseRad * S)) {
+        continue;
+      }
+
+      const subjectRings: number[][][] = [outer];
+      let bad = false;
+      if (fill.holes) {
+        for (const hole of fill.holes) {
+          const hr = projectRingScaled(vp, hole, hole.length / 3, S);
+          if (!hr) {
+            bad = true;
+            break;
+          }
+          subjectRings.push(hr);
+        }
+      }
+      if (bad) continue;
+
+      const before = ringsArea(subjectRings);
+      let result: number[][][][];
+      try {
+        result = polygonClipping.difference(
+          [subjectRings] as unknown as Parameters<typeof polygonClipping.difference>[0],
+          [eraser] as unknown as Parameters<typeof polygonClipping.difference>[0],
+        ) as unknown as number[][][][];
+      } catch {
+        continue; // un recorte degenerado no debe tumbar el gesto
+      }
+      const after = ringsAreaMulti(result);
+      // Si no se quito area apreciable, la goma no toco de verdad esta mancha.
+      if (before - after < Math.abs(before) * 1e-4) continue;
+
+      const plane = this.fillPlane(fill);
+      const nuevas: Fill3D[] = [];
+      for (const poly of result) {
+        const outerData = this.unprojectRing(poly[0], S, plane, aspect);
+        if (!outerData || outerData.count < 3) continue;
+        const holes: Float32Array[] = [];
+        for (let hi = 1; hi < poly.length; hi++) {
+          const hd = this.unprojectRing(poly[hi], S, plane, aspect);
+          if (hd && hd.count >= 3) holes.push(hd.data);
+        }
+        nuevas.push(
+          makeFill(uid(), outerData.data, outerData.count, {
+            color: fill.color,
+            layerId: fill.layerId,
+            planeNormal: fill.planeNormal,
+            holes,
+          }),
+        );
+      }
+      doc.replaceFill3DMany(fill.id, nuevas);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Borra con el contorno de mundo `poly` (cerrado) proyectado a pantalla. */
+  private eraseWithWorldPolygon(poly: readonly V3[]): boolean {
+    if (poly.length < 3) return false;
+    const r = this.rect();
+    const w = Math.max(1, r.width);
+    const h = Math.max(1, r.height);
+    const aspect = w / h;
+    const vp = viewProjection(this.camera, aspect);
+    const S = 1000;
+    const cutter: number[][] = [];
+    for (const p of poly) {
+      const pr = projectPoint(vp, p.x, p.y, p.z);
+      if (pr.w <= 0) return false;
+      cutter.push([pr.x * S, pr.y * S]);
+    }
+    cutter.push([cutter[0]![0]!, cutter[0]![1]!]);
+    let changed = false;
+    if (this.carveFillsWithPoly(cutter, S, vp, aspect)) changed = true;
+    if (this.carveStrokesWithPoly(cutter, S, vp)) changed = true;
+    return changed;
+  }
+
+  private carveFillsWithPoly(
+    cutter: number[][],
+    scale: number,
+    vp: Float32Array,
+    aspect: number,
+  ): boolean {
+    const doc = this.api.doc();
+    const cutterBox = bboxOfRing(cutter);
+    let changed = false;
+    for (const fill of [...doc.fills3d]) {
+      if (!doc.layerVisible(fill.layerId)) continue;
+      const outer = projectRingScaled(vp, fill.outline, fill.count, scale);
+      if (!outer) continue;
+      if (!bboxesOverlap(bboxOfRing(outer), cutterBox)) continue;
+      const subjectRings: number[][][] = [outer];
+      let bad = false;
+      if (fill.holes) for (const hole of fill.holes) {
+        const hr = projectRingScaled(vp, hole, hole.length / 3, scale);
+        if (!hr) { bad = true; break; }
+        subjectRings.push(hr);
+      }
+      if (bad) continue;
+      const before = ringsArea(subjectRings);
+      let result: number[][][][];
+      try {
+        result = polygonClipping.difference(
+          [subjectRings] as unknown as Parameters<typeof polygonClipping.difference>[0],
+          [[cutter]] as unknown as Parameters<typeof polygonClipping.difference>[0],
+        ) as unknown as number[][][][];
+      } catch { continue; }
+      const after = ringsAreaMulti(result);
+      if (before - after < Math.abs(before) * 1e-4) continue;
+      const plane = this.fillPlane(fill);
+      const nuevas: Fill3D[] = [];
+      for (const poly2 of result) {
+        const outerData = this.unprojectRing(poly2[0], scale, plane, aspect);
+        if (!outerData || outerData.count < 3) continue;
+        const holes: Float32Array[] = [];
+        for (let hi = 1; hi < poly2.length; hi++) {
+          const hd = this.unprojectRing(poly2[hi], scale, plane, aspect);
+          if (hd && hd.count >= 3) holes.push(hd.data);
+        }
+        nuevas.push(makeFill(uid(), outerData.data, outerData.count, { color: fill.color, layerId: fill.layerId, planeNormal: fill.planeNormal, holes }));
+      }
+      doc.replaceFill3DMany(fill.id, nuevas);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private carveStrokesWithPoly(cutter: number[][], scale: number, vp: Float32Array): boolean {
+    const tanHalf = Math.tan(this.camera.fovY * 0.5);
+    const doc = this.api.doc();
+    const cutterBox = bboxOfRing(cutter);
+    let changed = false;
+    for (const stroke of [...doc.strokes3d]) {
+      if (!doc.layerVisible(stroke.layerId)) continue;
+      if (stroke.count < 2) continue;
+      const c = boundsCenter(stroke.bounds);
+      const pc = projectPoint(vp, c.x, c.y, c.z);
+      if (pc.w > 0) {
+        const scrR = boundsRadius(stroke.bounds) / pc.w / tanHalf * scale;
+        const b = {
+          minX: pc.x * scale - scrR, minY: pc.y * scale - scrR,
+          maxX: pc.x * scale + scrR, maxY: pc.y * scale + scrR,
+        };
+        if (!bboxesOverlap(b, cutterBox)) continue;
+      }
+      const built = this.densifyWithPoly(stroke, vp, cutter, scale, tanHalf);
+      if (!built.any) continue;
+      doc.replaceStroke3DMany(stroke.id, this.runsFromSamples(stroke, built.data, built.flags));
+      changed = true;
+    }
+    return changed;
+  }
+
+  private densifyWithPoly(
+    stroke: Stroke3D,
+    vp: Float32Array,
+    cutter: number[][],
+    scale: number,
+    tanHalf: number,
+  ): { data: number[]; flags: boolean[]; any: boolean } {
+    const STEP_PX = 5;
+    const d = stroke.data;
+    const out: number[] = [];
+    const flags: boolean[] = [];
+    let any = false;
+    const isInside = (x: number, y: number, z: number, rad: number): boolean => {
+      const p = projectPoint(vp, x, y, z);
+      if (p.w <= 0) return false;
+      const sx = p.x * scale, sy = p.y * scale, r = (rad / p.w / tanHalf) * scale;
+      if (pointInPoly2D(cutter, sx, sy)) return true;
+      // Borde engordado al radio: roza el contorno aunque el centro quede fuera.
+      for (let i = 0, j = cutter.length - 1; i < cutter.length; j = i++) {
+        if (distPointToSegment2D(sx, sy, cutter[j][0]!, cutter[j][1]!, cutter[i][0]!, cutter[i][1]!) <= r) return true;
+      }
+      return false;
+    };
+    for (let i = 0; i < stroke.count - 1; i++) {
+      const oa = i * POINT_FLOATS, ob = (i + 1) * POINT_FLOATS;
+      const pa = projectPoint(vp, d[oa]!, d[oa + 1]!, d[oa + 2]!);
+      const pb = projectPoint(vp, d[ob]!, d[ob + 1]!, d[ob + 2]!);
+      let subs = 1;
+      if (pa.w > 0 && pb.w > 0) {
+        const scrPx = Math.hypot(pb.x - pa.x, pb.y - pa.y) * 0.5 * this.rect().height;
+        subs = Math.min(256, Math.max(1, Math.ceil(scrPx / STEP_PX)));
+      }
+      const kStart = i === 0 ? 0 : 1;
+      for (let k = kStart; k <= subs; k++) {
+        const u = k / subs;
+        for (let f = 0; f < POINT_FLOATS; f++) out.push(d[oa + f]! + (d[ob + f]! - d[oa + f]!) * u);
+        const base = out.length - POINT_FLOATS;
+        const hit = isInside(out[base]!, out[base + 1]!, out[base + 2]!, out[base + RADIUS_OFFSET]!);
+        flags.push(hit);
+        if (hit) any = true;
+      }
+    }
+    return { data: out, flags, any };
+  }
+
+  /** Plano de una mancha: un punto suyo y su normal. */
+  private fillPlane(fill: { outline: Float32Array; count: number; planeNormal: V3 | null }): {
+    point: V3;
+    normal: V3;
+  } {
+    const point = v3(fill.outline[0]!, fill.outline[1]!, fill.outline[2]!);
+    const normal = fill.planeNormal
+      ? { ...fill.planeNormal }
+      : outlineNormal(fill.outline, fill.count, v3());
+    return { point, normal };
+  }
+
+  /**
+   * Devuelve al mundo un anillo de pantalla escalada, sobre el plano de la mancha.
+   *
+   * Cada vertice lanza un rayo por su punto de pantalla y se corta con el plano:
+   * como la mancha es plana, ese corte es unico y recupera la posicion exacta pese
+   * a la perspectiva. Se quita el vertice de cierre que repite el primero.
+   */
+  private unprojectRing(
+    ring: number[][],
+    scale: number,
+    plane: { point: V3; normal: V3 },
+    aspect: number,
+  ): { data: Float32Array; count: number } | null {
+    const n = ring.length >= 2 && ring[0]![0] === ring[ring.length - 1]![0] && ring[0]![1] === ring[ring.length - 1]![1]
+      ? ring.length - 1
+      : ring.length;
+    if (n < 3) return null;
+    const data = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const ndcX = ring[i]![0] / scale;
+      const ndcY = ring[i]![1] / scale;
+      const ray = screenRay(this.camera, ndcX, ndcY, aspect);
+      const hit = rayPlane({ origin: ray.origin, dir: ray.dir }, plane.point, plane.normal);
+      if (!hit) return null;
+      data[i * 3] = hit.x;
+      data[i * 3 + 1] = hit.y;
+      data[i * 3 + 2] = hit.z;
+    }
+    return { data, count: n };
+  }
+
+  /**
+   * Parte los trazos que la goma cruza entre `from` y `to` (en NDC).
+   *
+   * El trazo se guarda como pocos puntos de control -una recta son dos o tres-, y
+   * la cinta se interpola entre ellos. Por eso NO basta con quitar puntos: la goma
+   * caeria entre dos puntos lejanos y no cortaria nada. Se **densifica** el trazo
+   * -se recorre cada segmento a pasos finos en pantalla- y se marca cada muestra
+   * segun caiga o no en el rastro de la goma (una capsula: el segmento `from`-`to`
+   * engordado a su radio). Los tramos de muestras que sobreviven se vuelven trazos
+   * nuevos en el sitio del original, insertando el corte justo donde pasa la goma.
+   * Asi cortar por el medio deja dos trozos y recortar una punta la acorta.
+   */
+  private erasePartialStrokes(from: { x: number; y: number }, to: { x: number; y: number }): boolean {
+    const r = this.rect();
+    const h = Math.max(1, r.height);
+    const vp = viewProjection(this.camera, Math.max(1, r.width) / h);
+    const doc = this.api.doc();
+    // Radio de la goma en NDC: su tamano en pixeles, llevado al espacio -1..1. El
+    // minimo de `ERASE_SLOP` evita que una goma fina no agarre nada.
+    const eraseRad = (Math.max(ERASE_SLOP, this.api.brush().size * 0.5) / h) * 2;
+    const tanHalf = Math.tan(this.camera.fovY * 0.5);
+
+    let changed = false;
+    // Copia de la lista: se va a modificar mientras se recorre.
+    for (const stroke of [...doc.strokes3d]) {
+      if (!doc.layerVisible(stroke.layerId)) continue;
+      if (stroke.count < 2) continue;
+
+      // Descarte rapido: si ni la esfera envolvente del trazo roza el rastro de la
+      // goma, no se densifica -que es lo caro-. Es lo que deja barato pasar la goma
+      // por una escena con muchos trazos.
+      const c = boundsCenter(stroke.bounds);
+      const pc = projectPoint(vp, c.x, c.y, c.z);
+      if (pc.w > 0) {
+        const scrR = boundsRadius(stroke.bounds) / pc.w / tanHalf;
+        if (distPointToSegment2D(pc.x, pc.y, from.x, from.y, to.x, to.y) > eraseRad + scrR) {
+          continue;
+        }
+      }
+
+      const built = this.densifyWithErase(stroke, vp, from, to, eraseRad, tanHalf);
+      if (!built.any) continue;
+      doc.replaceStroke3DMany(stroke.id, this.runsFromSamples(stroke, built.data, built.flags));
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Densifica un trazo a pasos finos en pantalla y marca que muestras borra la goma.
+   *
+   * Devuelve las muestras como floats empaquetados -el mismo formato del trazo- y
+   * una bandera por muestra. Interpolar los nueve floats (posicion, normal, radio,
+   * presion, tiempo) mantiene el grosor y el perfil del trazo en los trozos que
+   * quedan; la normal se rehace luego, asi que su valor interpolado da igual.
+   */
+  private densifyWithErase(
+    stroke: Stroke3D,
+    vp: Float32Array,
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    eraseRad: number,
+    tanHalf: number,
+  ): { data: number[]; flags: boolean[]; any: boolean } {
+    const STEP_PX = 5;
+    const d = stroke.data;
+    const out: number[] = [];
+    const flags: boolean[] = [];
+    let any = false;
+
+    const sample = (x: number, y: number, z: number, rad: number): void => {
+      const p = projectPoint(vp, x, y, z);
+      let erased = false;
+      if (p.w > 0) {
+        const rNdc = rad / p.w / tanHalf;
+        erased = distPointToSegment2D(p.x, p.y, from.x, from.y, to.x, to.y) <= eraseRad + rNdc;
+      }
+      flags.push(erased);
+      if (erased) any = true;
+    };
+
+    for (let i = 0; i < stroke.count - 1; i++) {
+      const oa = i * POINT_FLOATS;
+      const ob = (i + 1) * POINT_FLOATS;
+      // Cuantas subdivisiones: por la longitud del segmento en pantalla.
+      const pa = projectPoint(vp, d[oa]!, d[oa + 1]!, d[oa + 2]!);
+      const pb = projectPoint(vp, d[ob]!, d[ob + 1]!, d[ob + 2]!);
+      let subs = 1;
+      if (pa.w > 0 && pb.w > 0) {
+        const scrPx = Math.hypot(pb.x - pa.x, pb.y - pa.y) * 0.5 * this.rect().height;
+        subs = Math.min(256, Math.max(1, Math.ceil(scrPx / STEP_PX)));
+      }
+      // El primer punto del trazo entra una vez; luego cada segmento aporta sus
+      // subdivisiones sin repetir el extremo que comparte con el vecino.
+      const kStart = i === 0 ? 0 : 1;
+      for (let k = kStart; k <= subs; k++) {
+        const u = k / subs;
+        for (let f = 0; f < POINT_FLOATS; f++) {
+          out.push(d[oa + f]! + (d[ob + f]! - d[oa + f]!) * u);
+        }
+        const base = out.length - POINT_FLOATS;
+        sample(out[base]!, out[base + 1]!, out[base + 2]!, out[base + RADIUS_OFFSET]!);
+      }
+    }
+    return { data: out, flags, any };
+  }
+
+  /**
+   * Construye los trazos que sobreviven de las muestras densificadas y sus marcas.
+   *
+   * Cada tramo de muestras seguidas sin borrar, de dos o mas, es un trazo nuevo.
+   * Los sueltos se descartan -una muestra no es una cinta-, y si no sobrevive
+   * ninguna el trazo desaparece, que es lo correcto cuando la goma lo cubre entero.
+   */
+  private runsFromSamples(stroke: Stroke3D, flat: readonly number[], flags: readonly boolean[]): Stroke3D[] {
+    const runs: Stroke3D[] = [];
+    const n = flags.length;
+    let start = -1;
+    for (let i = 0; i <= n; i++) {
+      const alive = i < n && !flags[i];
+      if (alive && start < 0) start = i;
+      else if (!alive && start >= 0) {
+        if (i - start >= 2) runs.push(this.sliceSamples(stroke, flat, start, i));
+        start = -1;
+      }
+    }
+    return runs;
+  }
+
+  /** Un trazo nuevo con las muestras `[i0, i1)` del buffer densificado. */
+  private sliceSamples(stroke: Stroke3D, flat: readonly number[], i0: number, i1: number): Stroke3D {
+    const n = i1 - i0;
+    const data = new Float32Array(flat.slice(i0 * POINT_FLOATS, i1 * POINT_FLOATS));
+    // Los marcos de la cinta se recalculan: el tramo cortado tiene otros extremos.
+    computeFrames(data, n, stroke.planeNormal ?? null);
+    return {
+      id: uid(),
+      brush: stroke.brush,
+      color: stroke.color,
+      layerId: stroke.layerId,
+      data,
+      count: n,
+      bounds: boundsOf(data, n),
+      seed: stroke.seed,
+      planeNormal: stroke.planeNormal ? { ...stroke.planeNormal } : null,
+    };
   }
 
   /**

@@ -400,6 +400,22 @@ export class SceneDocument {
     return true;
   }
 
+  /**
+   * Sustituye un trazo por varios en su mismo sitio.
+   *
+   * Es lo que necesita el borrado parcial: la goma parte un trazo en los tramos
+   * que sobreviven, y cada tramo ocupa el hueco del original -no se van al final-,
+   * para que el orden de dibujado (que es la z) no cambie al borrar. Con la lista
+   * vacia equivale a quitarlo.
+   */
+  replaceStroke3DMany(id: string, replacements: readonly Stroke3D[]): boolean {
+    const i = this.strokes3d.findIndex((s) => s.id === id);
+    if (i < 0) return false;
+    this.strokes3d.splice(i, 1, ...replacements);
+    this.spaceRevision++;
+    return true;
+  }
+
   /** Borra todos los trazos de una capa. Devuelve cuantos se llevo. */
   clearStrokes3D(layerId: string): number {
     const before = this.strokes3d.length;
@@ -420,6 +436,22 @@ export class SceneDocument {
     const i = this.fills3d.findIndex((f) => f.id === id);
     if (i < 0) return false;
     this.fills3d.splice(i, 1);
+    this.spaceRevision++;
+    return true;
+  }
+
+  /**
+   * Sustituye una mancha por varias en su mismo sitio.
+   *
+   * Es lo que necesita el borrado parcial de rellenos: la goma recorta la mancha y
+   * puede partirla en varios trozos (o dejarle agujeros), y cada resultado ocupa el
+   * hueco del original para no cambiar el orden de dibujado. Con la lista vacia
+   * equivale a quitarla.
+   */
+  replaceFill3DMany(id: string, replacements: readonly Fill3D[]): boolean {
+    const i = this.fills3d.findIndex((f) => f.id === id);
+    if (i < 0) return false;
+    this.fills3d.splice(i, 1, ...replacements);
     this.spaceRevision++;
     return true;
   }

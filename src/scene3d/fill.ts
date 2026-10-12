@@ -13,6 +13,7 @@
  * en cuanto se toque el algoritmo.
  */
 
+import earcut from "earcut";
 import { v3, type V3 } from "./vec3";
 import { EMPTY_BOUNDS3, type Bounds3 } from "./types";
 
@@ -20,10 +21,19 @@ export interface Fill3D {
   id: string;
   color: string;
   layerId: string;
-  /** Contorno cerrado en mundo: `count` puntos, tres floats cada uno. */
+  /** Contorno exterior cerrado en mundo: `count` puntos, tres floats cada uno. */
   outline: Float32Array;
   count: number;
   bounds: Bounds3;
+  /**
+   * Agujeros: contornos interiores que se restan del exterior.
+   *
+   * Nacen al borrar por el medio de una mancha -la goma deja un hueco-. Cada uno
+   * es un contorno cerrado en mundo (`length / 3` puntos). `undefined` o vacio
+   * cuando la mancha no tiene huecos, que es el caso corriente; asi un proyecto
+   * viejo sin este campo se abre igual.
+   */
+  holes?: Float32Array[];
   /** Normal del plano sobre el que se dibujo. Es lo que permite sombrear la
    *  mancha como una superficie plana en vez de como un recorte sin orientacion. */
   planeNormal: V3 | null;
@@ -308,7 +318,7 @@ export const makeFill = (
   id: string,
   outline: Float32Array,
   count: number,
-  opts: { color: string; layerId: string; planeNormal: V3 | null },
+  opts: { color: string; layerId: string; planeNormal: V3 | null; holes?: Float32Array[] },
 ): Fill3D => ({
   id,
   color: opts.color,
@@ -316,8 +326,80 @@ export const makeFill = (
   outline,
   count,
   bounds: outlineBounds(outline, count),
+  holes: opts.holes && opts.holes.length > 0 ? opts.holes : undefined,
   planeNormal: opts.planeNormal ? { ...opts.planeNormal } : null,
 });
+
+/**
+ * Triangula una mancha con sus agujeros, en el plano sobre el que vive.
+ *
+ * Usa `earcut` -el triangulador con huecos estandar- en vez del recorte de orejas
+ * propio, que solo sabe de un contorno. El trabajo es llevar los anillos (exterior
+ * y agujeros) a 2D en la base del plano, triangular en 2D, y devolver los
+ * triangulos con las posiciones 3D originales. `earcut` espera el anillo exterior
+ * en sentido antihorario y los agujeros en horario, asi que cada anillo se
+ * reordena por su area con signo antes de pasarlo.
+ */
+export const triangulateFill = (
+  outline: Float32Array,
+  count: number,
+  holes: readonly Float32Array[] | undefined,
+  planeNormal: V3 | null,
+): Float32Array => {
+  if (count < 3) return new Float32Array(0);
+  const n = planeNormal ? planeNormal : outlineNormal(outline, count);
+  const basis = planeBasis(outline, count, n);
+  const ox = outline[0];
+  const oy = outline[1];
+  const oz = outline[2];
+
+  const verts2d: number[] = [];
+  const verts3d: number[] = [];
+  const holeIndices: number[] = [];
+
+  const addRing = (ring: Float32Array, rc: number, wantCCW: boolean): void => {
+    const px = new Array<number>(rc);
+    const py = new Array<number>(rc);
+    for (let i = 0; i < rc; i++) {
+      const dx = ring[i * 3] - ox;
+      const dy = ring[i * 3 + 1] - oy;
+      const dz = ring[i * 3 + 2] - oz;
+      px[i] = dx * basis.ux + dy * basis.uy + dz * basis.uz;
+      py[i] = dx * basis.wx + dy * basis.wy + dz * basis.wz;
+    }
+    // Area con signo: positiva = antihorario. Se recorre al derecho o al reves
+    // segun el sentido que pida earcut para este anillo.
+    let area = 0;
+    for (let i = 0, j = rc - 1; i < rc; j = i++) area += px[j] * py[i] - px[i] * py[j];
+    const ccw = area > 0;
+    const reverse = ccw !== wantCCW;
+    for (let s = 0; s < rc; s++) {
+      const i = reverse ? rc - 1 - s : s;
+      verts2d.push(px[i], py[i]);
+      verts3d.push(ring[i * 3], ring[i * 3 + 1], ring[i * 3 + 2]);
+    }
+  };
+
+  addRing(outline, count, true);
+  if (holes) {
+    for (const hole of holes) {
+      const hc = hole.length / 3;
+      if (hc < 3) continue;
+      holeIndices.push(verts2d.length / 2);
+      addRing(hole, hc, false);
+    }
+  }
+
+  const idx = earcut(verts2d, holeIndices.length > 0 ? holeIndices : undefined, 2);
+  const out = new Float32Array(idx.length * 3);
+  for (let t = 0; t < idx.length; t++) {
+    const v = idx[t] * 3;
+    out[t * 3] = verts3d[v];
+    out[t * 3 + 1] = verts3d[v + 1];
+    out[t * 3 + 2] = verts3d[v + 2];
+  }
+  return out;
+};
 
 /**
  * Lote de manchas: una malla por pareja (capa, color).
@@ -357,7 +439,7 @@ export class FillBatch {
     const normales: Float32Array[] = [];
     let total = 0;
     for (const f of fills) {
-      const tris = triangulateOutline(f.outline, f.count, f.planeNormal);
+      const tris = triangulateFill(f.outline, f.count, f.holes, f.planeNormal);
       if (tris.length === 0) continue;
       const n = f.planeNormal ?? outlineNormal(f.outline, f.count);
       const ns = new Float32Array(tris.length);
