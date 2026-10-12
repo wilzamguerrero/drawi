@@ -60,6 +60,8 @@ export class BrushTool implements Tool {
   // cuántos puntos consolidados del builder ya se han enviado a estampar.
   private raster = false;
   private rasterSent = 0;
+  /** Borrado ráster en curso (modo Borrador con capa de píxeles de destino). */
+  private rasterErasing = false;
 
   private isTargetLocked(ctx: ToolContext): boolean {
     const layer = ctx.doc.activeLayer;
@@ -92,9 +94,14 @@ export class BrushTool implements Tool {
     this.lastY = w.y;
     this.erasedAny = false;
     this.raster = false;
+    this.rasterErasing = false;
 
     if (ctx.brush.mode === "erase") {
-      this.beginErase(ctx, s, w.x, w.y);
+      // Con el pincel ráster activo, la goma abre el bitmap de la capa en vez de
+      // recortar tinta vectorial (sub-modos pincel y forma; objeto/color no
+      // aplican a píxeles).
+      if (ctx.rasterBrushActive) this.beginRasterErase(ctx, s);
+      else this.beginErase(ctx, s, w.x, w.y);
       return;
     }
 
@@ -110,12 +117,13 @@ export class BrushTool implements Tool {
     this.builder = new StrokeBuilder(ctx.brush);
     this.builder.setZoom(ctx.camera.zoom);
     this.builder.begin(this.worldSample(ctx, s));
-    // Pincel ráster: en vez de la vista previa vectorial, se estampa en vivo
-    // sobre la capa de píxeles desde el primer punto.
-    if (ctx.rasterBrushActive) {
+    // Pincel ráster en modo Trazo: se estampa en vivo sobre la capa de píxeles
+    // (con `invert` → borra). El Relleno, en cambio, muestra la vista previa
+    // vectorial y rellena el área al soltar (como el relleno vectorial).
+    if (ctx.rasterBrushActive && ctx.brush.mode !== "fill") {
       this.raster = true;
       this.rasterSent = 0;
-      ctx.rasterStrokeBegin();
+      ctx.rasterStrokeBegin(this.invert);
       this.flushRaster(ctx);
       return;
     }
@@ -126,7 +134,8 @@ export class BrushTool implements Tool {
     if (!this.active) return;
 
     if (ctx.brush.mode === "erase") {
-      this.moveErase(ctx, samples, predicted);
+      if (this.rasterErasing) this.moveRasterErase(ctx, samples);
+      else this.moveErase(ctx, samples, predicted);
       return;
     }
 
@@ -164,7 +173,8 @@ export class BrushTool implements Tool {
     this.active = false;
 
     if (ctx.brush.mode === "erase") {
-      this.endErase(ctx, s);
+      if (this.rasterErasing) this.endRasterErase(ctx, s);
+      else this.endErase(ctx, s);
       return;
     }
 
@@ -186,6 +196,15 @@ export class BrushTool implements Tool {
       // Acuarela: la misma silueta estirada se vierte en el plano de fluido.
       if (ctx.aquaBrushActive) {
         this.finishAquaArea(ctx, wet?.polys ?? []);
+        return;
+      }
+      // Pincel ráster: la silueta estirada se rellena sobre la capa de píxeles
+      // (con `invert` → borra ese área).
+      if (ctx.rasterBrushActive) {
+        ctx.setWet(null);
+        const polys = wet?.polys ?? [];
+        if (polys.length) ctx.fillRaster(polys, this.invert);
+        ctx.history.abort();
         return;
       }
       this.finish(ctx, wet, this.invert ? "Borrar" : "Forma");
@@ -222,6 +241,15 @@ export class BrushTool implements Tool {
       this.finishMatter(ctx, this.wetFromPoints(ctx, points, false)?.polys ?? []);
       return;
     }
+    // Pincel ráster en modo Relleno: el área cerrada se rellena sobre la capa de
+    // píxeles (con `invert` → borra). El Trazo ya se estampó en vivo arriba.
+    if (ctx.rasterBrushActive) {
+      ctx.setWet(null);
+      const polys = this.wetFromPoints(ctx, points, false)?.polys ?? [];
+      if (polys.length) ctx.fillRaster(polys, this.invert);
+      ctx.history.abort();
+      return;
+    }
     // Acuarela: el trazo/relleno (con toda su dinamica ya resuelta) se siembra en
     // el fluido. El Trazo usa su linea central (radios por punto); el Relleno usa
     // el area cerrada. Asi el gesto es identico al vectorial, pero fluye.
@@ -248,6 +276,7 @@ export class BrushTool implements Tool {
       this.raster = false;
       ctx.rasterStrokeCancel();
     }
+    this.rasterErasing = false;
     ctx.setWet(null);
     ctx.history.abort();
   }
@@ -345,6 +374,79 @@ export class BrushTool implements Tool {
     }
     if (wet && hasInk) ctx.commitWet(wet);
     ctx.history.commit("Borrar");
+  }
+
+  // ------------------------------------------------------- borrado ráster
+
+  /**
+   * Goma del pincel ráster: abre el bitmap de la capa de píxeles. Sub-modo
+   * `brush` → trazo de borrado en vivo (ancho constante); `shape` → la forma
+   * activa borra su área al soltar. Los sub-modos `object`/`color` no aplican a
+   * píxeles, así que no hacen nada.
+   */
+  private beginRasterErase(ctx: ToolContext, s: InputSample): void {
+    const em = ctx.brush.eraseMode;
+    if (em === "brush") {
+      this.rasterErasing = true;
+      this.builder = new StrokeBuilder({ ...ctx.brush, dynamics: "constant", minRatio: 1 });
+      this.builder.setZoom(ctx.camera.zoom);
+      this.builder.begin(this.worldSample(ctx, s));
+      this.raster = true;
+      this.rasterSent = 0;
+      ctx.rasterStrokeBegin(true);
+      this.flushRaster(ctx);
+      return;
+    }
+    if (em === "shape") {
+      this.rasterErasing = true;
+      this.paintWet(ctx);
+    }
+    // object/color: no se puede seleccionar "objetos" de píxeles; no se borra nada.
+  }
+
+  private moveRasterErase(ctx: ToolContext, samples: InputSample[]): void {
+    const em = ctx.brush.eraseMode;
+    if (em === "brush") {
+      const b = this.builder;
+      if (!b) return;
+      b.setZoom(ctx.camera.zoom);
+      if (b.push(samples.map((sm) => this.worldSample(ctx, sm)))) this.flushRaster(ctx);
+      return;
+    }
+    if (em === "shape") {
+      const w = ctx.toWorld(samples[samples.length - 1]);
+      this.lastX = w.x;
+      this.lastY = w.y;
+      this.paintWet(ctx);
+    }
+  }
+
+  private endRasterErase(ctx: ToolContext, s: InputSample): void {
+    const em = ctx.brush.eraseMode;
+    this.rasterErasing = false;
+    if (em === "brush") {
+      const b = this.builder;
+      this.builder = null;
+      if (b) b.push([this.worldSample(ctx, s)], true);
+      if (this.raster) {
+        this.flushRaster(ctx);
+        this.raster = false;
+        ctx.rasterStrokeEnd();
+      }
+      ctx.history.abort();
+      return;
+    }
+    if (em === "shape") {
+      const w = ctx.toWorld(s);
+      this.lastX = w.x;
+      this.lastY = w.y;
+      const shape = this.buildEraseShape(ctx);
+      ctx.setWet(null);
+      ctx.fillRaster([shape], true);
+      ctx.history.abort();
+      return;
+    }
+    ctx.history.abort();
   }
 
   /**

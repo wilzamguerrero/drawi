@@ -228,6 +228,62 @@ try {
   });
   ok("guardar hornea el bitmap de la capa a rasterSrc", flat.hasSrc && flat.rect, JSON.stringify(flat));
 
+  // --- 8. Reset a un pincel redondo limpio para las pruebas de modo ----------
+  await page.evaluate(() => {
+    const ed = window.__drawiEditor;
+    const round = ed.state.rasterPresets[0];
+    if (round) ed.applyRasterPreset(round.id);
+    ed.setBrush({
+      asRaster: true, asMatter: false, asAqua: false, invertErase: false,
+      mode: "stroke", dynamics: "constant", size: 30, opacity: 1,
+      rasterFlow: 1, rasterSpacing: 0.1, rasterHardness: 0.95, rasterRoundness: 1,
+      rasterScatter: 0, rasterScatterCount: 1, rasterSizeJitter: 0, smoothing: 0, streamline: 0,
+    });
+  });
+
+  const stroke = async (pts) => {
+    await page.mouse.move(pts[0][0], pts[0][1]);
+    await page.mouse.down();
+    for (let i = 1; i < pts.length; i++) {
+      const [ax, ay] = pts[i - 1];
+      const [bx, by] = pts[i];
+      const n = Math.max(6, Math.round(Math.hypot(bx - ax, by - ay) / 8));
+      for (let k = 1; k <= n; k++) await page.mouse.move(ax + (bx - ax) * (k / n), ay + (by - ay) * (k / n));
+    }
+    await page.mouse.up();
+    await settle();
+  };
+
+  // --- 8a. Modo Relleno: el área cerrada se rellena de píxeles ---------------
+  const fillBefore = await readInk();
+  await page.evaluate(() => window.__drawiEditor.setBrush({ mode: "fill" }));
+  await stroke([[cx + 120, cy - 160], [cx + 260, cy - 160], [cx + 260, cy - 40], [cx + 120, cy - 40], [cx + 120, cy - 160]]);
+  const fillAfter = await readInk();
+  ok("el modo Relleno rellena un área con el pincel ráster", fillAfter.opaque - fillBefore.opaque > 3000, `+${fillAfter.opaque - fillBefore.opaque} px`);
+
+  // --- 8b. Modo Arrastre: la forma estirada cae sobre la capa ----------------
+  const pullBefore = await readInk();
+  await page.evaluate(() => window.__drawiEditor.setBrush({ mode: "pull" }));
+  await stroke([[cx - 300, cy + 120], [cx - 180, cy + 200]]);
+  const pullAfter = await readInk();
+  ok("el modo Arrastre estampa una forma ráster", pullAfter.opaque - pullBefore.opaque > 500, `+${pullAfter.opaque - pullBefore.opaque} px`);
+
+  // --- 8c. Alt / usar como goma: el trazo ráster borra -----------------------
+  const eraseBefore = await readInk();
+  await page.evaluate(() => window.__drawiEditor.setBrush({ mode: "stroke", invertErase: true }));
+  await stroke([[cx + 120, cy - 100], [cx + 260, cy - 100]]);
+  await page.evaluate(() => window.__drawiEditor.setBrush({ invertErase: false }));
+  const eraseAfter = await readInk();
+  ok("con 'usar como goma' el trazo ráster borra", eraseAfter.opaque < eraseBefore.opaque, `${eraseBefore.opaque} -> ${eraseAfter.opaque}`);
+
+  // --- 8d. Modo Borrador (pincel) sobre la capa ráster -----------------------
+  const berBefore = await readInk();
+  await page.evaluate(() => window.__drawiEditor.setBrush({ mode: "erase", eraseMode: "brush", size: 40 }));
+  await stroke([[cx + 130, cy - 150], [cx + 250, cy - 50]]);
+  const berAfter = await readInk();
+  ok("el modo Borrador abre el bitmap de la capa ráster", berAfter.opaque < berBefore.opaque, `${berBefore.opaque} -> ${berAfter.opaque}`);
+  await page.evaluate(() => window.__drawiEditor.setBrush({ mode: "stroke" }));
+
   const shot = process.env.SHOT || path.join(root, "verificacion-raster.png");
   await page.screenshot({ path: shot });
   console.log("Captura guardada en " + shot);

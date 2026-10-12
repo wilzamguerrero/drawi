@@ -86,14 +86,16 @@ export interface ToolContext {
   stampAquaArea(polys: readonly Polygon[], color: string): void;
   /** El pincel esta en modo raster (pincel tipo Photoshop sobre capa de pixeles). */
   readonly rasterBrushActive: boolean;
-  /** Abre un trazo raster en vivo (crea capa/lienzo destino si hace falta). */
-  rasterStrokeBegin(): void;
+  /** Abre un trazo raster en vivo (crea capa/lienzo destino si hace falta). `erase` borra. */
+  rasterStrokeBegin(erase?: boolean): void;
   /** Prolonga el trazo raster en vivo con los puntos NUEVOS (linea central en mundo). */
   rasterStrokeAdd(points: readonly StrokePoint[]): void;
   /** Cierra el trazo raster: vuelca el buffer sobre la capa a la opacidad del trazo. */
   rasterStrokeEnd(): void;
   /** Cancela el trazo raster en curso y restaura la capa a como estaba. */
   rasterStrokeCancel(): void;
+  /** Rellena (o borra) poligonos de mundo sobre la capa raster (modos Relleno/Arrastre/goma de forma). */
+  fillRaster(polys: readonly Polygon[], erase?: boolean): void;
 }
 
 export interface Tool {

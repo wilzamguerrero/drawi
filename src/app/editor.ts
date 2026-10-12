@@ -285,6 +285,7 @@ export class Editor {
     stroke: RasterStroke;
     opacity: number;
     rect: Rect;
+    erase: boolean;
   } | null = null;
   /** Biblioteca de pinceles ráster (fábrica + importados), y el preset activo. */
   private brushPresets: BrushPreset[] = defaultPresets();
@@ -1164,11 +1165,12 @@ export class Editor {
    * si no la última creada, y si no hay ninguna se crea una (con la instantánea
    * ANTES, o deshacer no la quitaría). Espejo de `aquaTargetLayer`.
    */
-  private rasterTargetLayer(): SceneLayer | null {
+  private rasterTargetLayer(create = true): SceneLayer | null {
     const active = this.doc.activeLayer;
     if (active?.kind === "raster") return active;
     const existing = this.doc.rasterLayers[this.doc.rasterLayers.length - 1];
     if (existing) return existing;
+    if (!create) return null;
     const before = this.doc.snapshot();
     const layer = this.doc.addRasterLayer(this.rasterRectForNew());
     this.history.record("Nueva capa de pincel", before);
@@ -1217,13 +1219,13 @@ export class Editor {
   }
 
   /**
-   * Abre un trazo ráster en vivo sobre la capa de destino (creándola si hace
-   * falta). Fija el color/punta del trazo, respalda el bitmap actual y arranca
-   * un estampador con un buffer del tamaño del lienzo de la capa.
+   * Abre un trazo ráster en vivo sobre la capa de destino. Al pintar la crea si
+   * no hay; al borrar (`erase`) usa solo la que ya exista (no tiene sentido crear
+   * una capa vacía para borrar). Respalda el bitmap y arranca el estampador.
    */
-  rasterStrokeBegin(): void {
+  rasterStrokeBegin(erase = false): void {
     this.rasterLive = null;
-    const layer = this.rasterTargetLayer();
+    const layer = this.rasterTargetLayer(!erase);
     if (!layer || !layer.rasterRect) return;
     const canvas = this.rasterCanvasFor(layer.id, true);
     if (!canvas) return;
@@ -1254,6 +1256,7 @@ export class Editor {
       stroke,
       opacity: clamp01(this.brush.opacity),
       rect: layer.rasterRect,
+      erase,
     };
   }
 
@@ -1318,8 +1321,45 @@ export class Editor {
     g.clearRect(x0, y0, w, h);
     g.drawImage(live.backup, x0, y0, w, h, x0, y0, w, h);
     g.globalAlpha = live.opacity;
+    // Pintar: el trazo se SUMA sobre lo que había. Borrar: su cobertura RESTA
+    // (destination-out), así la goma ráster abre el bitmap como en Photoshop.
+    g.globalCompositeOperation = live.erase ? "destination-out" : "source-over";
     g.drawImage(st.buffer, x0, y0, w, h, x0, y0, w, h);
     g.globalAlpha = 1;
+    g.globalCompositeOperation = "source-over";
+  }
+
+  /**
+   * Rellena (o borra, con `erase`) polígonos de MUNDO sobre la capa ráster de
+   * destino, a la opacidad del pincel y con el color activo. Es lo que usan los
+   * modos Relleno y Arrastre del pincel ráster, y la goma de forma.
+   */
+  fillRaster(polys: readonly import("../stroke/types").Polygon[], erase = false): void {
+    if (polys.length === 0) return;
+    const layer = this.rasterTargetLayer(!erase);
+    if (!layer || !layer.rasterRect) return;
+    const canvas = this.rasterCanvasFor(layer.id, true);
+    if (!canvas) return;
+    const g = canvas.getContext("2d");
+    if (!g) return;
+    const rect = layer.rasterRect;
+    const sx = canvas.width / rect.w;
+    const sy = canvas.height / rect.h;
+    g.save();
+    g.globalAlpha = clamp01(this.brush.opacity);
+    g.globalCompositeOperation = erase ? "destination-out" : "source-over";
+    g.fillStyle = this.color;
+    g.beginPath();
+    for (const poly of polys) {
+      if (poly.length < 3) continue;
+      g.moveTo((poly[0].x - rect.x) * sx, (poly[0].y - rect.y) * sy);
+      for (let i = 1; i < poly.length; i++) g.lineTo((poly[i].x - rect.x) * sx, (poly[i].y - rect.y) * sy);
+      g.closePath();
+    }
+    g.fill();
+    g.restore();
+    this.inkLayer.invalidate();
+    this.status(erase ? "Borrar" : "Relleno");
   }
 
   /**
@@ -2410,8 +2450,8 @@ export class Editor {
       get rasterBrushActive(): boolean {
         return editor.rasterBrushActive;
       },
-      rasterStrokeBegin(): void {
-        editor.rasterStrokeBegin();
+      rasterStrokeBegin(erase?: boolean): void {
+        editor.rasterStrokeBegin(erase);
       },
       rasterStrokeAdd(points): void {
         editor.rasterStrokeAdd(points);
@@ -2421,6 +2461,9 @@ export class Editor {
       },
       rasterStrokeCancel(): void {
         editor.rasterStrokeCancel();
+      },
+      fillRaster(polys, erase?: boolean): void {
+        editor.fillRaster(polys, erase);
       },
     };
     return this.toolCtx;
