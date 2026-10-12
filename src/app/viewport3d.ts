@@ -327,6 +327,9 @@ export class Viewport3D {
   private tail: Sample3D | null = null;
   /** Ultimo punto de pantalla por el que paso el borrador, para no dejar huecos. */
   private eraseFrom: { x: number; y: number } | null = null;
+  /** Buffers reutilizados para proyectar el contorno de una mancha al hacer picking. */
+  private readonly pickScratchX = new Float32Array(MAX_OUTLINE_POINTS);
+  private readonly pickScratchY = new Float32Array(MAX_OUTLINE_POINTS);
   /**
    * Ultimo punto CRUDO del trazo en curso.
    *
@@ -1721,10 +1724,21 @@ export class Viewport3D {
     const doc = this.api.doc();
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
-      const id = this.pickStroke(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
-      if (!id) continue;
-      doc.removeStroke3D(id);
-      g.erasing = true;
+      const sx = from.x + (to.x - from.x) * t;
+      const sy = from.y + (to.y - from.y) * t;
+      // El borrador quita lo que haya bajo la punta, lo de arriba primero: un
+      // trazo si lo hay, y si no, la mancha (relleno o arrastre) que lo cubra.
+      const strokeId = this.pickStroke(sx, sy);
+      if (strokeId) {
+        doc.removeStroke3D(strokeId);
+        g.erasing = true;
+        continue;
+      }
+      const fillId = this.pickFill(sx, sy);
+      if (fillId) {
+        doc.removeFill3D(fillId);
+        g.erasing = true;
+      }
     }
     this.eraseFrom = to;
     if (g.erasing) {
@@ -1773,22 +1787,94 @@ export class Viewport3D {
     return bestId;
   }
 
-  /** Borra el trazo mas cercano bajo el cursor. Devuelve si borro algo. */
+  /**
+   * Id de la mancha bajo un punto de pantalla, o `null`.
+   *
+   * A diferencia del trazo, una mancha es grande y plana: su esfera envolvente
+   * borraria de mas -bastaria acercarse-, asi que se proyecta su contorno a
+   * pantalla y se hace un test de punto-en-poligono. Solo acierta donde de verdad
+   * hay relleno. Entre varias que se solapan, la mas cercana a la camara. Cubre a
+   * la vez el relleno y el arrastre: los dos son `Fill3D`.
+   */
+  private pickFill(ndcX: number, ndcY: number): string | null {
+    const r = this.rect();
+    const h = Math.max(1, r.height);
+    const vp = viewProjection(this.camera, Math.max(1, r.width) / h);
+    const doc = this.api.doc();
+
+    let bestId: string | null = null;
+    let bestDepth = Infinity;
+    for (const f of doc.fills3d) {
+      if (!doc.layerVisible(f.layerId)) continue;
+      if (f.count < 3 || f.count > MAX_OUTLINE_POINTS) continue;
+
+      // Se proyecta el contorno a NDC. Si algun vertice queda detras de la camara,
+      // se omite la mancha: un poligono con puntos invertidos no da un test fiable.
+      const xs = this.pickScratchX;
+      const ys = this.pickScratchY;
+      let behind = false;
+      let depthSum = 0;
+      for (let i = 0; i < f.count; i++) {
+        const o = i * 3;
+        const p = projectPoint(vp, f.outline[o]!, f.outline[o + 1]!, f.outline[o + 2]!);
+        if (p.w <= 0) {
+          behind = true;
+          break;
+        }
+        xs[i] = p.x;
+        ys[i] = p.y;
+        depthSum += p.w;
+      }
+      if (behind) continue;
+
+      // Punto en poligono por lanzamiento de rayo: se cuenta cuantas aristas cruza
+      // una semirrecta horizontal desde el cursor. Impar = dentro.
+      let inside = false;
+      for (let i = 0, j = f.count - 1; i < f.count; j = i++) {
+        const xi = xs[i]!;
+        const yi = ys[i]!;
+        const xj = xs[j]!;
+        const yj = ys[j]!;
+        if ((yi > ndcY) !== (yj > ndcY) && ndcX < ((xj - xi) * (ndcY - yi)) / (yj - yi) + xi) {
+          inside = !inside;
+        }
+      }
+      if (!inside) continue;
+
+      const depth = depthSum / f.count;
+      if (depth < bestDepth) {
+        bestDepth = depth;
+        bestId = f.id;
+      }
+    }
+    return bestId;
+  }
+
+  /** Borra lo que haya bajo el cursor -trazo o mancha-. Devuelve si borro algo. */
   private eraseAt(e: PointerEvent): boolean {
     const r = this.rect();
     const w = Math.max(1, r.width);
     const h = Math.max(1, r.height);
-    const id = this.pickStroke(((e.clientX - r.left) / w) * 2 - 1, -(((e.clientY - r.top) / h) * 2 - 1));
-    if (!id) return false;
-    this.deleteStroke(id, "Borrar en el espacio");
-    return true;
+    const ndcX = ((e.clientX - r.left) / w) * 2 - 1;
+    const ndcY = -(((e.clientY - r.top) / h) * 2 - 1);
+    const strokeId = this.pickStroke(ndcX, ndcY);
+    if (strokeId) {
+      this.deleteSpaceItem(() => this.api.doc().removeStroke3D(strokeId), "Borrar en el espacio");
+      return true;
+    }
+    const fillId = this.pickFill(ndcX, ndcY);
+    if (fillId) {
+      this.deleteSpaceItem(() => this.api.doc().removeFill3D(fillId), "Borrar en el espacio");
+      return true;
+    }
+    return false;
   }
 
-  /** Quita un trazo del documento, con su paso por el historial. */
-  private deleteStroke(id: string, label: string): void {
+  /** Quita del documento lo que borre `remove`, con su paso por el historial. */
+  private deleteSpaceItem(remove: () => boolean, label: string): void {
     const history = this.api.history();
     history.begin();
-    this.api.doc().removeStroke3D(id);
+    remove();
     history.commit(label);
     this.dirty = true;
     this.refreshState();
