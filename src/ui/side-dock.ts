@@ -6,7 +6,7 @@ import type { ToolId } from "../tools/types";
 import { TOOL_TABS } from "../tools/manifest";
 import { ColorPicker } from "./color-picker";
 import { button, fieldLabel, section, segmented, swatches } from "./controls";
-import { blurSoon, el, setClass } from "./dom";
+import { blurSoon, clear, el, setClass } from "./dom";
 import { MateriaEdge } from "./fx/materia-edge";
 import type { MenuHooks } from "./hotbox/menu";
 import { icon } from "./icons";
@@ -307,6 +307,9 @@ export class SideDock {
     // fotograma. Toda la interacción (filas, arrastre, menú) vive en la clase.
     const layers = new LayersPanel(editor);
     this.customs.set("layers-panel", { el: layers.el, sync: (s) => layers.update(s) });
+
+    // Biblioteca de pinceles ráster: rejilla de miniaturas + importar/exportar.
+    this.customs.set("brush-presets", buildBrushPresets(editor));
   }
   /** ¿El nodo (dominio, grupo o campo) aparece en el dock? */
   private inDock(n: SchemaNode): boolean {
@@ -651,4 +654,84 @@ function drawBrushPreview(c: HTMLCanvasElement, state: EditorState): void {
   ctx.fillStyle = state.color;
   ctx.fill();
   ctx.globalAlpha = 1;
+}
+
+/**
+ * Biblioteca de pinceles ráster: rejilla de miniaturas (clic = aplicar) y una
+ * fila de acciones para importar `.abr`/packs propios, exportar y guardar el
+ * pincel actual. La rejilla se rehace solo cuando cambia la lista o el activo.
+ */
+function buildBrushPresets(editor: Editor): { el: HTMLElement; sync: (s: EditorState) => void } {
+  const grid = el("div", {
+    class: "brush-preset-grid",
+    style: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "6px", marginBottom: "8px" },
+  });
+  const hidden = el("input", { type: "file", style: { display: "none" } }) as HTMLInputElement;
+  let mode: "abr" | "json" = "abr";
+  hidden.addEventListener("change", () => {
+    const file = hidden.files?.[0];
+    hidden.value = "";
+    if (!file) return;
+    if (mode === "abr") {
+      void file.arrayBuffer().then((buf) => editor.importAbrBuffer(buf, file.name.replace(/\.abr$/i, "")));
+    } else {
+      void file.text().then((txt) => editor.importRasterPresetsJson(txt));
+    }
+  });
+  const pick = (m: "abr" | "json"): void => {
+    mode = m;
+    hidden.accept = m === "abr" ? ".abr" : ".json,application/json";
+    hidden.click();
+  };
+  const row = el("div", { style: { display: "flex", flexWrap: "wrap", gap: "6px" } }, [
+    button({ label: "Importar .abr", title: "Importar pinceles de Photoshop (.abr)", onClick: () => pick("abr") }).el,
+    button({ label: "Importar pack", title: "Importar un pack de pinceles propio (.json)", onClick: () => pick("json") }).el,
+    button({ label: "Exportar", title: "Descargar tus pinceles como .json", onClick: () => downloadPresets(editor) }).el,
+    button({ label: "Guardar actual", title: "Guardar los ajustes actuales como pincel", onClick: () => editor.addCurrentAsPreset() }).el,
+  ]);
+  const wrap = el("div", { class: "brush-presets dock-stack" }, [fieldLabel("Pinceles"), grid, row, hidden]);
+
+  let lastKey = "";
+  const sync = (s: EditorState): void => {
+    const key = s.rasterPresetId + "|" + s.rasterPresets.map((p) => p.id + ":" + p.thumb.length).join(",");
+    if (key === lastKey) return;
+    lastKey = key;
+    clear(grid);
+    for (const p of s.rasterPresets) {
+      const active = p.id === s.rasterPresetId;
+      const img = el("img", { style: { width: "100%", height: "auto", display: "block" } }) as HTMLImageElement;
+      if (p.thumb) img.src = p.thumb;
+      const cell = el(
+        "button",
+        {
+          type: "button",
+          title: p.name,
+          style: {
+            padding: "3px",
+            borderRadius: "6px",
+            border: active ? "1px solid rgba(255,255,255,.55)" : "1px solid transparent",
+            background: active ? "rgba(255,255,255,.16)" : "rgba(255,255,255,.05)",
+            cursor: "pointer",
+          },
+          on: { click: () => editor.applyRasterPreset(p.id) },
+        },
+        [img],
+      );
+      grid.appendChild(cell);
+    }
+  };
+  return { el: wrap, sync };
+}
+
+function downloadPresets(editor: Editor): void {
+  const json = editor.exportRasterPresetsJson();
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = el("a", {}) as HTMLAnchorElement;
+  a.href = url;
+  a.download = "pinceles.drawi.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

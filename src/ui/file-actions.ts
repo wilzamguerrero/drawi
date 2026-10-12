@@ -51,12 +51,14 @@ export function projectText(editor: Editor): string {
   });
 }
 
-/** Serializa el proyecto, con la acuarela viva ya pasada a raster. */
+/** Serializa el proyecto, con la acuarela viva y los pinceles ráster ya horneados. */
 function bakedText(editor: Editor): string {
-  // La acuarela viva está en la GPU y en coordenadas de pantalla: antes de
-  // serializar se hornea a un ráster de mundo, que es lo que sabe viajar en el
-  // archivo. Si no, el .drawi saldría sin ella.
+  // La acuarela viva está en la GPU y en coordenadas de pantalla; el pincel
+  // ráster vive en un lienzo del editor. Antes de serializar ambos se hornean a
+  // su ráster de mundo (`aquaBaked` / `rasterSrc`), que es lo que sabe viajar en
+  // el archivo. Si no, el .drawi saldría sin ellos.
   editor.bakeAllAquaLayers();
+  editor.flattenRasterLayers();
   return projectText(editor);
 }
 
@@ -281,8 +283,9 @@ export async function exportImage(
 ): Promise<string> {
   const opt = { ...DEFAULT_EXPORT, ...options };
   // Igual que al guardar: el PNG se rasteriza en coordenadas de mundo, así que
-  // la acuarela tiene que estar horneada para poder aparecer en él.
+  // la acuarela y el pincel ráster tienen que estar horneados para aparecer en él.
   editor.bakeAllAquaLayers();
+  editor.flattenRasterLayers();
   const blob = await exportPng(editor.doc, opt);
   const name = timestampName(sanitize(editor.doc.meta.name), "png");
   download(blob, name, "image/png");

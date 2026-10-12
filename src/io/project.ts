@@ -24,8 +24,10 @@ import { POINT_FLOATS, boundsOf, type Stroke3D } from "../scene3d/types";
  * v7: capas del espacio (`kind: "scene3d"`) con sus trazos en `strokes3d`, sus
  * manchas rellenas en `fills3d` y las luces de la escena en `lights3d`, mas el
  * punto de vista del visor en `camera3d`.
+ * v8: capas de pincel ráster (`kind: "raster"`), con su bitmap horneado en
+ * `rasterSrc` (PNG) y el rectángulo de mundo que ocupa en `rasterRect`.
  */
-export const PROJECT_VERSION = 7;
+export const PROJECT_VERSION = 8;
 
 export interface ProjectFile {
   format: "drawi";
@@ -380,9 +382,15 @@ export function saveLocalLossy(payload: string): "full" | "trimmed" | "failed" {
   try {
     const data = JSON.parse(payload) as ProjectFile;
     for (const l of data.layers ?? []) {
-      if (l.kind !== "aqua") continue;
-      delete l.aquaBaked;
-      delete l.aquaRect;
+      if (l.kind === "aqua") {
+        delete l.aquaBaked;
+        delete l.aquaRect;
+      } else if (l.kind === "raster") {
+        // El bitmap del pincel ráster pesa igual que la acuarela horneada: se
+        // sacrifica también antes que perder el autoguardado entero.
+        delete l.rasterSrc;
+        delete l.rasterRect;
+      }
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     return "trimmed";

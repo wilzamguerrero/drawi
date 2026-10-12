@@ -84,6 +84,16 @@ export interface ToolContext {
   stampAquaStroke(points: readonly StrokePoint[], color: string): void;
   /** Siembra AREAS rellenas (poligonos en mundo) como mancha de acuarela. */
   stampAquaArea(polys: readonly Polygon[], color: string): void;
+  /** El pincel esta en modo raster (pincel tipo Photoshop sobre capa de pixeles). */
+  readonly rasterBrushActive: boolean;
+  /** Abre un trazo raster en vivo (crea capa/lienzo destino si hace falta). */
+  rasterStrokeBegin(): void;
+  /** Prolonga el trazo raster en vivo con los puntos NUEVOS (linea central en mundo). */
+  rasterStrokeAdd(points: readonly StrokePoint[]): void;
+  /** Cierra el trazo raster: vuelca el buffer sobre la capa a la opacidad del trazo. */
+  rasterStrokeEnd(): void;
+  /** Cancela el trazo raster en curso y restaura la capa a como estaba. */
+  rasterStrokeCancel(): void;
 }
 
 export interface Tool {

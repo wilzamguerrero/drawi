@@ -95,6 +95,36 @@ export interface BrushSettings {
    */
   asAqua: boolean;
   /**
+   * Convierte el pincel en pincel RÁSTER (tipo Photoshop): el mismo gesto estampa
+   * una punta con textura a lo largo del trazo sobre una capa de píxeles, en vez
+   * de producir tinta vectorial. Como "Hacer materia"/"Acuarela", es un toggle.
+   */
+  asRaster: boolean;
+  /** Ráster: dureza de la punta redonda procedural (0..1). */
+  rasterHardness: number;
+  /** Ráster: separación entre estampas, fracción del diámetro (>0). */
+  rasterSpacing: number;
+  /** Ráster: flujo por estampa (0..1). La opacidad del trazo la fija `opacity`. */
+  rasterFlow: number;
+  /** Ráster: ángulo base de la punta, en grados (0..360). */
+  rasterAngle: number;
+  /** Ráster: redondez de la punta (0..1; 1 = redonda, <1 = achatada). */
+  rasterRoundness: number;
+  /** Ráster: el ángulo de la punta sigue a la dirección del trazo. */
+  rasterAngleFollow: boolean;
+  /** Ráster: dispersión al azar, en diámetros (0 = sin dispersión). */
+  rasterScatter: number;
+  /** Ráster: huellas por punto de muestreo (1..). */
+  rasterScatterCount: number;
+  /** Ráster: jitter de tamaño (0..1). */
+  rasterSizeJitter: number;
+  /** Ráster: jitter de ángulo (0..1). */
+  rasterAngleJitter: number;
+  /** Ráster: jitter de redondez (0..1). */
+  rasterRoundnessJitter: number;
+  /** Ráster: jitter de flujo (0..1). */
+  rasterFlowJitter: number;
+  /**
    * Invierte los modos de pintura (Trazo/Relleno/Arrastre) a borrado: el mismo
    * gesto recorta la tinta en vez de pintarla. La tecla Alt lo alterna.
    */
@@ -122,6 +152,19 @@ export const DEFAULT_BRUSH: BrushSettings = {
   eraseMatter: false,
   asMatter: false,
   asAqua: false,
+  asRaster: false,
+  rasterHardness: 0.8,
+  rasterSpacing: 0.1,
+  rasterFlow: 0.9,
+  rasterAngle: 0,
+  rasterRoundness: 1,
+  rasterAngleFollow: false,
+  rasterScatter: 0,
+  rasterScatterCount: 1,
+  rasterSizeJitter: 0,
+  rasterAngleJitter: 0,
+  rasterRoundnessJitter: 0,
+  rasterFlowJitter: 0,
   invertErase: false,
 };
 

@@ -26,7 +26,17 @@ import { symmetryTransforms, SYMMETRY_LABELS, type SymmetryState } from "../symm
 import { rotationAround, reflectionAbout, multiply, invert, apply as applyMat, applyDir as applyDirMat, type Mat2d } from "../core/mat2d";
 import { polygonBounds } from "../stroke/outline";
 import { transformRect } from "../scene/document";
-import { unionRect } from "../scene/types";
+import { unionRect, type Rect } from "../scene/types";
+import { makeRoundTip, tintTip } from "../brush/tip";
+import { RasterStroke } from "../brush/stamper";
+import {
+  brushToPreset,
+  defaultPresets,
+  presetToBrush,
+  type BrushPreset,
+  type RasterTip,
+} from "../brush/preset";
+import { abrToMaskCanvas, parseAbr } from "../brush/abr";
 export type SelectOp = "move" | "scale" | "rotate" | "pivot";
 export type SelectPivotMode = "center" | "custom";
 import { Selection } from "./selection";
@@ -133,6 +143,10 @@ export interface EditorState {
   aquaLayerOpacity: number;
   /** Parametros vivos de la acuarela (0..1). */
   aquaParams: import("../aqua/aqua-field").AquaParams;
+  /** Biblioteca de pinceles raster (id, nombre y miniatura dataURL). */
+  rasterPresets: { id: string; name: string; thumb: string }[];
+  /** Preset de pincel raster activo. */
+  rasterPresetId: string;
   /** El visor de dibujo espacial esta activo. */
   mode3d: boolean;
   /** WebGL2 esta disponible para el visor 3D. */
@@ -250,6 +264,37 @@ export class Editor {
    * tenga horneado, pero no recibe simulación nueva.
    */
   private aquaFields = new Map<string, AquaField>();
+  /**
+   * Lienzos editables de las capas de pincel ráster (`kind === "raster"`), uno
+   * por capa. A diferencia de la acuarela no hay simulación ni WebGL: es un
+   * canvas 2D anclado al mundo donde el estampador deposita las puntas. Se crean
+   * en perezoso (primera pincelada o primer dibujado de una capa cargada) y se
+   * sueltan al borrar la capa (`pruneRasterCanvases`).
+   */
+  private rasterCanvases = new Map<string, HTMLCanvasElement>();
+  /**
+   * Trazo ráster en curso. Mientras está vivo, el lienzo de su capa muestra
+   * `committed + buffer·opacity` (el estampador acumula el flujo en `buffer`), y
+   * `backup` guarda el committed intacto para recomponer en cada tramo. Al
+   * soltar, el lienzo ya es el resultado final; al cancelar, se restaura `backup`.
+   */
+  private rasterLive: {
+    layerId: string;
+    canvas: HTMLCanvasElement;
+    backup: HTMLCanvasElement;
+    stroke: RasterStroke;
+    opacity: number;
+    rect: Rect;
+  } | null = null;
+  /** Biblioteca de pinceles ráster (fábrica + importados), y el preset activo. */
+  private brushPresets: BrushPreset[] = defaultPresets();
+  private activePresetId = this.brushPresets[0].id;
+  /** Punta activa: redonda procedural o un mapa de alfa importado. */
+  private rasterTip: RasterTip = this.brushPresets[0].tip;
+  /** Máscaras de alfa de las puntas de imagen, por dataURL. */
+  private rasterTipMasks = new Map<string, HTMLCanvasElement>();
+  /** Miniaturas de los presets, por id (cacheadas para el panel). */
+  private rasterThumbs = new Map<string, string>();
   /** Sondeo de WebGL2 cacheado: no se crea un motor solo para saber si se puede. */
   private aquaSupport: boolean | null = null;
   /** Sondeo propio del visor 3D, por el mismo motivo. */
@@ -340,6 +385,7 @@ export class Editor {
 
     this.doc.shape = { ...DEFAULT_SHAPE };
     this.color = DEFAULT_PALETTES[0].colors[0];
+    this.loadRasterPresets();
 
     // Las instancias salen del manifiesto: ya no hay una segunda lista de clases
     // que mantener en sincronia con la union `ToolId`. `TOOLS` es la definicion
@@ -423,6 +469,8 @@ export class Editor {
       aquaLayerVisible: this.aquaLayerVisible,
       aquaLayerOpacity: this.aquaLayerOpacity,
       aquaParams: this.aquaParamsValue,
+      rasterPresets: this.rasterPresetList(),
+      rasterPresetId: this.activePresetId,
       mode3d: this.mode3d,
       scene3dAvailable: this.scene3dAvailable,
       scene3d: this.scene3dStats(),
@@ -1098,6 +1146,381 @@ export class Editor {
     return n;
   }
 
+  // ------------------------------------------------------------- pincel ráster
+
+  /** ¿El pincel está en modo ráster? (Canvas2D: siempre disponible.) */
+  get rasterBrushActive(): boolean {
+    return this.brush.asRaster;
+  }
+
+  /** Caja de mundo de una capa de pincel nueva: lo que se ve ahora mismo. */
+  private rasterRectForNew(): Rect {
+    const b = this.camera.visibleBounds(0);
+    return { x: b.x, y: b.y, w: Math.max(1, b.w), h: Math.max(1, b.h) };
+  }
+
+  /**
+   * Capa de pincel ráster donde cae lo que se pinta ahora: la activa si lo es,
+   * si no la última creada, y si no hay ninguna se crea una (con la instantánea
+   * ANTES, o deshacer no la quitaría). Espejo de `aquaTargetLayer`.
+   */
+  private rasterTargetLayer(): SceneLayer | null {
+    const active = this.doc.activeLayer;
+    if (active?.kind === "raster") return active;
+    const existing = this.doc.rasterLayers[this.doc.rasterLayers.length - 1];
+    if (existing) return existing;
+    const before = this.doc.snapshot();
+    const layer = this.doc.addRasterLayer(this.rasterRectForNew());
+    this.history.record("Nueva capa de pincel", before);
+    this.invalidateAll();
+    this.emitState();
+    return layer;
+  }
+
+  /**
+   * Lienzo editable de una capa ráster, creándolo si hace falta (y si procede).
+   *
+   * El tamaño en píxeles se deriva de la caja de mundo por una densidad acotada
+   * (`dpr × zoom`, 0.5..4), con un tope de dimensión para no reventar memoria.
+   * Si la capa trae un PNG serializado (abierta de disco), se vuelca al lienzo
+   * cuando decodifica. Lo consulta el compositor cada fotograma.
+   */
+  rasterCanvasFor(layerId: string, create = false): HTMLCanvasElement | null {
+    const existing = this.rasterCanvases.get(layerId);
+    if (existing) return existing;
+    if (!create) return null;
+    const layer = this.doc.layerById(layerId);
+    if (!layer || layer.kind !== "raster" || !layer.rasterRect) return null;
+    const rect = layer.rasterRect;
+    const scale = clamp(this.dpr * this.camera.zoom, 0.5, 4);
+    const maxDim = 6000;
+    let w = Math.max(1, Math.round(rect.w * scale));
+    let h = Math.max(1, Math.round(rect.h * scale));
+    const over = Math.max(w / maxDim, h / maxDim, 1);
+    w = Math.max(1, Math.round(w / over));
+    h = Math.max(1, Math.round(h / over));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    this.rasterCanvases.set(layerId, canvas);
+    if (layer.rasterSrc) {
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = () => {
+        const g = canvas.getContext("2d");
+        if (g) g.drawImage(img, 0, 0, canvas.width, canvas.height);
+        this.inkLayer.invalidate();
+      };
+      img.src = layer.rasterSrc;
+    }
+    return canvas;
+  }
+
+  /**
+   * Abre un trazo ráster en vivo sobre la capa de destino (creándola si hace
+   * falta). Fija el color/punta del trazo, respalda el bitmap actual y arranca
+   * un estampador con un buffer del tamaño del lienzo de la capa.
+   */
+  rasterStrokeBegin(): void {
+    this.rasterLive = null;
+    const layer = this.rasterTargetLayer();
+    if (!layer || !layer.rasterRect) return;
+    const canvas = this.rasterCanvasFor(layer.id, true);
+    if (!canvas) return;
+    const backup = document.createElement("canvas");
+    backup.width = canvas.width;
+    backup.height = canvas.height;
+    backup.getContext("2d")?.drawImage(canvas, 0, 0);
+    const tinted = tintTip(this.resolveTipMask(), this.color);
+    const stroke = new RasterStroke(canvas.width, canvas.height, {
+      tintedTip: tinted,
+      flow: this.brush.rasterFlow,
+      spacing: this.brush.rasterSpacing,
+      angle: (this.brush.rasterAngle * Math.PI) / 180,
+      roundness: this.brush.rasterRoundness,
+      angleFollow: this.brush.rasterAngleFollow,
+      sizeJitter: this.brush.rasterSizeJitter,
+      angleJitter: this.brush.rasterAngleJitter,
+      roundnessJitter: this.brush.rasterRoundnessJitter,
+      flowJitter: this.brush.rasterFlowJitter,
+      scatter: this.brush.rasterScatter,
+      scatterCount: Math.max(1, Math.round(this.brush.rasterScatterCount)),
+      seed: (Math.random() * 0xffffffff) >>> 0,
+    });
+    this.rasterLive = {
+      layerId: layer.id,
+      canvas,
+      backup,
+      stroke,
+      opacity: clamp01(this.brush.opacity),
+      rect: layer.rasterRect,
+    };
+  }
+
+  /** Prolonga el trazo ráster con los puntos nuevos (línea central en mundo). */
+  rasterStrokeAdd(points: readonly import("../stroke/types").StrokePoint[]): void {
+    const live = this.rasterLive;
+    if (!live || points.length === 0) return;
+    const rect = live.rect;
+    const sx = live.canvas.width / rect.w;
+    const sy = live.canvas.height / rect.h;
+    const s = (sx + sy) / 2;
+    for (const p of points) {
+      live.stroke.add({ x: (p.x - rect.x) * sx, y: (p.y - rect.y) * sy, r: Math.max(0.5, p.r * s) });
+    }
+    this.composeRasterLive();
+    this.inkLayer.invalidate();
+  }
+
+  /** Cierra el trazo ráster: el lienzo ya contiene committed + buffer·opacidad. */
+  rasterStrokeEnd(): void {
+    const live = this.rasterLive;
+    this.rasterLive = null;
+    if (!live) return;
+    this.composeRasterLive(live);
+    this.inkLayer.invalidate();
+    this.status("Pincel");
+  }
+
+  /** Cancela el trazo ráster en curso y restaura la capa a como estaba. */
+  rasterStrokeCancel(): void {
+    const live = this.rasterLive;
+    this.rasterLive = null;
+    if (!live) return;
+    const g = live.canvas.getContext("2d");
+    if (g) {
+      g.clearRect(0, 0, live.canvas.width, live.canvas.height);
+      g.drawImage(live.backup, 0, 0);
+    }
+    this.inkLayer.invalidate();
+  }
+
+  /**
+   * Recompone, dentro de la caja de lo estampado, el lienzo de la capa como
+   * `backup + buffer·opacidad`. Solo esa región, no el lienzo entero: un trazo
+   * largo no obliga a repintar todo el bitmap en cada tramo.
+   */
+  private composeRasterLive(live = this.rasterLive): void {
+    if (!live) return;
+    const st = live.stroke;
+    if (!st.dirty) return;
+    const g = live.canvas.getContext("2d");
+    if (!g) return;
+    const x0 = Math.max(0, Math.floor(st.minX));
+    const y0 = Math.max(0, Math.floor(st.minY));
+    const x1 = Math.min(live.canvas.width, Math.ceil(st.maxX));
+    const y1 = Math.min(live.canvas.height, Math.ceil(st.maxY));
+    const w = x1 - x0;
+    const h = y1 - y0;
+    if (w <= 0 || h <= 0) return;
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = "source-over";
+    g.clearRect(x0, y0, w, h);
+    g.drawImage(live.backup, x0, y0, w, h, x0, y0, w, h);
+    g.globalAlpha = live.opacity;
+    g.drawImage(st.buffer, x0, y0, w, h, x0, y0, w, h);
+    g.globalAlpha = 1;
+  }
+
+  /**
+   * Vuelca el bitmap vivo de cada capa ráster a su `rasterSrc` (dataURL PNG), que
+   * es su forma serializable. Se llama antes de guardar o exportar, igual que
+   * `bakeAllAquaLayers`.
+   */
+  flattenRasterLayers(): void {
+    for (const layer of this.doc.rasterLayers) {
+      const canvas = this.rasterCanvases.get(layer.id);
+      if (!canvas || canvas.width === 0 || canvas.height === 0) continue;
+      try {
+        this.doc.setLayer(layer.id, { rasterSrc: canvas.toDataURL("image/png") });
+      } catch {
+        /* lienzo manchado (CORS): improbable con pintura propia */
+      }
+    }
+  }
+
+  /** Suelta los lienzos de capas ráster que ya no existen. Devuelve cuántos. */
+  private pruneRasterCanvases(): number {
+    const live = new Set(this.doc.rasterLayers.map((l) => l.id));
+    let n = 0;
+    for (const id of [...this.rasterCanvases.keys()]) {
+      if (live.has(id)) continue;
+      this.rasterCanvases.delete(id);
+      n++;
+    }
+    return n;
+  }
+
+  // ------------------------------------------------- biblioteca de pinceles
+
+  /** Mapa de alfa de la punta activa (redonda procedural, o la imagen cargada). */
+  private resolveTipMask(): HTMLCanvasElement {
+    if (this.rasterTip.kind === "image") {
+      const m = this.rasterTipMasks.get(this.rasterTip.src);
+      if (m) return m;
+    }
+    return makeRoundTip(this.brush.rasterHardness);
+  }
+
+  /** Fija la punta activa; si es de imagen, decodifica su máscara en perezoso. */
+  private setActiveTip(tip: RasterTip): void {
+    this.rasterTip = tip;
+    if (tip.kind === "image") this.ensureTipMask(tip.src);
+  }
+
+  /** Decodifica el dataURL de una punta a su máscara de alfa (una sola vez). */
+  private ensureTipMask(src: string): void {
+    if (this.rasterTipMasks.has(src)) return;
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, img.naturalWidth);
+      c.height = Math.max(1, img.naturalHeight);
+      c.getContext("2d")?.drawImage(img, 0, 0);
+      this.rasterTipMasks.set(src, c);
+      this.rasterThumbs.clear();
+      this.emitState();
+    };
+    img.src = src;
+  }
+
+  /** Lista de presets para el panel (con miniatura cacheada por id). */
+  private rasterPresetList(): { id: string; name: string; thumb: string }[] {
+    return this.brushPresets.map((p) => ({ id: p.id, name: p.name, thumb: this.presetThumb(p) }));
+  }
+
+  private presetThumb(p: BrushPreset): string {
+    const cached = this.rasterThumbs.get(p.id);
+    if (cached) return cached;
+    const S = 44;
+    const c = document.createElement("canvas");
+    c.width = S;
+    c.height = S;
+    const g = c.getContext("2d");
+    let url = "";
+    if (g) {
+      const mask = p.tip.kind === "image" ? this.rasterTipMasks.get(p.tip.src) : makeRoundTip(p.hardness);
+      if (mask) {
+        // Estampa clara sobre fondo transparente: se ve sobre el dock oscuro.
+        const tinted = tintTip(mask, "#d6d6dd");
+        const m = 5;
+        const d = S - m * 2;
+        g.globalAlpha = Math.max(0.35, p.flow);
+        g.drawImage(tinted, m, m, d, d);
+      }
+      url = c.toDataURL();
+    }
+    this.rasterThumbs.set(p.id, url);
+    return url;
+  }
+
+  /** Aplica un preset: fija los ajustes ráster y su punta, y lo marca activo. */
+  applyRasterPreset(id: string): void {
+    const p = this.brushPresets.find((q) => q.id === id);
+    if (!p) return;
+    this.activePresetId = id;
+    this.setActiveTip(p.tip);
+    this.setBrush(presetToBrush(p)); // emite estado
+  }
+
+  /** Añade presets a la biblioteca (ya con sus máscaras registradas) y persiste. */
+  private addRasterPresets(presets: BrushPreset[], activateFirst = true): void {
+    if (presets.length === 0) return;
+    for (const p of presets) if (p.tip.kind === "image") this.ensureTipMask(p.tip.src);
+    this.brushPresets.push(...presets);
+    this.rasterThumbs.clear();
+    this.saveRasterPresets();
+    if (activateFirst) this.applyRasterPreset(presets[0].id);
+    else this.emitState();
+    this.status(`Pinceles: ${presets.length} añadido(s)`);
+  }
+
+  /** Guarda los ajustes ráster actuales como un preset nuevo con la punta activa. */
+  addCurrentAsPreset(name = "Pincel propio"): void {
+    this.addRasterPresets([brushToPreset(this.brush, this.rasterTip, name)]);
+  }
+
+  /** Importa un `.abr` de Photoshop: sus puntas muestreadas pasan a presets. */
+  importAbrBuffer(buf: ArrayBuffer, label = "abr"): number {
+    let brushes;
+    try {
+      brushes = parseAbr(buf);
+    } catch {
+      this.status("No se pudo leer el .abr");
+      return 0;
+    }
+    if (brushes.length === 0) {
+      this.status("Ese .abr no trae puntas legibles");
+      return 0;
+    }
+    const presets: BrushPreset[] = brushes.map((b, i) => {
+      const canvas = abrToMaskCanvas(b);
+      const src = canvas.toDataURL("image/png");
+      this.rasterTipMasks.set(src, canvas); // ya decodificada: lista para pintar
+      const size = Math.min(400, Math.max(2, Math.max(b.width, b.height)));
+      return brushToPreset(
+        { ...this.brush, size, rasterSpacing: b.spacing, rasterHardness: 1, rasterRoundness: 1, rasterAngle: 0 },
+        { kind: "image", src },
+        b.name || `${label} ${i + 1}`,
+      );
+    });
+    this.addRasterPresets(presets);
+    return presets.length;
+  }
+
+  /** Exporta la biblioteca (o solo los no de fábrica) como JSON propio. */
+  exportRasterPresetsJson(): string {
+    const own = this.brushPresets.filter((p) => !p.id.startsWith("builtin-"));
+    const list = own.length > 0 ? own : this.brushPresets;
+    return JSON.stringify({ format: "drawi-brushes", version: 1, presets: list }, null, 0);
+  }
+
+  /** Importa presets de un JSON propio. Devuelve cuántos entraron. */
+  importRasterPresetsJson(text: string): number {
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      this.status("JSON de pinceles no válido");
+      return 0;
+    }
+    const presets = (data as { presets?: BrushPreset[] })?.presets;
+    if (!Array.isArray(presets) || presets.length === 0) {
+      this.status("Ese archivo no trae pinceles");
+      return 0;
+    }
+    // Reasigna ids para no chocar con los existentes.
+    const fresh = presets.map((p) => ({ ...p, id: uid() }));
+    this.addRasterPresets(fresh);
+    return fresh.length;
+  }
+
+  private static readonly PRESETS_KEY = "drawi.brush.presets";
+
+  private saveRasterPresets(): void {
+    try {
+      const own = this.brushPresets.filter((p) => !p.id.startsWith("builtin-"));
+      window.localStorage.setItem(Editor.PRESETS_KEY, JSON.stringify(own));
+    } catch {
+      /* cuota llena o modo privado: la biblioteca se queda en memoria */
+    }
+  }
+
+  private loadRasterPresets(): void {
+    try {
+      const raw = window.localStorage.getItem(Editor.PRESETS_KEY);
+      if (!raw) return;
+      const own = JSON.parse(raw) as BrushPreset[];
+      if (!Array.isArray(own) || own.length === 0) return;
+      for (const p of own) if (p.tip.kind === "image") this.ensureTipMask(p.tip.src);
+      this.brushPresets.push(...own);
+      this.rasterThumbs.clear();
+    } catch {
+      /* biblioteca ilegible: se queda con los de fábrica */
+    }
+  }
+
   // ------------------------------------------------------------- comandos
 
   setTool(id: ToolId): void {
@@ -1235,6 +1658,7 @@ export class Editor {
     // acuarela sueltan el contexto WebGL2 aquí, que es el único sitio por donde
     // pasan todas las mutaciones de capas.
     this.pruneAquaFields();
+    this.pruneRasterCanvases();
     this.inkLayer.invalidate();
     this.emitState();
   }
@@ -1467,6 +1891,7 @@ export class Editor {
     // Deshacer puede haber borrado capas de acuarela (o resucitado otras): los
     // motores de las que ya no están tienen que soltar su contexto WebGL2.
     this.pruneAquaFields();
+    this.pruneRasterCanvases();
     this.inkLayer.invalidate();
     this.matter.invalidate();
     this.overlayLayer.invalidate();
@@ -1844,6 +2269,7 @@ export class Editor {
     // El documento es otro: los motores de acuarela del anterior ya no valen
     // (sus capas no existen) y hay que devolver sus contextos WebGL2.
     this.pruneAquaFields();
+    this.pruneRasterCanvases();
     this.host.style.background = this.doc.meta.background;
     // Los trazos del visor son los del proyecto nuevo, y `frame` los reconciliara
     // solo con su revision. Y el puntero va donde diga la capa activa del
@@ -1980,6 +2406,21 @@ export class Editor {
       },
       stampAquaArea(polys, color): void {
         editor.stampAquaArea(polys, color);
+      },
+      get rasterBrushActive(): boolean {
+        return editor.rasterBrushActive;
+      },
+      rasterStrokeBegin(): void {
+        editor.rasterStrokeBegin();
+      },
+      rasterStrokeAdd(points): void {
+        editor.rasterStrokeAdd(points);
+      },
+      rasterStrokeEnd(): void {
+        editor.rasterStrokeEnd();
+      },
+      rasterStrokeCancel(): void {
+        editor.rasterStrokeCancel();
       },
     };
     return this.toolCtx;
@@ -2415,6 +2856,7 @@ export class Editor {
         soloId: this.soloLayerId,
         wetAsOverlay: this.wetIsOverlay,
         aquaCanvas: (id) => this.aquaCanvasFor(id),
+        rasterCanvas: (id) => this.rasterCanvasFor(id, true),
       });
       this.inkLayer.dirty = false;
     }

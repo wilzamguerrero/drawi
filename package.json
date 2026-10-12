@@ -12,6 +12,7 @@
     "smoke": "node scripts/run-smoke.mjs",
     "test": "npm run check && npm run smoke",
     "verify:3d": "npm run build && node scripts/verify-render3d.mjs",
+    "verify:raster": "npm run build && node scripts/verify-raster.mjs",
     "verify:save": "node scripts/verify-save.mjs"
   },
   "devDependencies": {

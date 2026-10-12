@@ -55,6 +55,11 @@ export class BrushTool implements Tool {
   // referencia del sub-modo "color" (fijado al tocar el primer trazo).
   private erasedAny = false;
   private eraseRef = "";
+  // Trazo ráster en vivo: cuando el pincel está en modo ráster, el trazo se
+  // estampa MIENTRAS se mueve el lápiz (no al soltar). `rasterSent` cuenta
+  // cuántos puntos consolidados del builder ya se han enviado a estampar.
+  private raster = false;
+  private rasterSent = 0;
 
   private isTargetLocked(ctx: ToolContext): boolean {
     const layer = ctx.doc.activeLayer;
@@ -86,6 +91,7 @@ export class BrushTool implements Tool {
     this.lastX = w.x;
     this.lastY = w.y;
     this.erasedAny = false;
+    this.raster = false;
 
     if (ctx.brush.mode === "erase") {
       this.beginErase(ctx, s, w.x, w.y);
@@ -104,6 +110,15 @@ export class BrushTool implements Tool {
     this.builder = new StrokeBuilder(ctx.brush);
     this.builder.setZoom(ctx.camera.zoom);
     this.builder.begin(this.worldSample(ctx, s));
+    // Pincel ráster: en vez de la vista previa vectorial, se estampa en vivo
+    // sobre la capa de píxeles desde el primer punto.
+    if (ctx.rasterBrushActive) {
+      this.raster = true;
+      this.rasterSent = 0;
+      ctx.rasterStrokeBegin();
+      this.flushRaster(ctx);
+      return;
+    }
     this.paintWet(ctx);
   }
 
@@ -132,6 +147,12 @@ export class BrushTool implements Tool {
     if (!b) return;
     b.setZoom(ctx.camera.zoom);
     const added = b.push(samples.map((s) => this.worldSample(ctx, s)));
+    if (this.raster) {
+      // En vivo: estampar los puntos nuevos. La predicción no se estampa (no se
+      // consolida), así que la línea ráster nunca "se adelanta" ni retrocede.
+      if (added) this.flushRaster(ctx);
+      return;
+    }
     if (predicted.length > 0) {
       b.setPredicted(predicted.map((s) => this.worldSample(ctx, s)));
     }
@@ -174,10 +195,27 @@ export class BrushTool implements Tool {
     const b = this.builder;
     this.builder = null;
     if (!b) {
+      if (this.raster) {
+        this.raster = false;
+        ctx.rasterStrokeEnd();
+      }
       ctx.history.abort();
       return;
     }
     b.push([this.worldSample(ctx, s)], true);
+
+    // Pincel ráster: ya se estampó en vivo durante el gesto. Se vuelca el último
+    // tramo (con los radios SIN afilar que se usaron en vivo, no los de
+    // `finalize`), se cierra el buffer y se descarta el trazo del historial de
+    // items (el bitmap es un medio vivo, igual que la acuarela).
+    if (this.raster) {
+      this.flushRaster(ctx);
+      this.raster = false;
+      ctx.rasterStrokeEnd();
+      ctx.history.abort();
+      return;
+    }
+
     const points = b.finalize();
 
     if (ctx.brush.asMatter) {
@@ -206,6 +244,10 @@ export class BrushTool implements Tool {
     this.builder = null;
     this.shape = null;
     this.invert = false;
+    if (this.raster) {
+      this.raster = false;
+      ctx.rasterStrokeCancel();
+    }
     ctx.setWet(null);
     ctx.history.abort();
   }
@@ -386,6 +428,21 @@ export class BrushTool implements Tool {
     }
     ctx.stampAquaArea(stamped, ctx.color);
     ctx.history.abort();
+  }
+
+  /**
+   * Envía al estampador los puntos consolidados del builder que aún no se han
+   * estampado. `rasterSent` marca el corte; los puntos del builder son estables
+   * una vez empujados, así que basta con mandar la cola nueva.
+   */
+  private flushRaster(ctx: ToolContext): void {
+    const b = this.builder;
+    if (!b) return;
+    const pts = b.points;
+    if (pts.length > this.rasterSent) {
+      ctx.rasterStrokeAdd(pts.slice(this.rasterSent));
+      this.rasterSent = pts.length;
+    }
   }
 
   /** Elimina los trazos que toca el punto (todo el item, con sus copias). */

@@ -51,6 +51,11 @@ export interface CompositeOptions {
    * Lo resuelve el editor, que es quien posee los motores.
    */
   aquaCanvas?: (layerId: string) => HTMLCanvasElement | null;
+  /**
+   * Lienzo editable vivo de una capa de pincel ráster, o null si aún no se ha
+   * pintado en ella. Lo resuelve el editor, dueño de los bitmaps por capa.
+   */
+  rasterCanvas?: (layerId: string) => HTMLCanvasElement | null;
 }
 
 /** Lienzo fuera de pantalla con su contexto, redimensionable al vuelo. */
@@ -290,6 +295,30 @@ export class Compositor {
       const live = opts.aquaCanvas?.(layer.id) ?? null;
       if (live && live.width > 0) {
         ctx.drawImage(live, 0, 0, buf.canvas.width, buf.canvas.height);
+      }
+      this.applyMask(buf, layer, camera, dpr, opts, depth, layer.id === opts.activeLayerId);
+      return true;
+    }
+
+    if (layer.kind === "raster") {
+      const ctx = buf.ctx;
+      // El bitmap vive anclado al MUNDO (como una imagen): se dibuja bajo la
+      // transformación de cámara, estirándolo a su rectángulo de mundo. El
+      // lienzo vivo lo posee el editor; si todavía no existe (capa recién
+      // cargada), se intenta el PNG serializado como respaldo.
+      const rect = layer.rasterRect;
+      const live = opts.rasterCanvas?.(layer.id) ?? null;
+      if (rect && live && live.width > 0) {
+        camera.applyTo(ctx, dpr);
+        ctx.drawImage(live, rect.x, rect.y, rect.w, rect.h);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      } else if (rect && layer.rasterSrc) {
+        const img = this.getImage(layer.rasterSrc);
+        if (img && img.complete && img.naturalWidth > 0) {
+          camera.applyTo(ctx, dpr);
+          ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h);
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
       }
       this.applyMask(buf, layer, camera, dpr, opts, depth, layer.id === opts.activeLayerId);
       return true;

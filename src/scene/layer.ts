@@ -15,11 +15,13 @@ import type { InkItem, Rect } from "./types";
 
 /** Tipo de capa. La materia es una pseudo-capa fija (plano WebGL propio); la
  *  imagen es una capa raster con un asset decodificado; la acuarela es una capa
- *  de fluido (simulacion WebGL2 propia) que SI se compone en la pila de tinta; y
+ *  de fluido (simulacion WebGL2 propia) que SI se compone en la pila de tinta;
+ *  el raster es una capa de pintura por pixeles (pinceles tipo Photoshop) cuyo
+ *  bitmap vive anclado al mundo y tambien se compone en la pila de tinta; y
  *  la 3D es una capa de trazos espaciales, que no pasa por el compositor 2D sino
  *  por el visor: el panel la muestra con su ojo y su orden, pero su pintura la
  *  hace `render3d`. */
-export type LayerKind = "ink" | "group" | "matter" | "image" | "aqua" | "scene3d";
+export type LayerKind = "ink" | "group" | "matter" | "image" | "aqua" | "raster" | "scene3d";
 
 /**
  * Modo de fusión. Los valores son los de `globalCompositeOperation` del canvas,
@@ -181,6 +183,15 @@ export interface SceneLayer {
    */
   aquaBaked?: string;
   aquaRect?: Rect;
+  /**
+   * Capa de pincel ráster (kind === "raster"): el bitmap pintado, guardado como
+   * dataURL PNG, y el rectángulo de MUNDO que ocupa. Igual que una imagen, vive
+   * en coordenadas de mundo (acompaña al paneo y al zoom). El lienzo editable
+   * vivo lo posee el editor (un canvas por capa); `rasterSrc` es su forma
+   * serializable, volcada al guardar y releída al abrir.
+   */
+  rasterSrc?: string;
+  rasterRect?: Rect;
 }
 
 export const makeMask = (): LayerMask => ({ enabled: true, inverted: false, items: [] });
@@ -190,4 +201,5 @@ export const cloneLayer = (l: SceneLayer): SceneLayer => ({
   ...l,
   mask: l.mask ? { ...l.mask, items: l.mask.items.slice() } : undefined,
   aquaRect: l.aquaRect ? { ...l.aquaRect } : undefined,
+  rasterRect: l.rasterRect ? { ...l.rasterRect } : undefined,
 });

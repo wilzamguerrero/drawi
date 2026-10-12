@@ -615,6 +615,10 @@ export class SceneDocument {
     return this.layers.filter((l) => l.kind === "aqua");
   }
 
+  get rasterLayers(): SceneLayer[] {
+    return this.layers.filter((l) => l.kind === "raster");
+  }
+
   /**
    * Capa de acuarela donde deben caer las huellas nuevas: la activa si lo es,
    * si no la última creada, y si no hay ninguna se crea una. Así el pincel de
@@ -709,6 +713,37 @@ export class SceneDocument {
     return layer;
   }
 
+  private makeRasterLayer(rect: Rect, name?: string): SceneLayer {
+    this.layerCounter++;
+    return {
+      id: uid(),
+      kind: "raster",
+      name: name ?? `Pincel ${this.layerCounter}`,
+      visible: true,
+      opacity: 1,
+      fill: 1,
+      blend: "source-over",
+      locked: false,
+      alphaLock: false,
+      clip: false,
+      color: "none",
+      collapsed: false,
+      parentId: null,
+      rasterRect: { ...rect },
+    };
+  }
+
+  /** Crea una capa de pincel ráster encima de la activa, con su caja de mundo. */
+  addRasterLayer(rect: Rect, name?: string): SceneLayer {
+    const layer = this.makeRasterLayer(rect, name);
+    const active = this.activeLayer;
+    const at = active ? this.layerIndex(active.id) + 1 : this.layers.length;
+    this.layers.splice(at, 0, layer);
+    this.activeLayerId = layer.id;
+    this.inkRevision++;
+    return layer;
+  }
+
   /** ¿`id` es `ancestorId` o desciende de él? (corta ciclos por seguridad). */
   isDescendantOf(id: string, ancestorId: string): boolean {
     let p: string | null = id;
@@ -745,12 +780,12 @@ export class SceneDocument {
     const layer = this.layerById(id);
     if (!layer) return;
 
-    // Materia, acuarela y espacio no alojan items de tinta: su contenido vive en
-    // el mundo físico, en la GPU o en el visor 3D, así que basta con soltar la
-    // fila. Son capas eliminables aunque fueran las únicas de su tipo: la
-    // invariante que el documento protege es tener siempre una capa de TINTA
-    // donde dibujar.
-    if (layer.kind === "matter" || layer.kind === "aqua" || layer.kind === "scene3d") {
+    // Materia, acuarela, ráster y espacio no alojan items de tinta: su contenido
+    // vive en el mundo físico, en la GPU, en un bitmap propio o en el visor 3D,
+    // así que basta con soltar la fila. Son capas eliminables aunque fueran las
+    // únicas de su tipo: la invariante que el documento protege es tener siempre
+    // una capa de TINTA donde dibujar.
+    if (layer.kind === "matter" || layer.kind === "aqua" || layer.kind === "scene3d" || layer.kind === "raster") {
       if (layer.kind === "matter") this.physics.removeByLayer(id);
       // Quitar la capa del espacio se lleva sus trazos y sus manchas: dejarlos sin
       // capa seria peor que borrarlos, porque `ensureLayers` los devolveria a otra
@@ -1119,6 +1154,10 @@ export class SceneDocument {
       // está anclado al viewport y encuadrar por él movería la cámara sola.
       if (l.kind === "aqua" && l.aquaBaked && l.aquaRect && l.aquaRect.w > 0) {
         r = unionRect(r, l.aquaRect);
+      }
+      // El pincel ráster vive en coordenadas de mundo: su caja siempre cuenta.
+      if (l.kind === "raster" && l.rasterRect && l.rasterRect.w > 0) {
+        r = unionRect(r, l.rasterRect);
       }
     }
     return r ?? { ...EMPTY_RECT };

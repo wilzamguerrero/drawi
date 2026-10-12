@@ -287,7 +287,7 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     // Es un toggle hermano de "Hacer materia": al activarlo, el gesto inyecta
     // pigmento/agua en el plano de acuarela y aparecen sus ajustes (mapean 1:1
     // a AquaParams, la fuente de datos unica del motor).
-    { kind: "toggle", id: "as-aqua", label: "Acuarela", icon: "droplet", hint: "El pincel pinta con fluidos: la tinta fluye, se difumina y se seca sobre el papel. Como 'Hacer materia', pero humedo.", visible: (s) => s.brush.mode !== "erase" && s.aquaAvailable && !s.brush.asMatter, get: (s) => s.brush.asAqua, set: (v) => editor.setBrush({ asAqua: v }) },
+    { kind: "toggle", id: "as-aqua", label: "Acuarela", icon: "droplet", hint: "El pincel pinta con fluidos: la tinta fluye, se difumina y se seca sobre el papel. Como 'Hacer materia', pero humedo.", visible: (s) => s.brush.mode !== "erase" && s.aquaAvailable && !s.brush.asMatter && !s.brush.asRaster, get: (s) => s.brush.asAqua, set: (v) => editor.setBrush({ asAqua: v }) },
     {
       kind: "choice",
       id: "aqua-mode",
@@ -316,6 +316,34 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
     { kind: "action", id: "aqua-new-layer", label: "Nueva capa de acuarela", icon: "droplet", hint: "Añade otra capa de acuarela con su propio fluido, para no mezclarla con la que ya hay. Tambien esta en el pie del panel de capas.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", run: () => editor.addAquaLayer() },
     { kind: "toggle", id: "aqua-visible", label: "Capa visible", icon: "layers", hint: "Muestra u oculta la capa de acuarela de destino (lo mismo que su ojo en el panel de capas).", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaLayerVisible, set: (v) => editor.setAquaVisible(v) },
     { kind: "number", id: "aqua-opacity", label: "Opacidad capa", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Opacidad de la capa de acuarela de destino. Su fusion, mascara y orden se ajustan en el panel de capas, como en cualquier otra capa.", visible: (s) => s.brush.asAqua && s.brush.mode !== "erase", get: (s) => s.aquaLayerOpacity, set: (v) => editor.setAquaOpacity(v) },
+    // ---- Pincel raster (tipo Photoshop): estampa una punta sobre pixeles. ----
+    // Toggle hermano de "Hacer materia"/"Acuarela": al activarlo el gesto estampa
+    // sobre una capa de pixeles en vez de producir tinta vectorial. El tamano y
+    // la opacidad los toma de los controles de arriba (comunes a todos los modos);
+    // aqui solo lo propio del raster.
+    { kind: "toggle", id: "as-raster", label: "Pincel raster", icon: "brush", hint: "Pincel tipo Photoshop: estampa una punta con textura a lo largo del trazo sobre una capa de pixeles. Rapido y sin vectores. Como 'Acuarela', pero seco.", visible: (s) => s.brush.mode !== "erase" && !s.brush.asMatter && !s.brush.asAqua, get: (s) => s.brush.asRaster, set: (v) => editor.setBrush({ asRaster: v }) },
+    { kind: "number", id: "raster-hardness", label: "Dureza", icon: "brush", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Dureza del borde de la punta: 1 es un disco neto, 0 un degradado suave desde el centro.", visible: (s) => s.brush.asRaster && s.brush.mode !== "erase", get: (s) => s.brush.rasterHardness, set: (v) => editor.setBrush({ rasterHardness: v }) },
+    { kind: "number", id: "raster-spacing", label: "Espaciado", icon: "tune", min: 0.01, max: 1, step: 0.01, decimals: 2, hint: "Separacion entre estampas, fraccion del diametro. Bajo = trazo continuo; alto = sello discontinuo.", visible: (s) => s.brush.asRaster && s.brush.mode !== "erase", get: (s) => s.brush.rasterSpacing, set: (v) => editor.setBrush({ rasterSpacing: v }) },
+    { kind: "number", id: "raster-flow", label: "Flujo", icon: "droplet", min: 0.02, max: 1, step: 0.01, decimals: 2, hint: "Pintura que suelta cada estampa. La opacidad de arriba limita el total del trazo por mucho que se solapen.", visible: (s) => s.brush.asRaster && s.brush.mode !== "erase", get: (s) => s.brush.rasterFlow, set: (v) => editor.setBrush({ rasterFlow: v }) },
+    { kind: "number", id: "raster-angle", label: "Angulo", icon: "tune", min: 0, max: 360, step: 1, unit: "grados", visible: (s) => s.brush.asRaster && s.brush.mode !== "erase", get: (s) => s.brush.rasterAngle, set: (v) => editor.setBrush({ rasterAngle: v }) },
+    { kind: "number", id: "raster-roundness", label: "Redondez", icon: "tune", min: 0.05, max: 1, step: 0.01, decimals: 2, hint: "1 = punta redonda; por debajo se achata y da un trazo caligrafico.", visible: (s) => s.brush.asRaster && s.brush.mode !== "erase", get: (s) => s.brush.rasterRoundness, set: (v) => editor.setBrush({ rasterRoundness: v }) },
+    { kind: "toggle", id: "raster-angle-follow", label: "Angulo sigue al trazo", icon: "tune", hint: "La punta gira para seguir la direccion del trazo (puntas planas que caligrafian solas).", visible: (s) => s.brush.asRaster && s.brush.mode !== "erase", get: (s) => s.brush.rasterAngleFollow, set: (v) => editor.setBrush({ rasterAngleFollow: v }) },
+    {
+      id: "raster-dyn",
+      label: "Dinamica del pincel",
+      icon: "spark",
+      hint: "Dispersion y variacion al azar, como las pestanas de Photoshop.",
+      visible: (s) => s.brush.asRaster && s.brush.mode !== "erase",
+      children: [
+        { kind: "number", id: "raster-scatter", label: "Dispersion", min: 0, max: 3, step: 0.05, decimals: 2, unit: "diam", hint: "Esparce las huellas al azar alrededor del trazo, medido en diametros.", get: (s) => s.brush.rasterScatter, set: (v) => editor.setBrush({ rasterScatter: v }) },
+        { kind: "number", id: "raster-scatter-count", label: "Huellas por paso", min: 1, max: 8, step: 1, decimals: 0, hint: "Cuantas huellas se sueltan en cada punto del trazo (con dispersion, un aerosol).", get: (s) => s.brush.rasterScatterCount, set: (v) => editor.setBrush({ rasterScatterCount: Math.round(v) }) },
+        { kind: "number", id: "raster-size-jitter", label: "Jitter de tamano", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.brush.rasterSizeJitter, set: (v) => editor.setBrush({ rasterSizeJitter: v }) },
+        { kind: "number", id: "raster-angle-jitter", label: "Jitter de angulo", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.brush.rasterAngleJitter, set: (v) => editor.setBrush({ rasterAngleJitter: v }) },
+        { kind: "number", id: "raster-roundness-jitter", label: "Jitter de redondez", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.brush.rasterRoundnessJitter, set: (v) => editor.setBrush({ rasterRoundnessJitter: v }) },
+        { kind: "number", id: "raster-flow-jitter", label: "Jitter de flujo", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.brush.rasterFlowJitter, set: (v) => editor.setBrush({ rasterFlowJitter: v }) },
+      ],
+    },
+    { kind: "custom", id: "brush-presets", label: "Pinceles", surfaces: ["dock"], visible: (s) => s.brush.asRaster && s.brush.mode !== "erase" },
     // ---- Espacio 3D: el mismo pincel dibuja en el espacio. ----
     // Mismo patron que "Hacer materia" y "Acuarela": un interruptor y, debajo,
     // solo lo que aplica cuando esta encendido. Los modos del pincel NO se

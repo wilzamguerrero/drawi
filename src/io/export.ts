@@ -25,12 +25,13 @@ export interface ExportOptions {
   /** Resolucion del contorno del campo: menor es mas fiel. */
   fieldCell: number;
   /**
-   * Rásteres de acuarela ya decodificados, por id de capa.
+   * Rásteres de mundo ya decodificados, por id de capa: cubre tanto la acuarela
+   * horneada (`aquaBaked`) como el pincel ráster (`rasterSrc`).
    *
-   * La acuarela se guarda como dataURL y decodificar es asíncrono, pero el
-   * rasterizado es sincrono: quien exporta los decodifica antes (ver
-   * `decodeAquaImages`) y los pasa aquí. Sin este mapa, las capas de acuarela
-   * se omiten en vez de salir a medias.
+   * Se guardan como dataURL y decodificar es asíncrono, pero el rasterizado es
+   * sincrono: quien exporta los decodifica antes (ver `decodeAquaImages` /
+   * `decodeRasterImages`) y los pasa aquí. Sin este mapa, esas capas se omiten
+   * en vez de salir a medias.
    */
   aquaImages?: ReadonlyMap<string, CanvasImageSource>;
 }
@@ -215,6 +216,19 @@ function renderExportLayer(
     applyExportMask(buf, layer, box, scale);
     return buf;
   }
+  if (layer.kind === "raster") {
+    // Pincel ráster: su bitmap vive en coordenadas de mundo (`rasterRect`). El
+    // editor lo hornea a `rasterSrc` antes de exportar; aquí llega decodificado
+    // en el mismo mapa que la acuarela (clave = id de capa).
+    const img = aquaImages?.get(layer.id);
+    const rect = layer.rasterRect;
+    if (!img || !rect) return null;
+    setExportTransform(buf, box, scale);
+    buf.drawImage(img, rect.x, rect.y, rect.w, rect.h);
+    buf.setTransform(1, 0, 0, 1, 0, 0);
+    applyExportMask(buf, layer, box, scale);
+    return buf;
+  }
   setExportTransform(buf, box, scale);
   paintExportItems(buf, doc.layerItems(layer.id));
   buf.setTransform(1, 0, 0, 1, 0, 0);
@@ -326,6 +340,30 @@ export async function decodeAquaImages(
   return out;
 }
 
+/**
+ * Decodifica los bitmaps de las capas de pincel ráster del documento (su
+ * `rasterSrc`), por id de capa. Igual que la acuarela: se hace antes porque
+ * decodificar es asíncrono y el rasterizado no.
+ */
+export async function decodeRasterImages(
+  doc: SceneDocument,
+): Promise<Map<string, CanvasImageSource>> {
+  const out = new Map<string, CanvasImageSource>();
+  await Promise.all(
+    doc.rasterLayers.map(async (layer) => {
+      if (!layer.rasterSrc || !layer.rasterRect) return;
+      const img = await new Promise<HTMLImageElement | null>((resolve) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => resolve(null);
+        el.src = layer.rasterSrc as string;
+      });
+      if (img) out.set(layer.id, img);
+    }),
+  );
+  return out;
+}
+
 /** Rasteriza el documento completo a un canvas nuevo. */
 export function renderToCanvas(
   doc: SceneDocument,
@@ -395,10 +433,17 @@ export async function exportPng(
   doc: SceneDocument,
   options: Partial<ExportOptions> = {},
 ): Promise<Blob> {
-  // La acuarela se decodifica aquí (es asíncrono) y entra ya lista al
-  // rasterizado, que es sincrono.
-  const aquaImages = options.aquaImages ?? (await decodeAquaImages(doc));
-  const canvas = renderToCanvas(doc, { ...options, aquaImages });
+  // La acuarela y el pincel ráster se decodifican aquí (es asíncrono) y entran
+  // ya listos al rasterizado, que es síncrono. Ambos viajan en el mismo mapa
+  // (clave = id de capa), que `renderExportLayer` consulta para cada tipo.
+  let images = options.aquaImages;
+  if (!images) {
+    const [aqua, raster] = await Promise.all([decodeAquaImages(doc), decodeRasterImages(doc)]);
+    const merged = new Map<string, CanvasImageSource>(aqua);
+    for (const [id, img] of raster) merged.set(id, img);
+    images = merged;
+  }
+  const canvas = renderToCanvas(doc, { ...options, aquaImages: images });
   return await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob);
@@ -567,9 +612,10 @@ export function exportSvg(doc: SceneDocument, options: Partial<ExportOptions> = 
   // Una capa base y sus recortes: la base marca opacidad/fusión de todo el grupo;
   // cada recorte va con su propia opacidad/fusión y recortado a la base.
   function unitSvg(base: SceneLayer, clips: readonly SceneLayer[]): string[] {
-    // La materia y la acuarela son rásteres (campo y fluido): no tienen trazos
-    // que emitir, así que no generan ni un grupo vacío. Para incluirlas, PNG.
-    if (base.kind === "matter" || base.kind === "aqua" || !svgVisible(base)) return [];
+    // La materia, la acuarela y el pincel ráster son rásteres (campo, fluido y
+    // bitmap): no tienen trazos que emitir, así que no generan ni un grupo
+    // vacío. Para incluirlos, PNG.
+    if (base.kind === "matter" || base.kind === "aqua" || base.kind === "raster" || !svgVisible(base)) return [];
     const content = layerContentSvg(base);
     const visibleClips = clips.filter(svgVisible);
     if (content.length === 0 && visibleClips.length === 0) return [];
