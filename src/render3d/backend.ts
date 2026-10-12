@@ -253,8 +253,6 @@ export class Scene3DBackend {
   private strokeReceiveShadow = false;
   /** Cuanto oscurece la sombra recibida en los trazos, 0..1. */
   private strokeReceiveStrength = 0.5;
-  /** Ultima suavidad aplicada: recrear el mapa VSM solo cuando cambia de verdad. */
-  private lastSoftness = -1;
   private width = 1;
   private height = 1;
 
@@ -783,18 +781,14 @@ export class Scene3DBackend {
     }
     const key = this.keyLight;
     if (key) {
-      // Desenfoque del mapa de sombra. Con VSM el radio actua de verdad -no como
-      // con PCF, donde apenas se notaba-, asi que la "suavidad" del usuario mapea a
-      // un rango amplio: 0 deja el borde neto, 1 una penumbra ancha. Las muestras
-      // suben con la suavidad para que una sombra muy blanda no salga a bandas.
-      if (s.softness !== this.lastSoftness) {
-        this.lastSoftness = s.softness;
-        key.shadow.radius = 0.5 + s.softness * 24;
-        key.shadow.blurSamples = Math.round(8 + s.softness * 16);
-        // `blurSamples` solo surte efecto al recrear el mapa; se tira el anterior.
-        key.shadow.map?.dispose();
-        key.shadow.map = null;
-      }
+      // Desenfoque del mapa de sombra. Con VSM el radio y las muestras actuan EN
+      // VIVO: three los lee en su pase de desenfoque cada fotograma -no hay que
+      // recrear el mapa-. Por eso 0 deja el borde neto y 1 una penumbra ancha, y el
+      // numero de muestras sube con la suavidad para que una sombra muy blanda no
+      // salga a bandas. Fijarlos siempre cuesta dos asignaciones; la recompilacion
+      // del material de blur solo ocurre si `blurSamples` cambia de verdad.
+      key.shadow.radius = 0.5 + s.softness * 24;
+      key.shadow.blurSamples = Math.round(8 + s.softness * 16);
       // Alcance: el frustum ortografico que la luz abarca. Reescribirlo cada vez es
       // barato -cuatro numeros y una matriz-, y es lo que deja al usuario ajustar
       // "hasta donde llega" la sombra sin recrear la luz.
@@ -806,12 +800,19 @@ export class Scene3DBackend {
         cam.bottom = -s.extent;
         cam.updateProjectionMatrix();
       }
-      // Nitidez: cambiar el tamano del mapa exige tirar el anterior -three no lo
-      // redimensiona-, igual que hace el motor y el visor de inre.
+      // Nitidez: cambiar el tamano del mapa exige tirar el anterior -three solo lo
+      // recrea cuando es null, no lo redimensiona-. Y con VSM hay DOS objetivos: el
+      // mapa y el intermedio del desenfoque (`mapPass`). Tirar solo el mapa dejaba
+      // el `mapPass` al tamano viejo, y el pase de blur mezclaba dos tamanos
+      // distintos -de ahi que 1024 saliera en negro y 4096 un cuadro liso-. Se
+      // sueltan los dos; three los reconstruye al tamano nuevo en el proximo pase.
       if (key.shadow.mapSize.width !== s.resolution) {
         key.shadow.mapSize.set(s.resolution, s.resolution);
         key.shadow.map?.dispose();
         key.shadow.map = null;
+        const pass = (key.shadow as unknown as { mapPass: THREE.WebGLRenderTarget | null }).mapPass;
+        pass?.dispose();
+        (key.shadow as unknown as { mapPass: THREE.WebGLRenderTarget | null }).mapPass = null;
       }
     }
   }
