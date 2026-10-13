@@ -72,15 +72,31 @@ export class StrokeBuilder {
     return this.pts.length;
   }
 
-  /** Cuerda del estabilizador en mundo + cursor real (para guía Lazy-Nezumi). */
-  getStabilizeString(): { anchor: import("../core/vec2").Vec2; tip: import("../core/vec2").Vec2; cursor: import("../core/vec2").Vec2 } | null {
+  /** Slack de la cuerda en mundo (para guía). */
+  getStringSlack(): number { return this.stringLen * 90 / this.zoom; }
+  /** Tensión de la cuerda 0..1 (solo pulled-string). */
+  getStringTension(): number {
+    if (this.mode !== "pulled-string" || !this.started) return 0;
+    const slack = this.getStringSlack();
+    const dx = this.lastRawX - this.psX, dy = this.lastRawY - this.psY;
+    return Math.min(1, Math.hypot(dx, dy) / Math.max(0.5 / this.zoom, slack));
+  }
+  /** Cuerda del estabilizador: como LZ July 19, cuerda de LARGO fijo colgando. */
+  getStabilizeString(): { anchor: import("../core/vec2").Vec2; tip: import("../core/vec2").Vec2; cursor: import("../core/vec2").Vec2; slack: number; tension: number } | null {
     if (!this.started) return null;
+    const slack = this.getStringSlack();
+    if (this.mode === "pulled-string" && slack < 1 / this.zoom) return null;
+    if (this.mode !== "pulled-string" && slack < 1 / this.zoom && this.amt < 0.08) return null;
     const anchor = { x: this.lastRawX, y: this.lastRawY };
-    const last = this.pts[this.pts.length - 1];
-    const tip = last ? { x: last.x, y: last.y } : { x: this.penX, y: this.penY };
-    if (Math.hypot(tip.x - anchor.x, tip.y - anchor.y) < 0.9 / this.zoom) return null;
-    // cursor = posición cruda del puntero (el círculo cyan de LZ)
-    return { anchor, tip, cursor: anchor };
+    // En pulled-string la punta es psX/psY (donde está la brocha), no el último punto consolidado
+    const tip = this.mode === "pulled-string"
+      ? { x: this.psX, y: this.psY }
+      : (this.pts[this.pts.length - 1] ? { x: this.pts[this.pts.length - 1].x, y: this.pts[this.pts.length - 1].y } : { x: this.penX, y: this.penY });
+    const d = Math.hypot(tip.x - anchor.x, tip.y - anchor.y);
+    // En pulled-string la cuerda siempre se ve colgando aunque d sea 0 (largo fijo)
+    if (this.mode !== "pulled-string" && d < 1.2 / this.zoom) return null;
+    const tension = this.mode === "pulled-string" ? Math.min(1, d / Math.max(0.5 / this.zoom, slack)) : Math.min(1, d / Math.max(12 / this.zoom, slack * 0.6));
+    return { anchor, tip, cursor: anchor, slack, tension };
   }
 
   setZoom(z: number): void {
@@ -91,6 +107,7 @@ export class StrokeBuilder {
   private mode: import("./types").SmoothMode = "pulled-string";
   private amt = 0.35;
   private catchUp = false;
+  private stringLen = 0.35;
   private psX = 0; private psY = 0; // pulled string anchor
   private maQ: { x: number; y: number }[] = [];
   private emaX = 0; private emaY = 0;
@@ -105,6 +122,7 @@ export class StrokeBuilder {
     this.mode = (st.smoothMode ?? "pulled-string") as import("./types").SmoothMode;
     this.amt = clamp01(st.smoothAmount ?? st.smoothing ?? 0.35);
     this.catchUp = !!st.smoothCatchUp;
+    this.stringLen = clamp01((st as unknown as { stringLength?: number }).stringLength ?? st.smoothAmount ?? 0.35);
     // One-Euro now only lightly removes sensor jitter (fixed low smoothing).
     // The artistic smoothing is handled by the mode/amount above (LZ-style).
     const hasPen = s.pressure >= 0 || s.tilt !== 0;
@@ -264,9 +282,8 @@ export class StrokeBuilder {
     const amt = this.amt;
     switch (this.mode) {
       case "pulled-string": {
-        // Cuerda: distancia mínima que el cursor debe recorrer antes de tirar del trazo.
-        // amt→dist en px mundo: 0=directo, 1≈ 60/zoom (esquinas marcadas).
-        const slack = amt * 60 / this.zoom;
+        // Cuerda: longitud controlable por el slider "Cuerda" (stringLen), no por Cantidad.
+        const slack = this.stringLen * 90 / this.zoom;
         const dx = f.x - this.psX, dy = f.y - this.psY;
         const d = Math.hypot(dx, dy);
         if (d > slack) {

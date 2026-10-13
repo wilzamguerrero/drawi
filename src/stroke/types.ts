@@ -81,6 +81,8 @@ export interface BrushSettings {
   smoothAmount: number;
   /** Catch Up: en media/EMA, la línea alcanza al cursor al levantar. */
   smoothCatchUp: boolean;
+  /** 0..1 Longitud de la cuerda del estabilizador (0=corta, 1=larga) — vale para cualquier modo. */
+  stringLength: number;
   /** Guias de suavizado (compatibilidad): la “cantidad” legacy. */
   smoothing: number;
   /** 0..1 Arrastre tipo lazo legacy (migrado a smoothMode). */
@@ -169,6 +171,7 @@ export const DEFAULT_BRUSH: BrushSettings = {
   smoothMode: "pulled-string",
   smoothAmount: 0.35,
   smoothCatchUp: false,
+  stringLength: 0.35,
   smoothing: 0.42,
   streamline: 0.28,
   velocityScale: 1.6,

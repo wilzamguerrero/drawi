@@ -21,7 +21,7 @@ export interface OverlayState {
   /** Radio del pincel en px de pantalla. */
   cursorRadius: number;
   /** Cuerda del estabilizador en pantalla (null = sin arrastre). */
-  stabilizeString: { anchor: Vec2; tip: Vec2; cursor: Vec2 } | null;
+  stabilizeString: { anchor: Vec2; tip: Vec2; cursor: Vec2; slack: number; tension: number } | null;
   /** Forma en previsualizacion bajo el cursor (herramienta forma). */
   previewShape: ShapeDef | null;
   /** Pivote de transformacion de la seleccion, en mundo. */
@@ -100,37 +100,50 @@ export class OverlayRenderer {
     const dx = tip.x - anchor.x;
     const dy = tip.y - anchor.y;
     const d = Math.hypot(dx, dy);
-    if (d < 3) return;
+    const st = (anchor as unknown as { slack?: number; tension?: number });
+    const slack = st.slack ?? d;
+    const tension = st.tension ?? Math.min(1, d / Math.max(12, slack * 0.62));
+    // Cuerda física: largo FIJO = slack px (del slider). Cuando tiras, d→slack y se tensa;
+    // si vuelves sobre la tinta, d→0 y la cuerda vuelve a colgar con su largo real,
+    // no se acorta al punto. Por eso el sag usa slack fijo con panza vertical extra.
+    const extra = Math.max(0, slack - d);
+    const sag = extra * 0.58 * (1 - tension * 0.35) + slack * 0.14 * (1 - tension * 0.88);
+    // Comba desplazada hacia abajo real (no solo al centro) para que se vea caer
+    const mx = (anchor.x + tip.x) / 2 - sag * 0.15;
+    const my = (anchor.y + tip.y) / 2 + sag;
     ctx.save();
-    // Línea guía cursor real → punta (como LZ Pulled String: cian fina)
-    ctx.setLineDash([7, 6]);
     ctx.lineCap = "round";
-    ctx.strokeStyle = "rgba(64,220,210,0.95)";
-    ctx.lineWidth = 1.6;
-    ctx.shadowColor = "rgba(64,220,210,0.45)";
-    ctx.shadowBlur = 5;
+    ctx.lineJoin = "round";
+    ctx.shadowColor = tension > 0.88 ? "rgba(64,220,210,0.28)" : "rgba(22,30,40,0.34)";
+    ctx.shadowBlur = 6;
+    const col = tension > 0.88 ? "rgba(58,218,208,0.98)" : tension > 0.45 ? "rgba(255,182,70,0.96)" : "rgba(255,152,28,0.94)";
+    ctx.strokeStyle = col;
+    ctx.lineWidth = tension > 0.88 ? 1.7 : 2.5;
+    ctx.setLineDash([]);
     ctx.beginPath();
-    ctx.moveTo(anchor.x, anchor.y);
-    ctx.lineTo(tip.x, tip.y);
+    ctx.moveTo(tip.x, tip.y);
+    if (sag < 1.2) ctx.lineTo(anchor.x, anchor.y);
+    else ctx.quadraticCurveTo(mx, my, anchor.x, anchor.y);
     ctx.stroke();
     ctx.shadowBlur = 0;
-    ctx.setLineDash([]);
-    // Anillo del cursor real (como el círculo cian de LZ en imagen 2)
-    ctx.strokeStyle = "rgba(64,220,210,1)";
-    ctx.lineWidth = 1.8;
+    ctx.fillStyle = tension > 0.88 ? "rgba(255,255,255,1)" : "rgba(255,216,120,1)";
     ctx.beginPath();
-    ctx.arc(anchor.x, anchor.y, 6.5, 0, TAU);
-    ctx.stroke();
-    ctx.fillStyle = "rgba(64,220,210,0.18)";
+    ctx.arc(tip.x, tip.y, 2.8, 0, TAU);
     ctx.fill();
-    // Punta estabilizada (blanco tenue)
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
-    ctx.beginPath();
-    ctx.arc(tip.x, tip.y, 2.2, 0, TAU);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(10,18,22,0.85)";
+    ctx.strokeStyle = "rgba(12,22,24,0.92)";
     ctx.lineWidth = 1;
     ctx.stroke();
+    ctx.strokeStyle = "rgba(54,218,208,1)";
+    ctx.lineWidth = 1.9;
+    ctx.beginPath();
+    ctx.arc(anchor.x, anchor.y, 7, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(54,218,208,0.15)";
+    ctx.fill();
+    ctx.fillStyle = "rgba(54,218,208,1)";
+    ctx.beginPath();
+    ctx.arc(anchor.x, anchor.y, 1.6, 0, TAU);
+    ctx.fill();
     ctx.restore();
   }
 

@@ -3003,13 +3003,15 @@ export class Editor {
     const symTool = this.tools.symmetry as SymmetryTool;
     const showRing = tool.showCursorRing && this.cursorKind !== "touch";
     const stab = (() => {
-      const b = (this.tools.brush as unknown as { builder?: unknown })?.["builder"] as { getStabilizeString?: () => { anchor: import("../core/vec2").Vec2; tip: import("../core/vec2").Vec2; cursor: import("../core/vec2").Vec2 } | null } | null | undefined;
+      const b = (this.tools.brush as unknown as { builder?: unknown })?.["builder"] as { getStabilizeString?: () => { anchor: import("../core/vec2").Vec2; tip: import("../core/vec2").Vec2; cursor: import("../core/vec2").Vec2; slack: number; tension: number } | null } | null | undefined;
       const seg = b?.getStabilizeString?.() ?? null;
       if (!seg) return null;
       return {
         anchor: this.camera.worldToScreen(seg.cursor),
         tip: this.camera.worldToScreen(seg.tip),
         cursor: this.camera.worldToScreen(seg.cursor),
+        slack: seg.slack * this.camera.zoom,
+        tension: seg.tension,
       };
     })();
     return {
