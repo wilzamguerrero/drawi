@@ -3006,12 +3006,17 @@ export class Editor {
       const b = (this.tools.brush as unknown as { builder?: unknown })?.["builder"] as { getStabilizeString?: () => { anchor: import("../core/vec2").Vec2; tip: import("../core/vec2").Vec2; cursor: import("../core/vec2").Vec2; slack: number; tension: number } | null } | null | undefined;
       const seg = b?.getStabilizeString?.() ?? null;
       if (!seg) return null;
+      const rawSl = seg.slack * this.camera.zoom;
+      const anchor = this.camera.worldToScreen(seg.cursor);
+      const tip = this.camera.worldToScreen(seg.tip);
       return {
-        anchor: this.camera.worldToScreen(seg.cursor),
-        tip: this.camera.worldToScreen(seg.tip),
+        anchor,
+        tip,
         cursor: this.camera.worldToScreen(seg.cursor),
-        slack: seg.slack * this.camera.zoom,
+        slack: rawSl,
         tension: seg.tension,
+        curve: this.brush.stringCurve ?? 0.65,
+        drop: this.brush.stringDrop ?? 0.14,
       };
     })();
     return {

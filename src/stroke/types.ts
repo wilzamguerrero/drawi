@@ -83,6 +83,10 @@ export interface BrushSettings {
   smoothCatchUp: boolean;
   /** 0..1 Longitud de la cuerda del estabilizador (0=corta, 1=larga) — vale para cualquier modo. */
   stringLength: number;
+  /** 0..1 Curva de la U cuando la cuerda está floja (panza). */
+  stringCurve: number;
+  /** 0..1 Caída extra por gravedad en Y cuando cuelga. */
+  stringDrop: number;
   /** Guias de suavizado (compatibilidad): la “cantidad” legacy. */
   smoothing: number;
   /** 0..1 Arrastre tipo lazo legacy (migrado a smoothMode). */
@@ -172,6 +176,8 @@ export const DEFAULT_BRUSH: BrushSettings = {
   smoothAmount: 0.35,
   smoothCatchUp: false,
   stringLength: 0.35,
+  stringCurve: 0.65,
+  stringDrop: 0.14,
   smoothing: 0.42,
   streamline: 0.28,
   velocityScale: 1.6,

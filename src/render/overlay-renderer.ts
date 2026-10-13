@@ -21,7 +21,7 @@ export interface OverlayState {
   /** Radio del pincel en px de pantalla. */
   cursorRadius: number;
   /** Cuerda del estabilizador en pantalla (null = sin arrastre). */
-  stabilizeString: { anchor: Vec2; tip: Vec2; cursor: Vec2; slack: number; tension: number } | null;
+  stabilizeString: { anchor: Vec2; tip: Vec2; cursor: Vec2; slack: number; tension: number; curve: number; drop: number } | null;
   /** Forma en previsualizacion bajo el cursor (herramienta forma). */
   previewShape: ShapeDef | null;
   /** Pivote de transformacion de la seleccion, en mundo. */
@@ -75,7 +75,7 @@ export class OverlayRenderer {
       this.drawSymmetry(ctx, state, camera);
     }
     if (state.stabilizeString) {
-      this.drawStabilizeString(ctx, state.stabilizeString.anchor, state.stabilizeString.tip);
+      this.drawStabilizeString(ctx, state.stabilizeString);
     }
     if (state.cursor && !state.previewShape) {
       this.drawCursor(ctx, state.cursor, state.cursorRadius);
@@ -96,54 +96,45 @@ export class OverlayRenderer {
     ctx.stroke();
   }
 
-  private drawStabilizeString(ctx: CanvasRenderingContext2D, anchor: Vec2, tip: Vec2): void {
-    const dx = tip.x - anchor.x;
-    const dy = tip.y - anchor.y;
-    const d = Math.hypot(dx, dy);
-    const st = (anchor as unknown as { slack?: number; tension?: number });
-    const slack = st.slack ?? d;
-    const tension = st.tension ?? Math.min(1, d / Math.max(12, slack * 0.62));
-    // Cuerda física: largo FIJO = slack px (del slider). Cuando tiras, d→slack y se tensa;
-    // si vuelves sobre la tinta, d→0 y la cuerda vuelve a colgar con su largo real,
-    // no se acorta al punto. Por eso el sag usa slack fijo con panza vertical extra.
-    const extra = Math.max(0, slack - d);
-    const sag = extra * 0.58 * (1 - tension * 0.35) + slack * 0.14 * (1 - tension * 0.88);
-    // Comba desplazada hacia abajo real (no solo al centro) para que se vea caer
-    const mx = (anchor.x + tip.x) / 2 - sag * 0.15;
-    const my = (anchor.y + tip.y) / 2 + sag;
+  private drawStabilizeString(ctx: CanvasRenderingContext2D, state: NonNullable<OverlayState["stabilizeString"]>): void {
+    const { anchor, tip, slack, curve: curveRaw, drop: dropRaw } = state;
+    const ropeLength = slack ?? Math.hypot(tip.x - anchor.x, tip.y - anchor.y);
+    const curve = curveRaw ?? 0.65;
+    const drop = dropRaw ?? 0.14;
+    const gravityFactor = curve + drop * 0.35;
+    const dx = anchor.x - tip.x, dy = anchor.y - tip.y;
+    const distanciaActual = Math.hypot(dx, dy);
+    if (ropeLength < 6) return;
+    const holgura = Math.max(0, ropeLength - distanciaActual);
+    const tensa = distanciaActual >= ropeLength - 0.5;
     ctx.save();
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.shadowColor = tension > 0.88 ? "rgba(64,220,210,0.28)" : "rgba(22,30,40,0.34)";
-    ctx.shadowBlur = 6;
-    const col = tension > 0.88 ? "rgba(58,218,208,0.98)" : tension > 0.45 ? "rgba(255,182,70,0.96)" : "rgba(255,152,28,0.94)";
-    ctx.strokeStyle = col;
-    ctx.lineWidth = tension > 0.88 ? 1.7 : 2.5;
-    ctx.setLineDash([]);
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.shadowColor = "rgba(54,218,208,0.22)"; ctx.shadowBlur = 6;
+    ctx.strokeStyle = "rgba(54,218,208,0.98)";
+    ctx.lineWidth = tensa ? 1.5 : 2.25;
     ctx.beginPath();
-    ctx.moveTo(tip.x, tip.y);
-    if (sag < 1.2) ctx.lineTo(anchor.x, anchor.y);
-    else ctx.quadraticCurveTo(mx, my, anchor.x, anchor.y);
+    if (tensa) {
+      ctx.moveTo(tip.x, tip.y);
+      ctx.lineTo(anchor.x, anchor.y);
+    } else {
+      // EXACTO a tu simulación: mid + holgura*gravityFactor
+      const midX = (tip.x + anchor.x) / 2;
+      const midY = (tip.y + anchor.y) / 2;
+      const controlX = midX;
+      const controlY = midY + holgura * gravityFactor;
+      if (holgura < 2) {
+        ctx.moveTo(tip.x, tip.y);
+        ctx.lineTo(anchor.x, anchor.y);
+      } else {
+        ctx.moveTo(tip.x, tip.y);
+        ctx.quadraticCurveTo(controlX, controlY, anchor.x, anchor.y);
+      }
+    }
     ctx.stroke();
     ctx.shadowBlur = 0;
-    ctx.fillStyle = tension > 0.88 ? "rgba(255,255,255,1)" : "rgba(255,216,120,1)";
-    ctx.beginPath();
-    ctx.arc(tip.x, tip.y, 2.8, 0, TAU);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(12,22,24,0.92)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(54,218,208,1)";
-    ctx.lineWidth = 1.9;
-    ctx.beginPath();
-    ctx.arc(anchor.x, anchor.y, 7, 0, TAU);
-    ctx.stroke();
-    ctx.fillStyle = "rgba(54,218,208,0.15)";
-    ctx.fill();
-    ctx.fillStyle = "rgba(54,218,208,1)";
-    ctx.beginPath();
-    ctx.arc(anchor.x, anchor.y, 1.6, 0, TAU);
-    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,1)"; ctx.beginPath(); ctx.arc(tip.x, tip.y, 2.3, 0, TAU); ctx.fill(); ctx.strokeStyle = "rgba(12,22,24,0.9)"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = "rgba(54,218,208,1)"; ctx.lineWidth = 1.7; ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 6.7, 0, TAU); ctx.stroke(); ctx.fillStyle = "rgba(54,218,208,0.13)"; ctx.fill();
+    ctx.fillStyle = "rgba(54,218,208,1)"; ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 1.5, 0, TAU); ctx.fill();
     ctx.restore();
   }
 

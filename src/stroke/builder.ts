@@ -72,8 +72,8 @@ export class StrokeBuilder {
     return this.pts.length;
   }
 
-  /** Slack de la cuerda en mundo (para guía). */
-  getStringSlack(): number { return this.stringLen * 90 / this.zoom; }
+  /** Slack de la cuerda: 0→1 = 0→320/zoom px (amplio para U larga). */
+  getStringSlack(): number { return this.stringLen * 320 / this.zoom; }
   /** Tensión de la cuerda 0..1 (solo pulled-string). */
   getStringTension(): number {
     if (this.mode !== "pulled-string" || !this.started) return 0;
@@ -282,8 +282,10 @@ export class StrokeBuilder {
     const amt = this.amt;
     switch (this.mode) {
       case "pulled-string": {
-        // Cuerda: longitud controlable por el slider "Cuerda" (stringLen), no por Cantidad.
-        const slack = this.stringLen * 90 / this.zoom;
+        // Cuerda CLÁSICA (Lazy Nezumi): la cuerda VISUAL y la LÓGICA usan el
+        // mismo largo. Así la cuerda se tensa rígida al tirar y se pliega (cuelga)
+        // exactamente cuando corresponde.
+        const slack = this.getStringSlack();
         const dx = f.x - this.psX, dy = f.y - this.psY;
         const d = Math.hypot(dx, dy);
         if (d > slack) {
@@ -291,7 +293,6 @@ export class StrokeBuilder {
           this.psX += (dx / d) * pull;
           this.psY += (dy / d) * pull;
         }
-        // Pulled-string usa lerp con release para no "enganchar" al parar
         this.penX = this.psX; this.penY = this.psY;
         break;
       }
