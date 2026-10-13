@@ -3017,6 +3017,7 @@ export class Editor {
         tension: seg.tension,
         curve: this.brush.stringCurve ?? 0.65,
         drop: this.brush.stringDrop ?? 0.14,
+        swing: this.brush.stringSwing ?? 0,
       };
     })();
     return {

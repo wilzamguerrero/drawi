@@ -89,6 +89,8 @@ export interface BrushSettings {
   stringDrop: number;
   /** Estilo preset de la cuerda (atajo para Curva/Caída). */
   stringStyle: "tensa" | "clasica" | "colgante";
+  /** 0..1 Oscilación de la cuerda cuando está floja (balanceo/inercia). 0 = U estática. */
+  stringSwing: number;
   /** Guias de suavizado (compatibilidad): la “cantidad” legacy. */
   smoothing: number;
   /** 0..1 Arrastre tipo lazo legacy (migrado a smoothMode). */
@@ -181,6 +183,7 @@ export const DEFAULT_BRUSH: BrushSettings = {
   stringCurve: 0.65,
   stringDrop: 0.14,
   stringStyle: "clasica",
+  stringSwing: 0,
   smoothing: 0.42,
   streamline: 0.28,
   velocityScale: 1.6,

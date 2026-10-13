@@ -282,11 +282,11 @@ export class StrokeBuilder {
     const amt = this.amt;
     switch (this.mode) {
       case "pulled-string": {
-        // Cuerda CLÁSICA (Lazy Nezumi): la cuerda VISUAL y la LÓGICA usan el
-        // mismo largo. Así la cuerda se tensa rígida al tirar y se pliega (cuelga)
-        // exactamente cuando corresponde.
+        // Cuerda EXACTA como el HTML del usuario: sin filtro, cursor crudo.
+        // El HTML hace: brush = cursor - dir * ropeLength  (si d > ropeLength)
+        // Es decir, la cuerda lógica usa la posición CRUDA del cursor, no la filtrada.
         const slack = this.getStringSlack();
-        const dx = f.x - this.psX, dy = f.y - this.psY;
+        const dx = s.x - this.psX, dy = s.y - this.psY;
         const d = Math.hypot(dx, dy);
         if (d > slack) {
           const pull = d - slack;

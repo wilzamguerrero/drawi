@@ -21,7 +21,7 @@ export interface OverlayState {
   /** Radio del pincel en px de pantalla. */
   cursorRadius: number;
   /** Cuerda del estabilizador en pantalla (null = sin arrastre). */
-  stabilizeString: { anchor: Vec2; tip: Vec2; cursor: Vec2; slack: number; tension: number; curve: number; drop: number } | null;
+  stabilizeString: { anchor: Vec2; tip: Vec2; cursor: Vec2; slack: number; tension: number; curve: number; drop: number; swing: number } | null;
   /** Forma en previsualizacion bajo el cursor (herramienta forma). */
   previewShape: ShapeDef | null;
   /** Pivote de transformacion de la seleccion, en mundo. */
@@ -96,17 +96,66 @@ export class OverlayRenderer {
     ctx.stroke();
   }
 
+  // Control de la cuerda: cuando Balanceo=0 es EXACTO al HTML (U estática inmediata).
+  // Con Balanceo>0 el punto de control persigue al ideal con muelle.
+  private _currentCX = 0; private _currentCY = 0;
+  private _velX = 0; private _velY = 0;
+  private _hasControl = false;
+  private _prevT = 0;
+
   private drawStabilizeString(ctx: CanvasRenderingContext2D, state: NonNullable<OverlayState["stabilizeString"]>): void {
-    const { anchor, tip, slack, curve: curveRaw, drop: dropRaw } = state;
+    const { anchor, tip, slack, curve: curveRaw, drop: dropRaw, swing: swingRaw } = state as unknown as { anchor: Vec2; tip: Vec2; slack: number; curve: number; drop: number; swing: number };
     const ropeLength = slack ?? Math.hypot(tip.x - anchor.x, tip.y - anchor.y);
     const curve = curveRaw ?? 0.65;
     const drop = dropRaw ?? 0.14;
+    const swingAmt = swingRaw ?? 0;
     const gravityFactor = curve + drop * 0.35;
     const dx = anchor.x - tip.x, dy = anchor.y - tip.y;
     const distanciaActual = Math.hypot(dx, dy);
     if (ropeLength < 6) return;
     const holgura = Math.max(0, ropeLength - distanciaActual);
     const tensa = distanciaActual >= ropeLength - 0.5;
+
+    // Posición ideal del HTML: mid + holgura * gravityFactor (tu simulación exacta)
+    const midX = (tip.x + anchor.x) / 2;
+    const midY = (tip.y + anchor.y) / 2;
+    const targetCX = midX;
+    const targetCY = midY + holgura * gravityFactor;
+
+    let useCX: number, useCY: number;
+    if (swingAmt < 0.01) {
+      // HTML PURO: sin inercia, U inmediata. Resetea velocidad para no arrastrar rebote previo.
+      useCX = targetCX; useCY = targetCY;
+      this._currentCX = targetCX; this._currentCY = targetCY;
+      this._velX = 0; this._velY = 0;
+      this._hasControl = true;
+      this._prevT = 0;
+    } else {
+      const now = performance.now();
+      const dt = this._prevT ? Math.min(0.05, (now - this._prevT) / 1000) : 0.016;
+      this._prevT = now;
+      if (!this._hasControl) {
+        this._currentCX = targetCX; this._currentCY = targetCY;
+        this._hasControl = true;
+      }
+      if (tensa) {
+        const k = 18; const damp = 5.5;
+        const ax = (targetCX - this._currentCX) * k - this._velX * damp;
+        const ay = (targetCY - this._currentCY) * k - this._velY * damp;
+        this._velX += ax * dt; this._velY += ay * dt;
+        this._currentCX += this._velX * dt; this._currentCY += this._velY * dt;
+      } else {
+        const stiffness = 10 + (1 - swingAmt) * 22;
+        const damping = 3.5 + swingAmt * 2;
+        const ax = (targetCX - this._currentCX) * stiffness - this._velX * damping;
+        const ay = (targetCY - this._currentCY) * stiffness - this._velY * damping;
+        this._velX += ax * dt; this._velY += ay * dt;
+        this._currentCX += this._velX * dt * 1.19;
+        this._currentCY += this._velY * dt * 1.19;
+      }
+      useCX = this._currentCX; useCY = this._currentCY;
+    }
+
     ctx.save();
     ctx.lineCap = "round"; ctx.lineJoin = "round";
     ctx.shadowColor = "rgba(54,218,208,0.22)"; ctx.shadowBlur = 6;
@@ -117,17 +166,12 @@ export class OverlayRenderer {
       ctx.moveTo(tip.x, tip.y);
       ctx.lineTo(anchor.x, anchor.y);
     } else {
-      // Tu simulación EXACTA: 1 U simple con gravityFactor (como quedaba bien)
-      const midX = (tip.x + anchor.x) / 2;
-      const midY = (tip.y + anchor.y) / 2;
-      const controlX = midX;
-      const controlY = midY + holgura * gravityFactor;
-      if (holgura < 2) {
+      if (holgura < 1.5) {
         ctx.moveTo(tip.x, tip.y);
         ctx.lineTo(anchor.x, anchor.y);
       } else {
         ctx.moveTo(tip.x, tip.y);
-        ctx.quadraticCurveTo(controlX, controlY, anchor.x, anchor.y);
+        ctx.quadraticCurveTo(useCX, useCY, anchor.x, anchor.y);
       }
     }
     ctx.stroke();
