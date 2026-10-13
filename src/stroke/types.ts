@@ -124,6 +124,12 @@ export interface BrushSettings {
   rasterRoundnessJitter: number;
   /** Ráster: jitter de flujo (0..1). */
   rasterFlowJitter: number;
+  /** Ráster: jitter de opacidad por estampa (0..1). */
+  rasterOpacityJitter: number;
+  /** Ráster: cuánto la presión modula la opacidad por estampa (0..1, 0 = sin presión). */
+  rasterPressureOpacity: number;
+  /** Ráster: cuánto la presión modula el flujo por estampa (0..1). */
+  rasterPressureFlow: number;
   /**
    * Invierte los modos de pintura (Trazo/Relleno/Arrastre) a borrado: el mismo
    * gesto recorta la tinta en vez de pintarla. La tecla Alt lo alterna.
@@ -165,6 +171,9 @@ export const DEFAULT_BRUSH: BrushSettings = {
   rasterAngleJitter: 0,
   rasterRoundnessJitter: 0,
   rasterFlowJitter: 0,
+  rasterOpacityJitter: 0,
+  rasterPressureOpacity: 0,
+  rasterPressureFlow: 0,
   invertErase: false,
 };
 

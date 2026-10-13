@@ -668,14 +668,31 @@ function buildBrushPresets(editor: Editor): { el: HTMLElement; sync: (s: EditorS
   });
   const hidden = el("input", { type: "file", style: { display: "none" } }) as HTMLInputElement;
   let mode: "abr" | "json" = "abr";
+  const abrStatus = el("span", { style: { fontSize: "11px", color: "rgba(255,255,255,.6)", gridColumn: "1 / -1", whiteSpace: "pre-wrap", display: "none" } });
+  let abrStatusTimer = 0;
+  const showAbrStatus = (msg: string, ok = false): void => {
+    abrStatus.textContent = msg;
+    abrStatus.style.color = ok ? "rgba(140,255,150,.85)" : "rgba(255,190,100,.9)";
+    abrStatus.style.display = "block";
+    window.clearTimeout(abrStatusTimer);
+    abrStatusTimer = window.setTimeout(() => { abrStatus.style.display = "none"; }, 5000);
+  };
   hidden.addEventListener("change", () => {
     const file = hidden.files?.[0];
     hidden.value = "";
     if (!file) return;
     if (mode === "abr") {
-      void file.arrayBuffer().then((buf) => editor.importAbrBuffer(buf, file.name.replace(/\.abr$/i, "")));
+      void file.arrayBuffer().then((buf) => {
+        const n = editor.importAbrBuffer(buf, file.name.replace(/\.abr$/i, ""));
+        if (n > 0) showAbrStatus(`${n} pincel(es) importado(s) de ${file.name} — ya están abajo en “Pinceles”`, true);
+        else showAbrStatus(`No se pudo importar ${file.name}: versión no soportada o sin puntas muestreadas visibles. Prueba otro .abr`);
+      });
     } else {
-      void file.text().then((txt) => editor.importRasterPresetsJson(txt));
+      void file.text().then((txt) => {
+        const n = editor.importRasterPresetsJson(txt);
+        if (n > 0) showAbrStatus(`${n} pincel(es) del pack cargados`, true);
+        else showAbrStatus(`No se pudo importar el pack: JSON inválido o sin pinceles`);
+      });
     }
   });
   const pick = (m: "abr" | "json"): void => {
@@ -689,7 +706,7 @@ function buildBrushPresets(editor: Editor): { el: HTMLElement; sync: (s: EditorS
     button({ label: "Exportar", title: "Descargar tus pinceles como .json", onClick: () => downloadPresets(editor) }).el,
     button({ label: "Guardar actual", title: "Guardar los ajustes actuales como pincel", onClick: () => editor.addCurrentAsPreset() }).el,
   ]);
-  const wrap = el("div", { class: "brush-presets dock-stack" }, [fieldLabel("Pinceles"), grid, row, hidden]);
+  const wrap = el("div", { class: "brush-presets dock-stack" }, [fieldLabel("Pinceles"), grid, abrStatus, row, hidden]);
 
   let lastKey = "";
   const sync = (s: EditorState): void => {
@@ -697,25 +714,41 @@ function buildBrushPresets(editor: Editor): { el: HTMLElement; sync: (s: EditorS
     if (key === lastKey) return;
     lastKey = key;
     clear(grid);
+    // Si el modo ráster no está activo, igual se muestra la grilla pero con aviso.
+    if (!s.brush.asRaster) {
+      grid.appendChild(el("span", { text: "Activa “Pincel raster” arriba para ver y usar los pinceles ABR importados", style: { fontSize: "11px", color: "rgba(160,210,255,.7)", gridColumn: "1 / -1" } }));
+    }
+    if (s.rasterPresets.length === 0) {
+      grid.appendChild(el("span", { text: "Sin pinceles — importa un .abr con el botón de abajo", style: { fontSize: "11px", color: "rgba(255,255,255,.45)", gridColumn: "1 / -1" } }));
+      return;
+    }
     for (const p of s.rasterPresets) {
       const active = p.id === s.rasterPresetId;
-      const img = el("img", { style: { width: "100%", height: "auto", display: "block" } }) as HTMLImageElement;
+      const img = el("img", {
+        style: { width: "100%", height: "auto", display: "block", borderRadius: "4px" },
+      }) as HTMLImageElement;
       if (p.thumb) img.src = p.thumb;
+      img.alt = p.name;
+      const label = el("span", {
+        text: p.name,
+        style: { display: "block", fontSize: "9px", color: "rgba(255,255,255,.6)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "3px", textAlign: "center" },
+      });
       const cell = el(
         "button",
         {
           type: "button",
-          title: p.name,
+          title: `${p.name} — clic para usar`,
           style: {
             padding: "3px",
             borderRadius: "6px",
-            border: active ? "1px solid rgba(255,255,255,.55)" : "1px solid transparent",
+            border: active ? "1px solid rgba(255,255,255,.62)" : "1px solid transparent",
             background: active ? "rgba(255,255,255,.16)" : "rgba(255,255,255,.05)",
             cursor: "pointer",
+            overflow: "hidden",
           },
           on: { click: () => editor.applyRasterPreset(p.id) },
         },
-        [img],
+        [img, label],
       );
       grid.appendChild(cell);
     }

@@ -1245,6 +1245,9 @@ export class Editor {
       angleJitter: this.brush.rasterAngleJitter,
       roundnessJitter: this.brush.rasterRoundnessJitter,
       flowJitter: this.brush.rasterFlowJitter,
+      opacityJitter: this.brush.rasterOpacityJitter,
+      pressureOpacity: this.brush.rasterPressureOpacity,
+      pressureFlow: this.brush.rasterPressureFlow,
       scatter: this.brush.rasterScatter,
       scatterCount: Math.max(1, Math.round(this.brush.rasterScatterCount)),
       seed: (Math.random() * 0xffffffff) >>> 0,
@@ -1269,7 +1272,7 @@ export class Editor {
     const sy = live.canvas.height / rect.h;
     const s = (sx + sy) / 2;
     for (const p of points) {
-      live.stroke.add({ x: (p.x - rect.x) * sx, y: (p.y - rect.y) * sy, r: Math.max(0.5, p.r * s) });
+      live.stroke.add({ x: (p.x - rect.x) * sx, y: (p.y - rect.y) * sy, r: Math.max(0.5, p.r * s), p: p.p });
     }
     this.composeRasterLive();
     this.inkLayer.invalidate();
@@ -1440,15 +1443,31 @@ export class Editor {
     const g = c.getContext("2d");
     let url = "";
     if (g) {
+      // Fondo oscuro para que el alfa se lea; antes era transparente y el blanco mimetado "no se veía".
+      g.fillStyle = "#1e1e20";
+      g.fillRect(0, 0, S, S);
       const mask = p.tip.kind === "image" ? this.rasterTipMasks.get(p.tip.src) : makeRoundTip(p.hardness);
       if (mask) {
-        // Estampa clara sobre fondo transparente: se ve sobre el dock oscuro.
-        const tinted = tintTip(mask, "#d6d6dd");
-        const m = 5;
-        const d = S - m * 2;
-        g.globalAlpha = Math.max(0.35, p.flow);
-        g.drawImage(tinted, m, m, d, d);
+        // Contain: preserva proporción de la punta ABR (no estirarla).
+        const tinted = tintTip(mask, "#f2f2f3");
+        const m = 4;
+        const box = S - m * 2;
+        const sc = Math.min(box / Math.max(1, tinted.width), box / Math.max(1, tinted.height));
+        const dw = tinted.width * sc, dh = tinted.height * sc;
+        const dx = (S - dw) / 2, dy = (S - dh) / 2;
+        g.globalAlpha = Math.max(0.85, p.flow);
+        g.drawImage(tinted, dx, dy, dw, dh);
+        g.globalAlpha = 1;
+      } else if (p.tip.kind === "image") {
+        // Aún decodificando: marcador para no parecer vacío.
+        g.fillStyle = "rgba(255,255,255,.18)";
+        g.font = "9px sans-serif";
+        g.textAlign = "center";
+        g.fillText("…", S / 2, S / 2 + 3);
       }
+      // Borde fino del swatch
+      g.strokeStyle = "rgba(255,255,255,.08)";
+      g.strokeRect(0.5, 0.5, S - 1, S - 1);
       url = c.toDataURL();
     }
     this.rasterThumbs.set(p.id, url);
@@ -1491,8 +1510,12 @@ export class Editor {
       return 0;
     }
     if (brushes.length === 0) {
-      this.status("Ese .abr no trae puntas legibles");
+      this.status("Ese .abr no trae puntas legibles (versión no soportada o sin puntas muestreadas). Prueba exportar el set como ABR legado en Photoshop o usa otro archivo");
       return 0;
+    }
+    // Auto-activa el pincel ráster: es donde viven los presets y donde se ven.
+    if (!this.brush.asRaster) {
+      this.setBrush({ asRaster: true, asAqua: false, asMatter: false });
     }
     const presets: BrushPreset[] = brushes.map((b, i) => {
       const canvas = abrToMaskCanvas(b);

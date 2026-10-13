@@ -36,6 +36,9 @@ export interface BrushPreset {
   angleJitter: number;
   roundnessJitter: number;
   flowJitter: number;
+  opacityJitter: number;
+  pressureOpacity: number;
+  pressureFlow: number;
 }
 
 /** Campos de `BrushSettings` que un preset fija al aplicarse (la punta aparte). */
@@ -55,6 +58,9 @@ export function presetToBrush(p: BrushPreset): Partial<BrushSettings> {
     rasterAngleJitter: p.angleJitter,
     rasterRoundnessJitter: p.roundnessJitter,
     rasterFlowJitter: p.flowJitter,
+    rasterOpacityJitter: (p as BrushPreset).opacityJitter ?? 0,
+    rasterPressureOpacity: (p as BrushPreset).pressureOpacity ?? 0,
+    rasterPressureFlow: (p as BrushPreset).pressureFlow ?? 0,
   };
 }
 
@@ -78,6 +84,9 @@ export function brushToPreset(b: BrushSettings, tip: RasterTip, name: string, id
     angleJitter: b.rasterAngleJitter,
     roundnessJitter: b.rasterRoundnessJitter,
     flowJitter: b.rasterFlowJitter,
+    opacityJitter: b.rasterOpacityJitter,
+    pressureOpacity: b.rasterPressureOpacity,
+    pressureFlow: b.rasterPressureFlow,
   };
 }
 
@@ -97,6 +106,9 @@ const base = (): Omit<BrushPreset, "id" | "name"> => ({
   angleJitter: 0,
   roundnessJitter: 0,
   flowJitter: 0,
+  opacityJitter: 0,
+  pressureOpacity: 0,
+  pressureFlow: 0,
 });
 
 /** Pinceles de fábrica: cubren el abanico (duro, suave, lápiz, aerógrafo, etc.). */
@@ -108,11 +120,11 @@ export function defaultPresets(): BrushPreset[] {
     ...over,
   });
   return [
-    mk("Redondo duro", { hardness: 1, spacing: 0.05, flow: 1, size: 12 }),
-    mk("Redondo suave", { hardness: 0.35, spacing: 0.08, flow: 0.9, size: 24 }),
-    mk("Lápiz", { hardness: 0.95, size: 4, spacing: 0.06, flow: 1, flowJitter: 0.1 }),
-    mk("Aerógrafo", { hardness: 0.2, size: 42, spacing: 0.05, flow: 0.25, scatter: 0.5, scatterCount: 3, sizeJitter: 0.3 }),
-    mk("Caligráfico", { hardness: 0.9, roundness: 0.25, angleFollow: true, size: 26, spacing: 0.04, flow: 1 }),
-    mk("Tiza", { hardness: 0.8, size: 28, spacing: 0.14, flow: 0.9, flowJitter: 0.5, sizeJitter: 0.4, scatter: 0.25, scatterCount: 2 }),
+    mk("Redondo duro", { hardness: 1, spacing: 0.05, flow: 1, size: 12, pressureOpacity: 0.7, pressureFlow: 0.5 }),
+    mk("Redondo suave", { hardness: 0.35, spacing: 0.08, flow: 0.9, size: 24, pressureOpacity: 0.5 }),
+    mk("Lápiz", { hardness: 0.95, size: 4, spacing: 0.06, flow: 1, flowJitter: 0.1, pressureOpacity: 0.6, pressureFlow: 0.4 }),
+    mk("Aerógrafo", { hardness: 0.2, size: 42, spacing: 0.05, flow: 0.25, scatter: 0.5, scatterCount: 3, sizeJitter: 0.3, pressureOpacity: 1, pressureFlow: 1 }),
+    mk("Caligráfico", { hardness: 0.9, roundness: 0.25, angleFollow: true, size: 26, spacing: 0.04, flow: 1, pressureOpacity: 0.5 }),
+    mk("Tiza", { hardness: 0.8, size: 28, spacing: 0.14, flow: 0.9, flowJitter: 0.5, sizeJitter: 0.4, scatter: 0.25, scatterCount: 2, opacityJitter: 0.2 }),
   ];
 }

@@ -26,6 +26,8 @@ export interface RasterDab {
   y: number;
   /** Radio en px del lienzo de la capa. */
   r: number;
+  /** Presión 0..1 de esta estampa (para modular flow/opacity si hay pressure control). */
+  p?: number;
 }
 
 export interface RasterStrokeOptions {
@@ -49,6 +51,12 @@ export interface RasterStrokeOptions {
   roundnessJitter: number;
   /** Jitter de flujo (0..1). */
   flowJitter: number;
+  /** Jitter de opacidad por estampa (0..1). */
+  opacityJitter: number;
+  /** Cuánto la presión modula la opacidad por estampa (0..1). */
+  pressureOpacity: number;
+  /** Cuánto la presión modula el flujo por estampa (0..1). */
+  pressureFlow: number;
   /** Dispersión: radio de desplazamiento al azar, en diámetros. */
   scatter: number;
   /** Huellas por punto de muestreo (1..). */
@@ -93,7 +101,7 @@ export class RasterStroke {
   }
 
   /** Estampa UNA huella base en (x,y) con radio r, orientada según `dir` (rumbo). */
-  private stamp(x: number, y: number, r: number, dir: number): void {
+  private stamp(x: number, y: number, r: number, dir: number, pressure = 1): void {
     if (r <= 0) return;
     const o = this.o;
     const count = Math.max(1, Math.round(o.scatterCount));
@@ -115,10 +123,17 @@ export class RasterStroke {
         o.roundnessJitter > 0
           ? Math.max(0.05, o.roundness * (1 - this.rng.next() * o.roundnessJitter))
           : o.roundness;
-      const flow = o.flowJitter > 0 ? o.flow * (1 - this.rng.next() * o.flowJitter) : o.flow;
+      // Transfer dinámico: flujo y opacidad modulados por presión + jitter, como Photoshop.
+      const press = clamp01(pressure);
+      let flow = o.flow;
+      if (o.pressureFlow > 0) flow *= 1 - o.pressureFlow * (1 - press);
+      if (o.flowJitter > 0) flow *= 1 - this.rng.next() * o.flowJitter;
+      let dabAlpha = flow;
+      if (o.pressureOpacity > 0) dabAlpha *= 1 - o.pressureOpacity * (1 - press);
+      if (o.opacityJitter > 0) dabAlpha *= 1 - this.rng.next() * o.opacityJitter;
 
       this.bg.save();
-      this.bg.globalAlpha = clamp01(flow);
+      this.bg.globalAlpha = clamp01(dabAlpha);
       this.bg.translate(px, py);
       if (ang !== 0) this.bg.rotate(ang);
       if (round < 1) this.bg.scale(1, Math.max(0.05, round));
@@ -142,7 +157,7 @@ export class RasterStroke {
   add(p: RasterDab): void {
     const a = this.last;
     if (!a) {
-      this.stamp(p.x, p.y, p.r, 0);
+      this.stamp(p.x, p.y, p.r, 0, p.p ?? 1);
       this.last = p;
       this.acc = 0;
       return;
@@ -168,7 +183,8 @@ export class RasterStroke {
       traveled += need;
       this.acc = 0;
       const t = traveled / segLen;
-      this.stamp(a.x + dx * t, a.y + dy * t, a.r + (p.r - a.r) * t, dir);
+      const press = (a.p ?? 1) + ((p.p ?? 1) - (a.p ?? 1)) * t;
+      this.stamp(a.x + dx * t, a.y + dy * t, a.r + (p.r - a.r) * t, dir, press);
     }
     this.last = p;
   }

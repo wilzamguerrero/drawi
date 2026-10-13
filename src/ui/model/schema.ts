@@ -341,6 +341,18 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
         { kind: "number", id: "raster-angle-jitter", label: "Jitter de angulo", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.brush.rasterAngleJitter, set: (v) => editor.setBrush({ rasterAngleJitter: v }) },
         { kind: "number", id: "raster-roundness-jitter", label: "Jitter de redondez", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.brush.rasterRoundnessJitter, set: (v) => editor.setBrush({ rasterRoundnessJitter: v }) },
         { kind: "number", id: "raster-flow-jitter", label: "Jitter de flujo", min: 0, max: 1, step: 0.01, decimals: 2, get: (s) => s.brush.rasterFlowJitter, set: (v) => editor.setBrush({ rasterFlowJitter: v }) },
+        { kind: "number", id: "raster-opacity-jitter", label: "Jitter de opacidad", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Variacion de opacidad por estampa (Transfer de Photoshop).", get: (s) => s.brush.rasterOpacityJitter, set: (v) => editor.setBrush({ rasterOpacityJitter: v }) },
+      ],
+    },
+    {
+      id: "raster-transfer",
+      label: "Transferencia (presión)",
+      icon: "droplet",
+      hint: "Como Photoshop: la presión modula opacidad y flujo por estampa. A 0 no afecta, a 1 a baja presión la estampa es casi transparente.",
+      visible: (s) => s.brush.asRaster && s.brush.mode !== "erase",
+      children: [
+        { kind: "number", id: "raster-pressure-opacity", label: "Presión → opacidad", min: 0, max: 1, step: 0.05, decimals: 2, get: (s) => s.brush.rasterPressureOpacity, set: (v) => editor.setBrush({ rasterPressureOpacity: v }) },
+        { kind: "number", id: "raster-pressure-flow", label: "Presión → flujo", min: 0, max: 1, step: 0.05, decimals: 2, get: (s) => s.brush.rasterPressureFlow, set: (v) => editor.setBrush({ rasterPressureFlow: v }) },
       ],
     },
     { kind: "custom", id: "brush-presets", label: "Pinceles", surfaces: ["dock"], visible: (s) => s.brush.asRaster && s.brush.mode !== "erase" },
