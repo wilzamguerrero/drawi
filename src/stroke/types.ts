@@ -50,6 +50,23 @@ export const DYNAMICS_INFO: Record<StrokeDynamics, { label: string; hint: string
   },
 };
 
+/** Modos de suavizado de posición al estilo Lazy Nezumi Pro. */
+export type SmoothMode = "pulled-string" | "moving-average" | "ema" | "inertia";
+
+export const SMOOTH_MODE_LABELS: Record<SmoothMode, string> = {
+  "pulled-string": "Cuerda tensada",
+  "moving-average": "Media movil",
+  ema: "Media exponencial",
+  inertia: "Inercia",
+};
+
+export const SMOOTH_MODE_INFO: Record<SmoothMode, string> = {
+  "pulled-string": "Ideal para detalle lento con esquinas marcadas: el cursor tira de una cuerda.",
+  "moving-average": "Suavizado equilibrado para curvas dinámicas y esquinas suaves.",
+  ema: "Suavizado masivo para curvas largas y envolventes.",
+  inertia: "Física con masa: trazos rápidos y fluidos, con inercia.",
+};
+
 export interface BrushSettings {
   mode: BrushMode;
   dynamics: StrokeDynamics;
@@ -58,9 +75,15 @@ export interface BrushSettings {
   /** Fraccion minima del diametro (0..1) que puede alcanzar la dinamica. */
   minRatio: number;
   opacity: number;
-  /** 0..1 Suavizado One-Euro (mas alto = mas estable, algo mas lento). */
+  /** Modo de suavizado al estilo Lazy Nezumi. */
+  smoothMode: SmoothMode;
+  /** 0..1 Cantidad de suavizado (significado depende de smoothMode). */
+  smoothAmount: number;
+  /** Catch Up: en media/EMA, la línea alcanza al cursor al levantar. */
+  smoothCatchUp: boolean;
+  /** Guias de suavizado (compatibilidad): la “cantidad” legacy. */
   smoothing: number;
-  /** 0..1 Arrastre tipo lazo: la punta persigue al cursor. */
+  /** 0..1 Arrastre tipo lazo legacy (migrado a smoothMode). */
   streamline: number;
   /** Velocidad de referencia en px/ms para normalizar la dinamica. */
   velocityScale: number;
@@ -143,8 +166,11 @@ export const DEFAULT_BRUSH: BrushSettings = {
   size: 10,
   minRatio: 0.12,
   opacity: 1,
-  smoothing: 0.45,
-  streamline: 0.35,
+  smoothMode: "pulled-string",
+  smoothAmount: 0.35,
+  smoothCatchUp: false,
+  smoothing: 0.42,
+  streamline: 0.28,
   velocityScale: 1.6,
   velocityInvert: false,
   pressureCurve: 0,

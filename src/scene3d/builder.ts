@@ -115,10 +115,10 @@ export class Stroke3DBuilder {
     this.rng.reseed(seed);
     this.filter.reset();
 
-    // Mismos parametros que el trazo 2D: la sensacion de dibujo no debe cambiar
-    // por entrar al espacio. El porque de los numeros esta en `stroke/builder.ts`.
     const sm = clamp01(st.smoothing);
-    this.filter.configure(lerp(12, 1.2, sm), 0.045 + sm * 0.11);
+    const hasPen = s.pressure >= 0 || s.tilt !== 0;
+    if (hasPen) this.filter.configure(lerp(22, 1.1, sm), 0.05 + sm * 0.22);
+    else this.filter.configure(lerp(26, 1.8, sm), 0.04 + sm * 0.14);
 
     this.penX = s.x;
     this.penY = s.y;
@@ -259,15 +259,18 @@ export class Stroke3DBuilder {
     // arrastrada: si se midiera sobre ella se realimentaria y oscilaria.
     const rawStep =
       Math.hypot(s.x - this.lastRawX, s.y - this.lastRawY, s.z - this.lastRawZ) * this.zoom;
+    const hasPenV = s.pressure >= 0 || s.tilt !== 0;
     const instant = rawStep / dtMs;
-    this.speed = damp(this.speed, instant, 22, dt);
+    this.speed = damp(this.speed, instant, hasPenV ? 26 : 32, dt);
     this.lastRawX = s.x;
     this.lastRawY = s.y;
     this.lastRawZ = s.z;
 
-    const release = clamp01(this.speed / 1.1);
-    const startup = smoothstep(clamp01((this.arcLen * this.zoom) / 14));
-    const drag = clamp01(st.streamline) * 0.8 * (1 - 0.6 * release) * startup;
+    const release = clamp01(this.speed / 1.35);
+    const startup = smoothstep(clamp01((this.arcLen * this.zoom) / 10));
+    const hasPenS = s.pressure >= 0 || s.tilt !== 0;
+    const dragMax = hasPenS ? 0.70 : 0.50;
+    const drag = clamp01(st.streamline) * dragMax * (1 - 0.55 * release) * startup;
     this.penX = lerp(f.x, this.penX, drag);
     this.penY = lerp(f.y, this.penY, drag);
     this.penZ = lerp(f.z, this.penZ, drag);
@@ -278,15 +281,7 @@ export class Stroke3DBuilder {
     const dWorld = Math.hypot(dx, dy, dz);
     this.lastT = s.t;
 
-    // Muestreo minimo, con dos umbrales y gana el mas exigente.
-    //
-    // El primero es el de siempre, en pixeles de pantalla: por debajo de medio
-    // pixel la muestra no aporta nada. El segundo es nuevo y es relativo al
-    // radio: dos puntos mas juntos que medio radio dejan segmentos mucho mas
-    // cortos que el ancho del trazo, y como las juntas se prolongan hasta un
-    // radio, todos los segmentos acabarian conteniendose unos a otros. Ademas de
-    // desperdicio, eso emborrona los codos.
-    const minStep = Math.max(0.55 / this.zoom, 0.5 * this.lastR);
+    const minStep = Math.max(0.44 / this.zoom, 0.28 * this.lastR);
     if (!force && dWorld < minStep) return false;
 
     this.lastX = this.penX;

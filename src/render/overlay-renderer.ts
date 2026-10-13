@@ -20,6 +20,8 @@ export interface OverlayState {
   cursor: Vec2 | null;
   /** Radio del pincel en px de pantalla. */
   cursorRadius: number;
+  /** Cuerda del estabilizador en pantalla (null = sin arrastre). */
+  stabilizeString: { anchor: Vec2; tip: Vec2; cursor: Vec2 } | null;
   /** Forma en previsualizacion bajo el cursor (herramienta forma). */
   previewShape: ShapeDef | null;
   /** Pivote de transformacion de la seleccion, en mundo. */
@@ -72,6 +74,9 @@ export class OverlayRenderer {
     } else if (state.symmetry.visible && state.activeHandle) {
       this.drawSymmetry(ctx, state, camera);
     }
+    if (state.stabilizeString) {
+      this.drawStabilizeString(ctx, state.stabilizeString.anchor, state.stabilizeString.tip);
+    }
     if (state.cursor && !state.previewShape) {
       this.drawCursor(ctx, state.cursor, state.cursorRadius);
     }
@@ -89,6 +94,44 @@ export class OverlayRenderer {
     ctx.strokeStyle = INK;
     ctx.lineWidth = 1;
     ctx.stroke();
+  }
+
+  private drawStabilizeString(ctx: CanvasRenderingContext2D, anchor: Vec2, tip: Vec2): void {
+    const dx = tip.x - anchor.x;
+    const dy = tip.y - anchor.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 3) return;
+    ctx.save();
+    // Línea guía cursor real → punta (como LZ Pulled String: cian fina)
+    ctx.setLineDash([7, 6]);
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "rgba(64,220,210,0.95)";
+    ctx.lineWidth = 1.6;
+    ctx.shadowColor = "rgba(64,220,210,0.45)";
+    ctx.shadowBlur = 5;
+    ctx.beginPath();
+    ctx.moveTo(anchor.x, anchor.y);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.setLineDash([]);
+    // Anillo del cursor real (como el círculo cian de LZ en imagen 2)
+    ctx.strokeStyle = "rgba(64,220,210,1)";
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.arc(anchor.x, anchor.y, 6.5, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(64,220,210,0.18)";
+    ctx.fill();
+    // Punta estabilizada (blanco tenue)
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.beginPath();
+    ctx.arc(tip.x, tip.y, 2.2, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(10,18,22,0.85)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawWalls(

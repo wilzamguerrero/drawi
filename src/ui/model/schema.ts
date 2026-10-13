@@ -1,7 +1,7 @@
 import type { Editor, EditorState, MatterOp } from "../../app/editor";
 import { DEFAULT_PALETTES } from "../../core/color";
 import { SHAPE_LABELS, type ShapeKind } from "../../physics/shapes";
-import { DYNAMICS_INFO, ERASE_MODE_LABELS, type BrushMode, type EraseMode, type StrokeDynamics } from "../../stroke/types";
+import { DEFAULT_BRUSH, DYNAMICS_INFO, ERASE_MODE_LABELS, SMOOTH_MODE_INFO, SMOOTH_MODE_LABELS, type BrushMode, type EraseMode, type SmoothMode, type StrokeDynamics } from "../../stroke/types";
 import { SYMMETRY_LABELS, type SymmetryMode } from "../../symmetry/symmetry";
 import { PULL_LABELS, type PullFamily } from "../../tools/pull-shapes";
 import { TOOL_BY_ID, type ToolId } from "../../tools/manifest";
@@ -259,8 +259,11 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       hint: "Cómo el lápiz responde a presión y velocidad",
       visible: (s) => s.brush.mode !== "erase",
       children: [
-        { kind: "number", id: "smoothing", label: "Suavizado", icon: "spark", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Filtro One-Euro: quita el temblor sin anadir retraso a velocidad alta.", get: (s) => s.brush.smoothing, set: (v) => editor.setBrush({ smoothing: v }) },
-        { kind: "number", id: "streamline", label: "Estabilizador", icon: "spark", min: 0, max: 0.95, step: 0.01, decimals: 2, hint: "La punta persigue al cursor. Alto da curvas limpias, pero se nota el arrastre.", get: (s) => s.brush.streamline, set: (v) => editor.setBrush({ streamline: v }) },
+        { kind: "choice", id: "smooth-mode", label: "Modo", chooser: "select", hint: "Como Lazy Nezumi Pro: elige cómo se estabiliza la línea.", options: (Object.keys(SMOOTH_MODE_LABELS) as SmoothMode[]).map((k) => ({ value: k, id: `smooth-${k}`, label: SMOOTH_MODE_LABELS[k], title: SMOOTH_MODE_INFO[k] })), get: (s) => (s.brush.smoothMode ?? "pulled-string") as string, set: (v) => editor.setBrush({ smoothMode: v as SmoothMode }) },
+        { kind: "number", id: "smooth-amount", label: "Cantidad", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Como LZ: más cantidad = más estabilización. Pulled String: longitud de la cuerda. Media/EMA: ventana/alfa. Inercia: masa.", get: (s) => (s.brush.smoothAmount ?? (s.brush as unknown as { smoothing: number }).smoothing ?? 0.35), set: (v) => editor.setBrush({ smoothAmount: v, smoothing: v }) },
+        { kind: "toggle", id: "smooth-catchup", label: "Catch Up (solo lápiz)", hint: "En Media / EMA, al levantar el lápiz la línea alcanza al cursor. Solo aplica con esos modos.", visible: (s) => { const m = (s.brush.smoothMode ?? "pulled-string") as SmoothMode; return m === "moving-average" || m === "ema"; }, get: (s) => !!s.brush.smoothCatchUp, set: (v) => editor.setBrush({ smoothCatchUp: v }) },
+        { kind: "number", id: "smoothing", label: "Jitter fino", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Filtro fino del sensor (jitter base). Ya no es el suavizado artístico.", get: (s) => s.brush.smoothing, set: (v) => editor.setBrush({ smoothing: v }) },
+        { kind: "number", id: "streamline", label: "Estabilizador (legacy)", min: 0, max: 0.95, step: 0.01, decimals: 2, hint: "Migrado a Modos arriba. Déjalo en 0 y usa Modo/Cantidad.", get: (s) => s.brush.streamline, set: (v) => editor.setBrush({ streamline: v }) },
         { kind: "number", id: "min-ratio", label: "Ancho minimo", min: 0, max: 1, step: 0.01, decimals: 2, hint: "Fraccion del diametro a la que puede llegar la dinamica.", get: (s) => s.brush.minRatio, set: (v) => editor.setBrush({ minRatio: v }) },
         { kind: "number", id: "pressure-curve", label: "Curva de presion", min: -1, max: 1, step: 0.05, decimals: 2, hint: "Negativo: responde antes con poca fuerza. Positivo: exige apretar mas.", visible: (s) => usesPressure(s.brush.dynamics), whenHidden: "dim", get: (s) => s.brush.pressureCurve, set: (v) => editor.setBrush({ pressureCurve: v }) },
         { kind: "number", id: "velocity-scale", label: "Escala de velocidad", min: 0.2, max: 6, step: 0.05, decimals: 2, unit: "px/ms", hint: "Velocidad de referencia: por encima de ella el trazo llega a su extremo.", visible: (s) => usesVelocity(s.brush.dynamics), whenHidden: "dim", get: (s) => s.brush.velocityScale, set: (v) => editor.setBrush({ velocityScale: v }) },
@@ -1012,6 +1015,19 @@ export function buildSchema(editor: Editor, _state: EditorState, hooks: MenuHook
       options: (Object.keys(PULL_LABELS) as (PullFamily | "random")[]).map((k) => ({ value: k, id: `pull-${k}`, label: PULL_LABELS[k] })),
       get: (s) => s.pullFamily,
       set: (v) => editor.setPullFamily(v as PullFamily | "random"),
+    },
+    {
+      kind: "action",
+      id: "brush-reset",
+      label: "Restablecer pincel por defecto",
+      icon: "reset",
+      hint: "Vuelve todos los ajustes del pincel a como venían al principio (tamaño, dinámica, raster, 3D no toca).",
+      run: () => {
+        if (confirm("¿Restablecer el pincel a sus valores por defecto?")) {
+          editor.setBrush({ ...DEFAULT_BRUSH });
+          editor.status("Pincel restablecido");
+        }
+      },
     },
   ];
 

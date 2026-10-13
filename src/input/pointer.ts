@@ -135,7 +135,7 @@ export class PointerInput {
     opts?: AddEventListenerOptions,
   ): void {
     target.addEventListener(type, fn, opts);
-    this.disposers.push(() => target.removeEventListener(type, fn, opts));
+    this.disposers.push(() => target.removeEventListener(type, fn, opts as unknown as EventListenerOptions));
   }
 
   private attach(): void {

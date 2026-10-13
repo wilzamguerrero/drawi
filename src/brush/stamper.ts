@@ -149,43 +149,103 @@ export class RasterStroke {
     }
   }
 
+  private prev: RasterDab | null = null;
+
   /**
    * Prolonga el trazo hasta `p`, estampando a lo largo del tramo desde la última
-   * huella con separación proporcional al radio local. La primera llamada estampa
-   * el propio punto inicial.
+   * huella. Usa Catmull-Rom con 3 anclas (prev→a→p→pNext) para que círculos
+   * rápidos no se vean como rectas: el digitalizador entrega puntos muy separados
+   * y unirlos en recta deja el "escalón" de tu captura. Mantiene el acumulador de
+   * spacing y el blending de presión/radio.
    */
   add(p: RasterDab): void {
     const a = this.last;
     if (!a) {
       this.stamp(p.x, p.y, p.r, 0, p.p ?? 1);
       this.last = p;
+      this.prev = null;
       this.acc = 0;
       return;
     }
-    const dx = p.x - a.x;
-    const dy = p.y - a.y;
-    const segLen = Math.hypot(dx, dy);
-    if (segLen <= 0) {
-      this.last = p;
-      return;
-    }
-    const dir = Math.atan2(dy, dx);
-    let traveled = 0;
-    for (;;) {
-      const t0 = traveled / segLen;
-      const r0 = a.r + (p.r - a.r) * t0;
-      const step = Math.max(0.5, this.spacing * r0 * 2);
-      const need = step - this.acc;
-      if (traveled + need > segLen) {
-        this.acc += segLen - traveled;
-        break;
+    const p0 = this.prev ?? a;
+    const p1 = a;
+    const p2 = p;
+    // p3 se aproxima como extrapolación de p1→p2 (sin lookahead)
+    const p3: RasterDab = { x: p2.x + (p2.x - p1.x), y: p2.y + (p1.y - p2.y) * -1 + (p2.y - p1.y), r: p2.r, p: p2.p };
+    // Re-estima p3 correctamente
+    p3.x = p2.x + (p2.x - p1.x);
+    p3.y = p2.y + (p2.y - p1.y);
+    const segLenLinear = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    // Si el salto es muy corto, recta es suficiente (evita oscilación).
+    if (segLenLinear < 1.5) {
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const dir = Math.atan2(dy, dx);
+      let traveled = 0;
+      for (;;) {
+        const t0 = traveled / Math.max(segLenLinear, 1e-6);
+        const r0 = p1.r + (p2.r - p1.r) * t0;
+        const step = Math.max(0.5, this.spacing * r0 * 2);
+        const need = step - this.acc;
+        if (traveled + need > segLenLinear) { this.acc += segLenLinear - traveled; break; }
+        traveled += need; this.acc = 0;
+        const t = traveled / Math.max(segLenLinear, 1e-6);
+        const press = (p1.p ?? 1) + ((p2.p ?? 1) - (p1.p ?? 1)) * t;
+        this.stamp(p1.x + dx * t, p1.y + dy * t, p1.r + (p2.r - p1.r) * t, dir, press);
       }
-      traveled += need;
-      this.acc = 0;
-      const t = traveled / segLen;
-      const press = (a.p ?? 1) + ((p.p ?? 1) - (a.p ?? 1)) * t;
-      this.stamp(a.x + dx * t, a.y + dy * t, a.r + (p.r - a.r) * t, dir, press);
+      this.prev = p1; this.last = p2;
+      return;
     }
-    this.last = p;
+    // Spline: muestrea la curva con resolución ligada al radio para no facetear
+    const approxLen = Math.hypot(p2.x - p0.x, p2.y - p0.y) + Math.hypot(p3.x - p1.x, p3.y - p1.y);
+    const avgR = (p0.r + p1.r + p2.r + p3.r) * 0.25;
+    const idealStep = Math.max(0.5, this.spacing * avgR * 2);
+    const steps = Math.max(6, Math.min(64, Math.ceil(approxLen / Math.max(idealStep, 1.5))));
+    let totalLen = 0;
+    const pts: { x: number; y: number }[] = [];
+    let px = p1.x, py = p1.y;
+    for (let k = 1; k <= steps; k++) {
+      const t = k / steps;
+      const t2 = t * t, t3 = t2 * t;
+      const h = (a: number, b: number, c: number, d: number) =>
+        0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+      const x = h(p0.x, p1.x, p2.x, p3.x);
+      const y = h(p0.y, p1.y, p2.y, p3.y);
+      totalLen += Math.hypot(x - px, y - py);
+      pts.push({ x, y });
+      px = x; py = y;
+    }
+    // Estampa a pasos regulares sobre la longitud de arco de la spline
+    let dist = 0;
+    let idx = 0;
+    let curLen = 0;
+    px = p1.x; py = p1.y;
+    let segStart = 0;
+    for (let k = 0; k < pts.length; k++) {
+      const q = pts[k];
+      const seg = Math.hypot(q.x - px, q.y - py);
+      curLen += seg;
+      while (true) {
+        const rAtT = p1.r + (p2.r - p1.r) * (curLen / Math.max(totalLen, 1e-6));
+        const step = Math.max(0.5, this.spacing * rAtT * 2);
+        const need = step - this.acc;
+        if (dist + need > curLen) break;
+        dist += need; this.acc = 0;
+        const f = Math.max(0, Math.min(1, (dist - segStart) / Math.max(seg, 1e-6)));
+        const sx = px + (q.x - px) * f;
+        const sy = py + (q.y - py) * f;
+        const tAlong = dist / Math.max(totalLen, 1e-6);
+        const pr = (p1.p ?? 1) + ((p2.p ?? 1) - (p1.p ?? 1)) * tAlong;
+        const rr = p1.r + (p2.r - p1.r) * tAlong;
+        const dir = Math.atan2(q.y - py, q.x - px) || Math.atan2(p2.y - p1.y, p2.x - p1.x);
+        this.stamp(sx, sy, rr, dir, pr);
+        idx++;
+        if (idx > 500) break;
+      }
+      segStart = curLen;
+      px = q.x; py = q.y;
+    }
+    this.acc += totalLen - dist;
+    this.prev = p1;
+    this.last = p2;
   }
 }

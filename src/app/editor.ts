@@ -3002,6 +3002,16 @@ export class Editor {
     const tool = this.activeTool;
     const symTool = this.tools.symmetry as SymmetryTool;
     const showRing = tool.showCursorRing && this.cursorKind !== "touch";
+    const stab = (() => {
+      const b = (this.tools.brush as unknown as { builder?: unknown })?.["builder"] as { getStabilizeString?: () => { anchor: import("../core/vec2").Vec2; tip: import("../core/vec2").Vec2; cursor: import("../core/vec2").Vec2 } | null } | null | undefined;
+      const seg = b?.getStabilizeString?.() ?? null;
+      if (!seg) return null;
+      return {
+        anchor: this.camera.worldToScreen(seg.cursor),
+        tip: this.camera.worldToScreen(seg.tip),
+        cursor: this.camera.worldToScreen(seg.cursor),
+      };
+    })();
     return {
       symmetry: this.doc.symmetry,
       hoverHandle: this.toolId === "symmetry" && this.cursor
@@ -3014,6 +3024,7 @@ export class Editor {
       activeHandle: null,
       cursor: showRing || this.previewShape ? this.cursor : null,
       cursorRadius: (this.brush.size / 2) * this.camera.zoom,
+      stabilizeString: stab,
       previewShape: this.previewShape && this.toolId === "shape" ? this.doc.shape : null,
       highlight: this.highlight,
       transformPivot: this.transformPivot ?? this.selection.pivot(this.doc) ?? null,

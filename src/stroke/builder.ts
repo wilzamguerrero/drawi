@@ -1,4 +1,4 @@
-import { clamp01, damp, lerp, shapeCurve, smoothstep } from "../core/math";
+import { clamp01, damp, lerp, shapeCurve } from "../core/math";
 import { Rng } from "../core/rng";
 import { resolveRadius, taperFactor } from "./dynamics";
 import { OneEuroVec2 } from "./filter";
@@ -72,9 +72,29 @@ export class StrokeBuilder {
     return this.pts.length;
   }
 
+  /** Cuerda del estabilizador en mundo + cursor real (para guía Lazy-Nezumi). */
+  getStabilizeString(): { anchor: import("../core/vec2").Vec2; tip: import("../core/vec2").Vec2; cursor: import("../core/vec2").Vec2 } | null {
+    if (!this.started) return null;
+    const anchor = { x: this.lastRawX, y: this.lastRawY };
+    const last = this.pts[this.pts.length - 1];
+    const tip = last ? { x: last.x, y: last.y } : { x: this.penX, y: this.penY };
+    if (Math.hypot(tip.x - anchor.x, tip.y - anchor.y) < 0.9 / this.zoom) return null;
+    // cursor = posición cruda del puntero (el círculo cyan de LZ)
+    return { anchor, tip, cursor: anchor };
+  }
+
   setZoom(z: number): void {
     this.zoom = z > 1e-6 ? z : 1;
   }
+
+  // Lazy Nezumi-style smoothing state
+  private mode: import("./types").SmoothMode = "pulled-string";
+  private amt = 0.35;
+  private catchUp = false;
+  private psX = 0; private psY = 0; // pulled string anchor
+  private maQ: { x: number; y: number }[] = [];
+  private emaX = 0; private emaY = 0;
+  private velX = 0; private velY = 0;
 
   begin(s: WorldSample, seed = (Math.random() * 0xffffffff) >>> 0): void {
     const st = this.settings;
@@ -82,17 +102,19 @@ export class StrokeBuilder {
     this.tail = [];
     this.rng.reseed(seed);
     this.filter.reset();
-    // smoothing 0..1 -> corte bajo (suave) o alto (directo).
-    //
-    // Dos parametros gobiernan el One-Euro:
-    //  - minCutoff: cuanto se filtra EN REPOSO (temblor de la mano). Un piso alto
-    //    mantiene la punta pegada al lapiz cuando casi no te mueves.
-    //  - beta: cuanto SUBE el corte con la velocidad. Un beta alto hace que a
-    //    velocidad de dibujo real el filtro practicamente se apague, asi el trazo
-    //    no se queda atras (la sensacion "pro", sin retardo). Antes era demasiado
-    //    bajo: por eso se sentia lento.
-    const sm = clamp01(st.smoothing);
-    this.filter.configure(lerp(12, 1.2, sm), 0.045 + sm * 0.11);
+    this.mode = (st.smoothMode ?? "pulled-string") as import("./types").SmoothMode;
+    this.amt = clamp01(st.smoothAmount ?? st.smoothing ?? 0.35);
+    this.catchUp = !!st.smoothCatchUp;
+    // One-Euro now only lightly removes sensor jitter (fixed low smoothing).
+    // The artistic smoothing is handled by the mode/amount above (LZ-style).
+    const hasPen = s.pressure >= 0 || s.tilt !== 0;
+    const jSm = hasPen ? 0.18 : 0.12;
+    this.filter.configure(lerp(20, 6, jSm), 0.06 + jSm * 0.08);
+    // Init mode state at s
+    this.psX = s.x; this.psY = s.y;
+    this.maQ = [{ x: s.x, y: s.y }];
+    this.emaX = s.x; this.emaY = s.y;
+    this.velX = 0; this.velY = 0;
     this.penX = s.x;
     this.penY = s.y;
     this.lastX = s.x;
@@ -157,6 +179,12 @@ export class StrokeBuilder {
     const cap = capScreen / this.zoom;
     const reach = Math.min(cap, Math.max(toTarget, cap * 0.4));
     if (reach < 0.5 / this.zoom) return;
+    // Rechaza predicción si el rumbo y el vector a target forman >90°:
+    // en un cruce la predicción mira al otro lado y sale una "punta" opuesta.
+    if (toTarget > 2 / this.zoom) {
+      const dot = this.headX * (tx / toTarget) + this.headY * (ty / toTarget);
+      if (dot < 0.1) return;
+    }
 
     // Punto de destino sobre el rumbo, llevado un poco hacia el cursor real para
     // matar latencia sin copiar su ruido (90% rumbo / 10% cursor).
@@ -192,6 +220,21 @@ export class StrokeBuilder {
 
   /** Cierra el trazo, aplica el afilado final y devuelve los puntos definitivos. */
   finalize(): StrokePoint[] {
+    // Catch Up: interpola los puntos medios hacia el cursor real solo en el tramo final
+    if (this.catchUp && (this.mode === "moving-average" || this.mode === "ema") && this.pts.length >= 2) {
+      const raw = { x: this.lastRawX, y: this.lastRawY };
+      const last = this.pts[this.pts.length - 1];
+      const need = Math.hypot(raw.x - last.x, raw.y - last.y) * this.zoom;
+      if (need > 2) {
+        const extra = Math.min(6, Math.ceil(need / 4));
+        for (let i = 1; i <= extra; i++) {
+          const t = i / extra;
+          const x = lerp(last.x, raw.x, t * 0.85);
+          const y = lerp(last.y, raw.y, t * 0.85);
+          this.pts.push({ x, y, r: last.r * lerp(1, 0.7, t), p: last.p, v: last.v, a: last.a, t: last.t });
+        }
+      }
+    }
     this.started = false;
     this.tail = [];
     const out = this.pts;
@@ -205,30 +248,63 @@ export class StrokeBuilder {
     const dtMs = Math.max(0.5, s.t - this.lastT);
     const dt = dtMs / 1000;
 
-    // 1. Filtro One-Euro de la posicion cruda.
+    // 1. Filtro One-Euro ligero de la posicion cruda (solo jitter del sensor).
     const f = this.filter.filter(s.x, s.y, dt);
 
     // 2. Velocidad SUAVIZADA, medida sobre el salto crudo del digitalizador.
-    //    Se calcula ANTES de aplicar el arrastre y se usa tanto para la dinamica
-    //    como para modular el arrastre. Usar la velocidad cruda por-muestra hacia
-    //    que el arrastre parpadeara entre muestras -> el trazo salia ondulado en
-    //    las curvas rapidas. Suavizada, el arrastre varia de forma continua.
+    const hasPenV = s.pressure >= 0 || s.tilt !== 0;
     const rawStep = Math.hypot(s.x - this.lastRawX, s.y - this.lastRawY) * this.zoom;
     const instant = rawStep / dtMs;
-    this.speed = damp(this.speed, instant, 22, dt);
+    this.speed = damp(this.speed, instant, hasPenV ? 26 : 32, dt);
     this.lastRawX = s.x;
     this.lastRawY = s.y;
 
-    // 3. Arrastre tipo lazo ("estabilizador"), modulado por la velocidad suave y
-    //    con RAMPA DE ARRANQUE. Al empezar un trazo rapido, un arrastre pleno
-    //    retiene la punta y luego la suelta de golpe -> el "apendice"/gancho del
-    //    inicio. La rampa (sobre los primeros ~14 px de recorrido) deja la punta
-    //    pegada al inicio y mete el arrastre poco a poco.
-    const release = clamp01(this.speed / 1.1); // 0 quieto -> 1 rapido
-    const startup = smoothstep(clamp01((this.arcLen * this.zoom) / 14));
-    const drag = clamp01(st.streamline) * 0.8 * (1 - 0.6 * release) * startup;
-    this.penX = lerp(f.x, this.penX, drag);
-    this.penY = lerp(f.y, this.penY, drag);
+    // 3. Lazy Nezumi-style smoothing: 4 modos con cantidad y guía.
+    // One-Euro ya quitó el jitter; aquí se aplica el estilo elegido.
+    const amt = this.amt;
+    switch (this.mode) {
+      case "pulled-string": {
+        // Cuerda: distancia mínima que el cursor debe recorrer antes de tirar del trazo.
+        // amt→dist en px mundo: 0=directo, 1≈ 60/zoom (esquinas marcadas).
+        const slack = amt * 60 / this.zoom;
+        const dx = f.x - this.psX, dy = f.y - this.psY;
+        const d = Math.hypot(dx, dy);
+        if (d > slack) {
+          const pull = d - slack;
+          this.psX += (dx / d) * pull;
+          this.psY += (dy / d) * pull;
+        }
+        // Pulled-string usa lerp con release para no "enganchar" al parar
+        this.penX = this.psX; this.penY = this.psY;
+        break;
+      }
+      case "moving-average": {
+        const win = Math.max(1, Math.round(1 + amt * 18));
+        this.maQ.push({ x: f.x, y: f.y });
+        while (this.maQ.length > win) this.maQ.shift();
+        let ax = 0, ay = 0; for (const q of this.maQ) { ax += q.x; ay += q.y; }
+        this.penX = ax / this.maQ.length; this.penY = ay / this.maQ.length;
+        break;
+      }
+      case "ema": {
+        const alpha = 1 / (1 + amt * 35);
+        this.emaX = this.emaX + (f.x - this.emaX) * alpha;
+        this.emaY = this.emaY + (f.y - this.emaY) * alpha;
+        this.penX = this.emaX; this.penY = this.emaY;
+        break;
+      }
+      case "inertia": {
+        // Masa: velocidad elástica que persigue al cursor (física simple).
+        const stiffness = lerp(28, 3.5, amt);
+        const damping = lerp(14, 6, amt);
+        const ax = (f.x - this.penX) * stiffness - this.velX * damping;
+        const ay = (f.y - this.penY) * stiffness - this.velY * damping;
+        this.velX += ax * dt; this.velY += ay * dt;
+        this.penX += this.velX * dt;
+        this.penY += this.velY * dt;
+        break;
+      }
+    }
     const x = this.penX;
     const y = this.penY;
 
@@ -237,7 +313,7 @@ export class StrokeBuilder {
     const dWorld = Math.hypot(dx, dy);
     this.lastT = s.t;
 
-    // Muestreo minimo, con dos umbrales y gana el mas exigente.
+    // Muestreo mínimo (en px pantalla + relativo al radio).
     //
     // El primero es el de siempre, en pixeles de pantalla: por debajo de medio
     // pixel la muestra no aporta nada. El segundo es relativo al radio: dos puntos
@@ -245,10 +321,7 @@ export class StrokeBuilder {
     // trazo, y como en 3D las juntas se prolongan hasta un radio, todos los
     // segmentos acabarian conteniendose unos a otros.
     //
-    // Tiene que ser IDENTICO en los dos constructores: la dinamica del pincel es
-    // la misma en el lienzo y en el espacio, y hay una prueba que lo comprueba
-    // punto por punto.
-    const minStep = Math.max(0.55 / this.zoom, 0.5 * this.lastR);
+    const minStep = Math.max(0.44 / this.zoom, 0.28 * this.lastR);
     if (!force && dWorld < minStep) return false;
 
     this.lastX = x;

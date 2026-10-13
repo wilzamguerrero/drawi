@@ -28,8 +28,10 @@ export function resampleStroke(points: readonly StrokePoint[]): StrokePoint[] {
     const p3 = points[i + 2 < n ? i + 2 : n - 1];
 
     const segLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-    const spacing = Math.max(0.5, Math.min(p1.r, p2.r) * 0.5);
-    const steps = Math.max(1, Math.min(32, Math.ceil(segLen / spacing)));
+    const r = Math.min(p1.r, p2.r);
+    // Mouse: segmentos 15-40px con r 2-4px → sin esta curva se ve la arista de tu marca roja.
+    const spacing = Math.max(0.55, r * 0.28);
+    const steps = Math.max(1, Math.min(64, Math.ceil(segLen / spacing)));
     if (steps <= 1) {
       out.push(p2);
       continue;
@@ -108,7 +110,7 @@ const circlePolygon = (p: StrokePoint, quality: number): Polygon => {
 export function strokeOutline(points: readonly StrokePoint[], options?: Partial<OutlineOptions>): Polygon {
   const opts = { ...DEFAULT_OPTS, ...options };
   // Splat es intencionadamente facetado; el resto se resamplea para que las
-  // curvas rapidas no se vean como segmentos rectos.
+  // curvas rápidas (mouse a pantalla completa, pocos eventos) no se vean como rectas.
   const base = opts.splat ? points : resampleStroke(points);
   const pts = dedupe(base);
   if (pts.length === 0) return [];
@@ -125,7 +127,7 @@ export function strokeOutline(points: readonly StrokePoint[], options?: Partial<
 
   const left: Polygon = [];
   const right: Polygon = [];
-  const q = opts.splat ? 1 : opts.arcQuality;
+  const q = opts.splat ? 1 : Math.max(3, opts.arcQuality);
 
   for (let i = 0; i < n; i++) {
     const p = pts[i];
@@ -167,16 +169,43 @@ export function strokeOutline(points: readonly StrokePoint[], options?: Partial<
   return poly;
 }
 
-/** Quita puntos coincidentes que romperian el calculo de normales. */
+/** Quita puntos coincidentes y micro-bucles (picos de 1-2px como los de la captura). */
 function dedupe(points: readonly StrokePoint[]): StrokePoint[] {
-  const out: StrokePoint[] = [];
+  // 1. Colinealidad / coincidencia
+  const tmp: StrokePoint[] = [];
   for (const p of points) {
-    const last = out[out.length - 1];
+    const last = tmp[tmp.length - 1];
     if (last && Math.hypot(p.x - last.x, p.y - last.y) < 1e-4) {
-      if (p.r > last.r) out[out.length - 1] = p;
+      if (p.r > last.r) tmp[tmp.length - 1] = p;
       continue;
     }
-    out.push(p);
+    tmp.push(p);
+  }
+  if (tmp.length < 4) return tmp;
+  // 2. Suprime bucles de < ~2 diámetros: un cruce con una lazada mínima queda
+  // como pico de 2 segmentos que entran y salen casi por el mismo sitio.
+  // Si la cuerda del bucle es menor que 1.8× el radio local, lo aplana.
+  const out: StrokePoint[] = [tmp[0], tmp[1]];
+  for (let i = 2; i < tmp.length; i++) {
+    const a = out[out.length - 2];
+    const b = out[out.length - 1];
+    const c = tmp[i];
+    const chord = Math.hypot(c.x - a.x, c.y - a.y);
+    const r = Math.min(a.r, b.r, c.r);
+    if (chord < r * 1.8) {
+      // Reemplaza b por el promedio de a..c (suaviza el gancho)
+      out[out.length - 1] = {
+        x: (a.x + b.x + c.x) / 3,
+        y: (a.y + b.y + c.y) / 3,
+        r: (a.r + b.r + c.r) / 3,
+        p: (a.p + b.p + c.p) / 3,
+        v: (a.v + b.v + c.v) / 3,
+        a: (a.a + b.a + c.a) / 3,
+        t: b.t,
+      };
+      continue;
+    }
+    out.push(c);
   }
   return out;
 }
