@@ -117,7 +117,7 @@ export class OverlayRenderer {
       ctx.moveTo(tip.x, tip.y);
       ctx.lineTo(anchor.x, anchor.y);
     } else {
-      // EXACTO a tu simulación: mid + holgura*gravityFactor
+      // Tu simulación EXACTA: 1 U simple con gravityFactor (como quedaba bien)
       const midX = (tip.x + anchor.x) / 2;
       const midY = (tip.y + anchor.y) / 2;
       const controlX = midX;
