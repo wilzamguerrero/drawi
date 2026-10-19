@@ -58,8 +58,12 @@ type StripAxis = "h" | "v";
 const STRIP_PAD = 7;
 /** Distancia (px) a la que los punticos se apartan de la banda. */
 const HANDLE_OFF = 20;
-/** Separación (px) del núcleo respecto al borde de una tira, para no taparla. */
-const HUB_CLEAR = 52;
+/** Lado del núcleo, en px. Debe coincidir con el `width`/`height` de `.rm-hub` en
+    styles-radial-chips.css: el ancla de las tiras lo usa para colocarse FUERA de
+    ellas, así que si el CSS cambia de tamaño hay que cambiarlo aquí también. */
+const HUB_SIZE = 76;
+/** Aire (px) entre el núcleo y el borde del carril más cercano. */
+const HUB_GAP = 12;
 /** Cerrar un trozo: mantenerlo pulsado quieto este tiempo (mismo gesto y umbrales
     que el long-press que lo arrancó del menú, ver radial-menu.ts). */
 const CLOSE_HOLD_MS = 3000;
@@ -702,10 +706,11 @@ this.renormalizeLevels(gid);
           this.hubs.set(gid, hub);
           this.el.appendChild(hub.el);
         }
+        const layout = this.groupLayout(arr);
         const anchor = this.hubAnchor(arr);
         hub.position(anchor.x, anchor.y);
         hub.setLocked(locked);
-        hub.setLayout(this.groupLayout(arr));
+        hub.setLayout(layout);
       } else {
         this.hubs.get(gid)?.destroy();
         this.hubs.delete(gid);
@@ -728,23 +733,50 @@ this.renormalizeLevels(gid);
   }
 
   /**
-   * Centro visual del núcleo. Con anillos es el centro compartido (el hueco interior).
-   * Con tiras no hay hueco: el núcleo se aparta perpendicularmente al carril —a la
-   * izquierda si son horizontales, por encima si son verticales— para no tapar las
-   * baldosas. Si el grupo mezcla ejes, se elige el lado izquierdo.
+   * Centro del núcleo. Con anillos es el centro compartido (el hueco interior del
+   * anillo), donde ya cabe sin tapar nada. Con tiras no hay hueco que ocupar, así que
+   * el núcleo se aparta PERPENDICULARMENTE al carril para no caer encima de las
+   * baldosas: al lado del NIVEL 0 (el primer carril, el que sale del centro del
+   * grupo), a la izquierda si son horizontales o por encima si son verticales.
+   *
+   * Para colocarse fuera hace falta el borde REAL de las baldosas, no su centro: una
+   * baldosa ocupa `halfLen` a cada lado de su centro sobre el eje del largo, y
+   * `halfBand` sobre el eje de la banda. De ahí sale la extensión del grupo en cada
+   * dirección, y de ahí se retrocede el lado del núcleo más su aire.
    */
   private hubAnchor(members: RadialChip[]): { x: number; y: number } {
     const strips = members.filter((c) => c.mode === "strip");
     if (strips.length === 0) return { x: members[0].cx, y: members[0].cy };
-    const points = members.map((c) => c.visualCenter());
-    const minX = Math.min(...points.map((p) => p.x));
-    const maxX = Math.max(...points.map((p) => p.x));
-    const minY = Math.min(...points.map((p) => p.y));
-    const maxY = Math.max(...points.map((p) => p.y));
-    if (strips.every((c) => c.axis === "v")) {
-      return { x: (minX + maxX) / 2, y: minY - HUB_CLEAR };
+
+    // El eje manda: si TODAS las tiras son verticales, el núcleo va arriba; si no
+    // (horizontales o mezcla), a la izquierda. Igual que antes, pero midiendo bordes.
+    const vertical = strips.every((c) => c.axis === "v");
+    const boxes = members.map((c) => this.chipBox(c));
+    const minX = Math.min(...boxes.map((b) => b.x0));
+    const maxX = Math.max(...boxes.map((b) => b.x1));
+    const minY = Math.min(...boxes.map((b) => b.y0));
+    const maxY = Math.max(...boxes.map((b) => b.y1));
+
+    if (vertical) {
+      return { x: (minX + maxX) / 2, y: minY - HUB_GAP - HUB_SIZE / 2 };
     }
-    return { x: minX - HUB_CLEAR, y: (minY + maxY) / 2 };
+    return { x: minX - HUB_GAP - HUB_SIZE / 2, y: (minY + maxY) / 2 };
+  }
+
+  /** Caja (borde superior-izquierdo y superior-derecho) que ocupa un chip en
+      coordenadas de viewport: la tajada del anillo en aro, la baldosa en tira. */
+  private chipBox(c: RadialChip): { x0: number; y0: number; x1: number; y1: number } {
+    const p = c.visualCenter();
+    if (c.mode === "strip") {
+      // En tira el largo va sobre el eje y la banda en perpendicular.
+      const hl = c.halfLen;
+      const hb = c.halfBand;
+      return c.axis === "v"
+        ? { x0: p.x - hb, y0: p.y - hl, x1: p.x + hb, y1: p.y + hl }
+        : { x0: p.x - hl, y0: p.y - hb, x1: p.x + hl, y1: p.y + hb };
+    }
+    // En aro la caja es el cuadrado del diámetro exterior, centrado en el grupo.
+    return { x0: p.x - c.r1, y0: p.y - c.r1, x1: p.x + c.r1, y1: p.y + c.r1 };
   }
 
   /** Reposiciona el hub de un grupo (lo llama el propio grupo al moverse por el hub). */
@@ -1706,6 +1738,9 @@ class RingHub {
   private host: HubHost;
   /** Timer del long-press sobre MOVER que alterna el modo limpio del grupo. */
   private lockTimer = 0;
+  /** Posición actual del núcleo en el viewport (la fija `position`). */
+  private px = 0;
+  private py = 0;
   /** Momento del último toque sobre MOVER, para reconocer el doble toque que cicla
       la forma del grupo (ver DOUBLE_TAP_MS). */
   private lastMoveTapAt = 0;
@@ -1723,8 +1758,13 @@ class RingHub {
     this.rotateHalf.addEventListener("pointerdown", (e) => this.beginRotate(e));
   }
 
-  /** Coloca el hub en el centro compartido del grupo (coords de viewport). */
+  /** Coloca el hub en el punto dado (coords de viewport). Guarda además el punto:
+      el arrastre lo necesita para desplazarse desde DONDE ESTÁ, no desde el centro
+      del grupo (con tiras el núcleo vive apartado al lado del carril, y recentrarlo
+      lo metía dentro de las baldosas). */
   position(cx: number, cy: number): void {
+    this.px = cx;
+    this.py = cy;
     this.el.style.left = `${cx}px`;
     this.el.style.top = `${cy}px`;
   }
@@ -1735,7 +1775,12 @@ class RingHub {
   }
 
   /** El botón MOVER lleva dos gestos: el arrastre y el doble toque que cicla la forma.
-      El título los anuncia, así que se reescribe cuando cambia el estado del grupo. */
+      El título los anuncia, así que se reescribe cuando cambia el estado del grupo.
+      La FORMA del núcleo también depende del estado: con anillos es el círculo de
+      materia de siempre (ondulado), y con tiras pasa a cuadrado de esquinas
+      redondeadas con su propio temblor de borde (`.is-block`, ver la CSS). Con el
+      grupo mezclado (unos aros y otras tiras) manda el lado de las tiras: es el estado
+      al que se ordenan los carriles, así que el núcleo ya vive apartado. */
   setLayout(layout: { mode: ChipMode; axis: StripAxis; mixed: boolean }): void {
     const next =
       layout.mode === "ring"
@@ -1744,6 +1789,7 @@ class RingHub {
           ? "tira vertical"
           : "aro";
     this.moveHalf.title = `Mover grupo · doble toque: ${next}`;
+    this.el.classList.toggle("is-block", layout.mode !== "ring");
   }
 
   destroy(): void {
@@ -1778,6 +1824,11 @@ class RingHub {
     const sx = e.clientX;
     const sy = e.clientY;
     const start = members.map((m) => ({ m, cx: m.cx, cy: m.cy }));
+    // Posición REAL del núcleo al empezar: se arrastra desde donde está, no desde el
+    // centro del grupo. Con anillos ambos coinciden, pero con tiras el núcleo vive
+    // apartado al lado del carril, y recolocarlo en el centro lo metía dentro de las
+    // baldosas en cuanto se movía el grupo.
+    const hubStart = { x: this.px, y: this.py };
     let moved = false;
 
     // Armado del long-press: mientras no haya arrastre, cuenta hacia el modo limpio.
@@ -1805,7 +1856,7 @@ class RingHub {
         s.m.adoptCenter(s.cx + dx, s.cy + dy);
         s.m.render();
       }
-      this.position(start[0].cx + dx, start[0].cy + dy);
+      this.position(hubStart.x + dx, hubStart.y + dy);
     };
     const up = (): void => {
       disarm();

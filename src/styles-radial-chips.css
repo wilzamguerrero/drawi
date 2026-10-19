@@ -240,12 +240,14 @@
 }
 
 /* ============================================================
-   Núcleo (hub) de un grupo multinivel: vive en el centro compartido (la zona
-   interior vacía) y reúne mover + rotar de TODO el conjunto de aros en UN solo
-   círculo de materia viva —el mismo ondulado que el hub de la rueda de color—. No
-   está partido: dentro apila dos botones sin corte ni división, MOVER arriba y
-   ROTAR abajo. El cambio de forma del grupo va en un doble toque sobre MOVER, así
-   que no hay tercer botón. Ver RingHub en src/ui/hotbox/radial-chips.ts.
+   Núcleo (hub) de un grupo multinivel: con anillos vive en el centro compartido (la
+   zona interior vacía) y reúne mover + rotar de TODO el conjunto de aros en UN solo
+   círculo de materia viva —el mismo ondulado que el hub de la rueda de color—. Con
+   tiras no hay hueco que ocupar, así que se aparta al lado del primer carril y toma
+   forma de CUADRADO de esquinas redondeadas, con su propio temblor de borde. En ambos
+   casos dentro apila dos botones sin corte ni división, MOVER arriba y ROTAR abajo. El
+   cambio de forma del grupo va en un doble toque sobre MOVER, así que no hay tercer
+   botón. Ver RingHub en src/ui/hotbox/radial-chips.ts.
    ============================================================ */
 
 /* El círculo, centrado en cx,cy (lo coloca JS). Negro pleno como los trozos, con la
@@ -277,6 +279,27 @@
   50% { border-radius: 57% 43% 50% 50% / 45% 52% 48% 55%; }
   75% { border-radius: 48% 52% 56% 44% / 53% 47% 55% 45%; }
   100% { border-radius: 52% 48% 43% 57% / 48% 55% 45% 52%; }
+}
+
+/* En modo tira el núcleo NO es materia que ondula: es un CUADRADO de esquinas
+   redondeadas, un bloque. Pero tampoco se queda quieto — sería el único elemento
+   estático del sistema. Conserva el mismo vaivén de borde que el círculo (mismo tempo
+   de 7 s, para que los dos se sientan parientes) con el temblor puesto en las ESQUINAS:
+   cada una respira entre 14 y 21 px con desfase entre las cuatro, así que el contorno
+   se mueve sin dejar de leerse como cuadrado.
+   Igual que el círculo, SOLO se anima el contorno: la caja (width/height) no cambia.
+   Animar el tamaño recolocaría los dos botones de dentro, que son hijos flex. */
+.rm-hub.is-block {
+  animation: rm-hub-square 7s ease-in-out infinite;
+}
+
+@keyframes rm-hub-square {
+  0% { border-radius: 16px 16px 16px 16px; }
+  20% { border-radius: 21px 14px 19px 15px; }
+  40% { border-radius: 14px 20px 15px 19px; }
+  60% { border-radius: 20px 15px 21px 14px; }
+  80% { border-radius: 15px 19px 14px 20px; }
+  100% { border-radius: 16px 16px 16px 16px; }
 }
 
 /* Cada botón ocupa media altura del círculo, transparente (el fondo lo pone el
@@ -340,12 +363,18 @@
   100% { background: rgba(53, 97, 140, 0.95); color: #eaf3fb; }
 }
 
-/* Sin movimiento: círculo quieto y limpio, sin ondulado ni deriva. */
+/* Sin movimiento: contorno quieto y limpio. El círculo se queda redondo y el bloque
+   en su cuadrado base, sin ondulado ni temblor; la posición no cambia. */
 @media (prefers-reduced-motion: reduce) {
   .rm-hub {
     animation: none;
     border-radius: 50%;
     transform: translate(-50%, -50%);
+  }
+
+  .rm-hub.is-block {
+    animation: none;
+    border-radius: 16px;
   }
 
   /* El armado del long-press sigue funcionando; solo se quita su animación. */

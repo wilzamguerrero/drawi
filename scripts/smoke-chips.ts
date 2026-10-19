@@ -16,11 +16,12 @@
  * decide donde cae cada baldosa, que es justo lo que se rompia.
  */
 
+import { readFileSync } from "node:fs";
 import { App } from "../src/ui/app";
 import { buildRoot } from "../src/ui/hotbox/menu";
 
 declare const globalThis: any;
-declare const process: { exitCode?: number };
+declare const process: { exitCode?: number; cwd(): string };
 
 const out: string[] = [];
 const ok = (label: string, cond: boolean, extra = ""): void => {
@@ -521,6 +522,226 @@ ok(
       hub.el.childNodes.filter((n: any) => n.classList?.contains?.("rm-hub-half")).length === 2,
       `${hub.el.childNodes.filter((n: any) => n.classList?.contains?.("rm-hub-half")).length} mitades`,
     );
+  }
+}
+
+// -------------------------------------------------- forma del núcleo (hub)
+// La forma del núcleo sigue al modo del grupo: círculo de materia con anillos (que
+// ondula) y cuadrado de esquinas redondeadas con tiras (que también tiembla). En los
+// dos casos SOLO se mueve el contorno: si la animación tocara width/height, los dos
+// botones de dentro (hijos flex) se recolocarían y parecería que se mueven solos.
+{
+  // El paquete de la suite vive en node_modules/.drawi-smoke, asi que se resuelve
+  // desde la raiz del proyecto (el corredor ejecuta con cwd = raiz) y no desde
+  // import.meta.url, que apuntaria al bundle.
+  const css = readFileSync(`${process.cwd()}/src/styles-radial-chips.css`, "utf8");
+
+  // Saca el cuerpo de un @keyframes por nombre, contando llaves para no cortar en la
+  // primera que aparezca dentro.
+  const keyframesBody = (name: string): string | null => {
+    const at = css.indexOf(`@keyframes ${name}`);
+    if (at < 0) return null;
+    const open = css.indexOf("{", at);
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") {
+        depth--;
+        if (depth === 0) return css.slice(open + 1, i);
+      }
+    }
+    return null;
+  };
+
+  const circle = keyframesBody("rm-hub-blob");
+  const square = keyframesBody("rm-hub-square");
+
+  ok("el círculo del núcleo tiene su ondulado", !!circle, circle ? "rm-hub-blob presente" : "(ausente)");
+  ok("el cuadrado del núcleo tiene su temblor de borde", !!square, square ? "rm-hub-square presente" : "(ausente)");
+
+  // El círculo es el de siempre: solo radios orbitando el 50%, sin tocar la caja.
+  ok(
+    "el ondulado del círculo solo mueve el radio",
+    !!circle && !/\b(width|height)\s*:/.test(circle) && /border-radius/.test(circle),
+    circle ? "solo border-radius" : "(sin cuerpo)",
+  );
+
+  // La clave: el cuadrado mueve las esquinas y NO la caja. Animar el tamaño
+  // recolocaría los botones de dentro (que es el fallo que se vio).
+  ok(
+    "el temblor del cuadrado NO toca la caja (los botones no se mueven)",
+    !!square && !/\b(width|height)\s*:/.test(square),
+    square ? (/\b(width|height)\s*:/.test(square) ? "anima width/height" : "solo el contorno") : "(sin cuerpo)",
+  );
+  ok(
+    "y mueve las cuatro esquinas con desfase (no un radio uniforme)",
+    !!square &&
+      /border-radius:\s*\d+px\s+\d+px\s+\d+px\s+\d+px\s*;/.test(square) &&
+      new Set((square.match(/border-radius:\s*([^;]+);/g) ?? []).map((d) => d.trim())).size > 2,
+    square ? `${new Set((square.match(/border-radius:\s*([^;]+);/g) ?? []).map((d) => d.trim())).size} paradas distintas` : "(sin cuerpo)",
+  );
+
+  // El cuadrado también tiene que quedarse quieto con "reducir movimiento", y el
+  // círculo conservar su forma redonda (que ya traía de antes).
+  const reduced = css.slice(css.indexOf("prefers-reduced-motion"));
+  ok(
+    "con reducir-movimiento el cuadrado se queda quieto y cuadrado",
+    /\.rm-hub\.is-block\s*\{[^}]*animation:\s*none/.test(reduced) && /\.rm-hub\.is-block\s*\{[^}]*border-radius:\s*16px/.test(reduced),
+    "sin temblor, cuadrado base",
+  );
+  ok(
+    "y el círculo conserva su forma redonda",
+    /\.rm-hub\s*\{[^}]*border-radius:\s*50%/.test(reduced),
+    "redondo",
+  );
+}
+
+// -------------------------------------------------- anclaje del núcleo (hub)
+// El núcleo debe quedar FUERA de las baldosas: con anillos en el hueco interior, y
+// con tiras al lado del PRIMER carril (nivel 0). Antes se colocaba midiendo los
+// CENTROS de las baldosas y restaba un margen fijo, así que caía dentro.
+{
+  const hubId = "grp-hub";
+  const cx = 1500;
+  const cy = 500;
+  // Dos niveles: hace falta más de uno para que exista núcleo.
+  spawnRing(2, -Math.PI / 2, { groupId: hubId, cx, cy, level: 0 });
+  spawnRing(2, -Math.PI / 2, { groupId: hubId, cx, cy, level: 1 });
+  chips.refreshHandles();
+
+  const hub = chips.hubs.get(hubId);
+  ok("el grupo de prueba tiene núcleo", !!hub, hub ? "presente" : "(ausente)");
+
+  if (hub) {
+    const hubBox = () => {
+      const x = Number.parseFloat(hub.el.style.left);
+      const y = Number.parseFloat(hub.el.style.top);
+      const s = 76; // HUB_SIZE
+      return { x0: x - s / 2, y0: y - s / 2, x1: x + s / 2, y1: y + s / 2 };
+    };
+    const members = chips.groupMembers(hubId);
+    const overlaps = (): boolean => {
+      const h = hubBox();
+      for (const m of members) {
+        const p = m.visualCenter();
+        if (m.mode === "strip") {
+          const bx = m.axis === "v"
+            ? { x0: p.x - m.halfBand, y0: p.y - m.halfLen, x1: p.x + m.halfBand, y1: p.y + m.halfLen }
+            : { x0: p.x - m.halfLen, y0: p.y - m.halfBand, x1: p.x + m.halfLen, y1: p.y + m.halfBand };
+          if (h.x0 < bx.x1 && h.x1 > bx.x0 && h.y0 < bx.y1 && h.y1 > bx.y0) return true;
+        }
+      }
+      return false;
+    };
+
+    // 1) En ARO vive en el centro del grupo.
+    const h0 = hubBox();
+    ok(
+      "en aro el núcleo vive en el centro del grupo",
+      Math.abs((h0.x0 + h0.x1) / 2 - cx) < 1 && Math.abs((h0.y0 + h0.y1) / 2 - cy) < 1,
+      `(${((h0.x0 + h0.x1) / 2).toFixed(0)}, ${((h0.y0 + h0.y1) / 2).toFixed(0)})`,
+    );
+    // La forma sigue al modo: con anillos el círculo de materia de siempre (ondula),
+    // con tiras el cuadrado de esquinas redondeadas (que también tiembla). El círculo
+    // NO debe llevar `.is-block`.
+    ok("en aro el núcleo conserva su forma circular", !hub.el.classList.contains("is-block"), "sin .is-block");
+
+    // 2) En tira horizontal queda a la IZQUIERDA del primer nivel, sin taparlo.
+    chips.cycleGroupMode(hubId);
+    ok(
+      "el grupo pasó a tiras horizontales",
+      members.every((m: any) => m.mode === "strip" && m.axis === "h"),
+      `${members[0].mode}/${members[0].axis}`,
+    );
+    ok("en tira el núcleo pasa a cuadrado redondeado", hub.el.classList.contains("is-block"), "con .is-block");
+    ok("en tira horizontal el núcleo NO se solapa con las baldosas", !overlaps(), "fuera de la fila");
+    const hH = hubBox();
+    const leftmost = Math.min(
+      ...members.filter((m: any) => m.mode === "strip").map((m: any) => m.visualCenter().x - m.halfLen),
+    );
+    ok(
+      "y está a la izquierda del borde del primer nivel",
+      hH.x1 <= leftmost + 0.5,
+      `borde del núcleo ${hH.x1.toFixed(0)} ≤ fila ${leftmost.toFixed(0)}`,
+    );
+
+    // 3) En tira vertical queda ARRIBA del primer nivel, sin taparlo.
+    chips.cycleGroupMode(hubId);
+    ok(
+      "el grupo pasó a tiras verticales",
+      members.every((m: any) => m.mode === "strip" && m.axis === "v"),
+      `${members[0].mode}/${members[0].axis}`,
+    );
+    ok("en tira vertical el núcleo NO se solapa con las baldosas", !overlaps(), "fuera de la columna");
+    const hV = hubBox();
+    const topmost = Math.min(
+      ...members.filter((m: any) => m.mode === "strip").map((m: any) => m.visualCenter().y - m.halfLen),
+    );
+    ok(
+      "y está por encima del borde del primer nivel",
+      hV.y1 <= topmost + 0.5,
+      `borde del núcleo ${hV.y1.toFixed(0)} ≤ columna ${topmost.toFixed(0)}`,
+    );
+
+    // 4) Al volver a aro, regresa al centro (no se queda pegado al lado) Y recupera el
+    //    círculo: la forma es estado del grupo, no algo que se quede pegado.
+    chips.cycleGroupMode(hubId);
+    const hA = hubBox();
+    ok(
+      "al volver a aro el núcleo regresa al centro del grupo",
+      Math.abs((hA.x0 + hA.x1) / 2 - cx) < 1 && Math.abs((hA.y0 + hA.y1) / 2 - cy) < 1,
+      `(${((hA.x0 + hA.x1) / 2).toFixed(0)}, ${((hA.y0 + hA.y1) / 2).toFixed(0)})`,
+    );
+    ok("y recupera la forma circular al volver a aro", !hub.el.classList.contains("is-block"), "sin .is-block");
+
+    // 5) Arrastrar el grupo: el núcleo acompaña conservando su sitio (antes saltaba
+    //    al centro del grupo, metiéndose dentro de las baldosas).
+    chips.cycleGroupMode(hubId); // → tiras horizontales
+    const beforeHub = hubBox();
+    const beforeCenter = members[0].cx;
+    const moveTo = (x: number, y: number): void => {
+      const ev = new (globalThis.PointerEvent)("pointermove", { clientX: x, clientY: y });
+      for (const [n, ty, fn] of globalThis.__listeners) if (ty === "pointermove" && n === globalThis.window) fn(ev);
+    };
+    const hubMove = (() => {
+      const stack = [hub.el];
+      while (stack.length) {
+        const n = stack.pop();
+        if (n?.classList?.contains?.("rm-hub-move")) return n;
+        for (const c of n?.childNodes ?? []) if (c?.classList) stack.push(c);
+      }
+      return null;
+    })();
+    if (hubMove) {
+      const downEv = new (globalThis.PointerEvent)("pointerdown", { clientX: 0, clientY: 0, timeStamp: 90000 });
+      for (const [n, ty, fn] of globalThis.__listeners) if (ty === "pointerdown" && n === hubMove) fn(downEv);
+      moveTo(70, 40);
+
+      // Se mide DURANTE el arrastre: es cuando el núcleo se salía de su sitio. Si se
+      // mide tras soltar, un re-anclaje posterior lo devuelve a su sitio y el fallo
+      // queda invisible (que es justo lo que pasaba).
+      const during = hubBox();
+      const duringCx = (during.x0 + during.x1) / 2;
+      const beforeCx = (beforeHub.x0 + beforeHub.x1) / 2;
+      ok(
+        "mientras se arrastra, el núcleo acompaña al grupo (no salta al centro)",
+        Math.abs(duringCx - (beforeCx + 70)) < 1.5,
+        `Δx ${(duringCx - beforeCx).toFixed(0)} (esperado 70)`,
+      );
+      ok("mientras se arrastra, el núcleo no se mete en las baldosas", !overlaps(), "fuera de la fila");
+
+      const upEv = new (globalThis.PointerEvent)("pointerup", { clientX: 70, clientY: 40 });
+      for (const [n, ty, fn] of globalThis.__listeners) if (ty === "pointerup" && n === globalThis.window) fn(upEv);
+
+      const afterHub = hubBox();
+      ok(
+        "tras soltar, el núcleo sigue acompañando al grupo",
+        Math.abs((afterHub.x0 + afterHub.x1) / 2 - (beforeCx + 70)) < 1.5,
+        `Δx ${(((afterHub.x0 + afterHub.x1) / 2) - beforeCx).toFixed(0)} (esperado 70)`,
+      );
+      ok("y el grupo también se movió", Math.abs(members[0].cx - (beforeCenter + 70)) < 1.5, `Δx ${(members[0].cx - beforeCenter).toFixed(0)}`);
+      ok("tras arrastrar, el núcleo sigue sin solaparse", !overlaps(), "conserva su sitio al lado");
+    }
   }
 }
 
