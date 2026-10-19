@@ -242,8 +242,20 @@ export class RadialChips implements ChipHost, HubHost {
 
     // Desenganche: si el aro era parte de un grupo mayor, se separa como grupo propio y
     // el grupo viejo se renormaliza (sus niveles restantes se recompactan sin huecos).
+    // Pero NO se desengancha si el destino está en el mismo grupo: soltarlo y volverlo
+    // a anidar corrompe los ángulos (en aro) o los niveles (en tira), causando que los
+    // trozos se superpongan visualmente.
     const oldGroup = chip.groupId;
-    if (dragged.length < this.groupMembers(oldGroup).length) {
+    const sameGroupTarget = chip.mode === "strip"
+      ? [...this.chips.values()].some(
+          (o) => !dragged.some((d) => d.id === o.id) && o.mode === "strip" && o.axis === chip.axis && o.groupId === oldGroup &&
+            Math.hypot(chip.cx - o.cx, chip.cy - o.cy) < 2 * chip.halfLen + GROUP_SNAP,
+        )
+      : [...this.chips.values()].some(
+          (o) => !dragged.some((d) => d.id === o.id) && o.groupId === oldGroup && o.mode !== "strip" &&
+            Math.hypot(chip.cx - o.cx, chip.cy - o.cy) < o.r1 + GROUP_SNAP,
+        );
+    if (!sameGroupTarget && dragged.length < this.groupMembers(oldGroup).length) {
       const gid = this.newGroupId();
       for (const c of dragged) c.groupId = gid;
       this.renormalizeLevels(oldGroup);
@@ -412,9 +424,15 @@ this.renormalizeLevels(gid);
     // Cuando la distancia perpendicular es ≈0 (el trozo se acercó por el eje, no
     // desde un lado), nunca reutilizamos un nivel ocupado: siempre se apila como
     // carril nuevo para que no se superponga visualmente con los existentes.
+    // Si el trozo cae claramente sobre un nivel existente (|perpDist| > umbral),
+    // se une a ese carril para que las tiras contiguas compartan línea.
     let newLevel: number;
     if (approx < 0) {
       newLevel = -1;
+    } else if (Math.abs(perpDist) < levelPitch * 0.35) {
+      newLevel = maxL + 1;
+    } else if (approx <= maxL) {
+      newLevel = approx;
     } else {
       newLevel = maxL + 1;
     }
