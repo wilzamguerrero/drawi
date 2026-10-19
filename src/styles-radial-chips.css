@@ -92,6 +92,16 @@
   cursor: ew-resize;
 }
 
+/* Modo tira: el sector cambia a cursor de deslizar lineal (el dial se ajusta a lo
+   largo del eje). La clase la pone JS en render(). */
+.rm-chip.is-strip .rm-chip-sector {
+  cursor: col-resize;
+}
+
+.rm-chip.is-strip-v .rm-chip-sector {
+  cursor: row-resize;
+}
+
 /* Contenido del centro del arco: valor, icono, muestra de color o texto. */
 .rm-chip-label {
   position: absolute;
@@ -234,7 +244,8 @@
    interior vacía) y reúne mover + rotar de TODO el conjunto de aros en UN solo
    círculo de materia viva —el mismo ondulado que el hub de la rueda de color—. No
    está partido: dentro apila dos botones sin corte ni división, MOVER arriba y
-   ROTAR abajo. Ver RingHub en src/ui/hotbox/radial-chips.ts.
+   ROTAR abajo. El cambio de forma del grupo va en un doble toque sobre MOVER, así
+   que no hay tercer botón. Ver RingHub en src/ui/hotbox/radial-chips.ts.
    ============================================================ */
 
 /* El círculo, centrado en cx,cy (lo coloca JS). Negro pleno como los trozos, con la

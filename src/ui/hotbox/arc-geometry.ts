@@ -100,6 +100,76 @@ export function dialTFromValue(node: DialNode): number {
   return clamp(Math.pow(clamp(norm, 0, 1), 1 / g), 0, 1);
 }
 
+/**
+ * Una baldosa RECTANGULAR del modo tira: el anillo "enderezado".
+ *
+ * Todo va en coordenadas LOCALES, con el origen en el CENTRO de la baldosa. El
+ * eje de la tira es +X (horizontal) o +Y (vertical) y la banda va perpendicular.
+ * Así la misma baldosa se dibuja igual en los dos ejes sin duplicar matemática,
+ * y el rectángulo sale axis-alineado porque los dos ejes son perpendiculares.
+ */
+export interface TileSpec {
+  /** true = la tira corre en vertical (el largo va en Y); false = horizontal. */
+  vertical: boolean;
+  /** Semilargo total de la baldosa a lo largo del eje. */
+  halfLen: number;
+  /** Semiancho de la banda, perpendicular al eje. */
+  halfBand: number;
+  /** Tramo visible a lo largo del eje, en fracción 0..1 desde el inicio. */
+  from: number;
+  to: number;
+  /** Hueco entre baldosas, en píxeles. El mismo que entre sectores del menú. */
+  gapPx: number;
+}
+
+/** Lleva un punto local (largo, ancho) a coordenadas del SVG de la baldosa. */
+function tilePoint(vertical: boolean, along: number, across: number): string {
+  const x = vertical ? across : along;
+  const y = vertical ? along : across;
+  return `${x.toFixed(2)} ${y.toFixed(2)}`;
+}
+
+/**
+ * El atributo `d` de una baldosa en tira. `from`/`to` recortan la baldosa a lo
+ * largo del eje: el relleno de un dial en tira es esta misma función con `to` en
+ * su valor, igual que en el aro. `gapPx` mantiene el mismo hueco que el menú, y
+ * las esquinas redondeadas salen del `stroke-linejoin` del CSS, como en
+ * `.rm-chip-sector`. Devuelve "" cuando el recorte es degenerado (valor mínimo).
+ */
+export function tilePathD(spec: TileSpec): string {
+  const { vertical, halfLen, halfBand, from, to, gapPx } = spec;
+  const h = gapPx / 2;
+  const a0 = -halfLen + from * 2 * halfLen + h;
+  const a1 = -halfLen + to * 2 * halfLen - h;
+  // El hueco separa solo a lo largo del eje (entre baldosas vecinas); la banda se
+  // mantiene entera de borde a borde, como la banda radial de un aro.
+  const b0 = -halfBand;
+  const b1 = halfBand;
+  if (a1 <= a0 || b1 <= b0) return "";
+  return [
+    `M ${tilePoint(vertical, a0, b0)}`,
+    `L ${tilePoint(vertical, a1, b0)}`,
+    `L ${tilePoint(vertical, a1, b1)}`,
+    `L ${tilePoint(vertical, a0, b1)}`,
+    `Z`,
+  ].join(" ");
+}
+
+/**
+ * Aguja recta del dial en tira: cruza la banda en la posición `at` (0..1). Es el
+ * equivalente del "pulgar" de `needlePathD`, pero perpendicular al eje.
+ */
+export function tileNeedleD(spec: TileSpec, at: number, pad = 3): string {
+  const { vertical, halfLen, halfBand } = spec;
+  const a = -halfLen + at * 2 * halfLen;
+  const b0 = -halfBand + pad;
+  const b1 = halfBand - pad;
+  return [
+    `M ${tilePoint(vertical, a, b0)}`,
+    `L ${tilePoint(vertical, a, b1)}`,
+  ].join(" ");
+}
+
 /** Texto compacto del valor de un dial. Con `withUnit`, añade la unidad. */
 export function dialText(node: DialNode, withUnit: boolean): string {
   const step = node.step ?? 0;
