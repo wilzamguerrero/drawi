@@ -3,7 +3,16 @@ import { TAU, clamp } from "../../core/math";
 import { el } from "../dom";
 import { MateriaFx, prefersReducedMotion } from "../fx/materia";
 import { icon } from "../icons";
-import { arcPathD, dialText, dialTFromValue, dialValueFromT, needlePathD } from "./arc-geometry";
+import {
+  arcPathD,
+  dialText,
+  dialTFromValue,
+  dialValueFromT,
+  needlePathD,
+  tileNeedleD,
+  tilePathD,
+  type TileSpec,
+} from "./arc-geometry";
 import { buildRoot, type DialNode, type HotNode, type MenuHooks } from "./menu";
 import type { TearOffDescriptor } from "./radial-menu";
 
@@ -41,6 +50,16 @@ const CHIP_ANGLE = 0.82;
 const CHIP_GAP_PX = 7;
 /** Margen (px) sobre el radio externo del grupo para que un aro se anide en él (centro a centro). */
 const GROUP_SNAP = 40;
+/** Modo de un aro: circular ("ring") o tira recta ("strip"). */
+type ChipMode = "ring" | "strip";
+/** Eje de una tira: horizontal ("h") o vertical ("v"). */
+type StripAxis = "h" | "v";
+/** Aire (px) de la caja SVG de una baldosa tira, para que no corte el trazo redondo. */
+const STRIP_PAD = 7;
+/** Distancia (px) a la que los punticos se apartan de la banda. */
+const HANDLE_OFF = 20;
+/** Separación (px) del núcleo respecto al borde de una tira, para no taparla. */
+const HUB_CLEAR = 52;
 /** Cerrar un trozo: mantenerlo pulsado quieto este tiempo (mismo gesto y umbrales
     que el long-press que lo arrancó del menú, ver radial-menu.ts). */
 const CLOSE_HOLD_MS = 3000;
@@ -65,6 +84,10 @@ interface ChipRecord {
   cy: number;
   a0: number;
   a1: number;
+  /** Modo del aro (grupo+nivel). Ausente en registros viejos = "ring". */
+  mode?: ChipMode;
+  /** Eje de la tira; solo se usa con mode === "strip". */
+  axis?: StripAxis;
 }
 
 /** Puertos que el trozo usa para hablar con su gestor. */
@@ -77,6 +100,8 @@ interface ChipHost {
   ring(chip: RadialChip): RadialChip[];
   /** Trozos del mismo grupo que `chip` (todos los niveles; incluido él). */
   group(chip: RadialChip): RadialChip[];
+  /** Cicla el modo del aro de `chip`: aro → tira horizontal → tira vertical → aro. */
+  cycleRingMode(chip: RadialChip): void;
 }
 
 /** Puertos que el núcleo (hub) usa para operar sobre todo su grupo. */
@@ -88,6 +113,8 @@ interface HubHost {
       de cada aro) y desactiva el cierre por pulsación de cada chip; volver a alternarlo
       los reactiva. Lo dispara un long-press sobre el botón MOVER del hub. */
   toggleGroupLock(groupId: string): void;
+  /** Cicla el modo de TODO el grupo: aro → tiras horizontales → tiras verticales → aro. */
+  cycleGroupMode(groupId: string): void;
 }
 
 /**
@@ -146,6 +173,8 @@ export class RadialChips implements ChipHost, HubHost {
       cy: desc.viewport.y - Math.sin(amid) * mid,
       a0: amid - CHIP_ANGLE / 2,
       a1: amid + CHIP_ANGLE / 2,
+      mode: "ring",
+      axis: "h",
     };
     this.createChip(rec, desc.node);
     this.refreshHandles();
@@ -183,6 +212,7 @@ export class RadialChips implements ChipHost, HubHost {
     this.el.appendChild(chip.fx.el);
     this.el.appendChild(chip.rotateFx.el);
     this.el.appendChild(chip.moveFx.el);
+    this.el.appendChild(chip.modeFx.el);
     chip.render();
     return chip;
   }
@@ -218,7 +248,40 @@ export class RadialChips implements ChipHost, HubHost {
       for (const c of dragged) c.groupId = gid;
       this.renormalizeLevels(oldGroup);
     }
+
+    // Las tiras se pegan entre sí (mismo eje, adyacentes) pero no se anidan en
+    // grupos de aros: mezclar carriles y anillos rompería la correspondencia
+    // nivel↔banda. Si cae cerca de otra tira del mismo eje, se une a su grupo
+    // como un nivel paralelo; si no, queda como grupo propio.
+    if (chip.mode === "strip") {
+      const draggedIds = new Set(dragged.map((c) => c.id));
+      let target: RadialChip | null = null;
+      let bestDist = Infinity;
+      for (const other of this.chips.values()) {
+        if (draggedIds.has(other.id)) continue;
+        if (other.mode !== "strip" || other.axis !== chip.axis) continue;
+        const d = Math.hypot(chip.cx - other.cx, chip.cy - other.cy);
+        const reach = 2 * chip.halfLen + GROUP_SNAP;
+        if (d < reach && d < bestDist) {
+          bestDist = d;
+          target = other;
+        }
+      }
+      if (target) {
+        this.nestStrip(dragged, target);
+      } else {
+        this.renormalizeLevels(chip.groupId);
+      }
+      this.refreshHandles();
+      this.scheduleSave();
+      return;
+    }
+
     const draggedIds = new Set(dragged.map((c) => c.id));
+    // Grupos con tiras no aceptan anidar aros: mezclar carriles y anillos en el mismo
+    // grupo rompería la correspondencia nivel↔banda.
+    const stripGroups = new Set<string>();
+    for (const c of this.chips.values()) if (c.mode === "strip") stripGroups.add(c.groupId);
 
     // Grupo destino: el chip más cercano (por su centro) que NO sea del aro arrastrado
     // y quede dentro del alcance de anidado.
@@ -226,6 +289,7 @@ export class RadialChips implements ChipHost, HubHost {
     let bestDist = Infinity;
     for (const other of this.chips.values()) {
       if (draggedIds.has(other.id)) continue;
+      if (stripGroups.has(other.groupId)) continue;
       const d = Math.hypot(chip.cx - other.cx, chip.cy - other.cy);
       const reach = other.r1 + GROUP_SNAP;
       if (d < reach && d < bestDist) {
@@ -308,6 +372,59 @@ export class RadialChips implements ChipHost, HubHost {
       }
     }
 
+this.renormalizeLevels(gid);
+  }
+
+  /** Anida tiras arrastradas en el grupo de `target`. Las tiras se apilan
+      perpendicularmente al eje: el nivel 0 va en el centro compartido, el 1 a un
+      lado, etc. El nivel destino se calcula midiendo la distancia perpendicular
+      desde el centro visual del primer trozo arrastrado hasta el centro del grupo. */
+  private nestStrip(dragged: RadialChip[], target: RadialChip): void {
+    const gcx = target.cx;
+    const gcy = target.cy;
+    const gid = target.groupId;
+    const axis = target.axis;
+    const groupChips = this.group(target);
+    let maxL = 0;
+    for (const c of groupChips) maxL = Math.max(maxL, c.level);
+
+    const levelPitch = CHIP_BAND + LEVEL_GAP;
+    // Centro visual del bloque arrastrado (promedio de sus centros visuales).
+    let sumX = 0;
+    let sumY = 0;
+    for (const c of dragged) {
+      const vc = c.visualCenter();
+      sumX += vc.x;
+      sumY += vc.y;
+    }
+    const bcx = sumX / dragged.length;
+    const bcy = sumY / dragged.length;
+
+    // Distancia perpendicular al eje desde el centro del grupo.
+    // Horizontal: el eje corre en X, la pila crece en Y.
+    // Vertical: el eje corre en Y, la pila crece en X.
+    const perpDist = axis === "v" ? gcx - bcx : gcy - bcy;
+    const approx = Math.round(perpDist / levelPitch);
+
+    // Los niveles van de 0 (centro) hacia afuera. Un valor negativo significa
+    // que cayó al lado opuesto del centro respecto a la convención de apilamiento;
+    // lo tratamos como un nivel nuevo por debajo (se renormalizará a 0).
+    // Cuando la distancia perpendicular es ≈0 (el trozo se acercó por el eje, no
+    // desde un lado), nunca reutilizamos un nivel ocupado: siempre se apila como
+    // carril nuevo para que no se superponga visualmente con los existentes.
+    let newLevel: number;
+    if (approx < 0) {
+      newLevel = -1;
+    } else {
+      newLevel = maxL + 1;
+    }
+
+    for (const c of dragged) {
+      c.groupId = gid;
+      c.setLevel(newLevel);
+      c.adoptCenter(gcx, gcy);
+    }
+
     this.renormalizeLevels(gid);
   }
 
@@ -381,23 +498,47 @@ export class RadialChips implements ChipHost, HubHost {
       // volver a alternarlo). Oculta los controles por-nivel y bloquea el cierre.
       const locked = multiLevel && this.lockedGroups.has(gid);
 
-      // Extremos por nivel.
+// Extremos por nivel. En aro se comparan ángulos; en tira, la posición del
+      // centro visual sobre el eje correspondiente (X en horizontal, Y en vertical).
       const startByLevel = new Map<number, RadialChip>();
       const endByLevel = new Map<number, RadialChip>();
       for (const c of arr) {
-        const s = startByLevel.get(c.level);
-        if (!s || c.a0 < s.a0) startByLevel.set(c.level, c);
-        const e = endByLevel.get(c.level);
-        if (!e || c.a1 > e.a1) endByLevel.set(c.level, c);
+        if (c.mode === "strip") {
+          const vc = c.visualCenter();
+          const pos = c.axis === "v" ? vc.y : vc.x;
+          const s = startByLevel.get(c.level);
+          if (!s) {
+            startByLevel.set(c.level, c);
+            endByLevel.set(c.level, c);
+          } else {
+            const sVc = s.visualCenter();
+            const sPos = s.axis === "v" ? sVc.y : sVc.x;
+            const e = endByLevel.get(c.level)!;
+            const eVc = e.visualCenter();
+            const ePos = e.axis === "v" ? eVc.y : eVc.x;
+            if (pos < sPos) startByLevel.set(c.level, c);
+            if (pos > ePos) endByLevel.set(c.level, c);
+          }
+        } else {
+          const s = startByLevel.get(c.level);
+          if (!s || c.a0 < s.a0) startByLevel.set(c.level, c);
+          const e = endByLevel.get(c.level);
+          if (!e || c.a1 > e.a1) endByLevel.set(c.level, c);
+        }
       }
       for (const c of arr) {
         c.setLocked(locked);
-        const showRotate = !locked && startByLevel.get(c.level) === c;
-        const showMove = !locked && endByLevel.get(c.level) === c;
-        c.updateHandles(showRotate, showMove);
+        const atStart = startByLevel.get(c.level) === c;
+        const atEnd = endByLevel.get(c.level) === c;
+        // En tira el aro no gira: se retira el puntico de rotar y manda el de modo.
+        const showRotate = !locked && c.mode === "ring" && atStart;
+        const showMove = !locked && atEnd;
+        const showMode = !locked && atStart;
+        c.updateHandles(showRotate, showMove, showMode);
       }
 
-      // Hub del grupo: solo con ≥2 niveles. Se posiciona en el centro compartido.
+      // Hub del grupo: solo con ≥2 niveles. Sin tiras vive en el centro compartido;
+      // con tiras se aparta al lado de los carriles (ver `hubAnchor`).
       if (multiLevel) {
         let hub = this.hubs.get(gid);
         if (!hub) {
@@ -405,8 +546,10 @@ export class RadialChips implements ChipHost, HubHost {
           this.hubs.set(gid, hub);
           this.el.appendChild(hub.el);
         }
-        hub.position(arr[0].cx, arr[0].cy);
+        const anchor = this.hubAnchor(arr);
+        hub.position(anchor.x, anchor.y);
         hub.setLocked(locked);
+        hub.setLayout(this.groupLayout(arr));
       } else {
         this.hubs.get(gid)?.destroy();
         this.hubs.delete(gid);
@@ -428,9 +571,81 @@ export class RadialChips implements ChipHost, HubHost {
     }
   }
 
+  /**
+   * Centro visual del núcleo. Con anillos es el centro compartido (el hueco interior).
+   * Con tiras no hay hueco: el núcleo se aparta perpendicularmente al carril —a la
+   * izquierda si son horizontales, por encima si son verticales— para no tapar las
+   * baldosas. Si el grupo mezcla ejes, se elige el lado izquierdo.
+   */
+  private hubAnchor(members: RadialChip[]): { x: number; y: number } {
+    const strips = members.filter((c) => c.mode === "strip");
+    if (strips.length === 0) return { x: members[0].cx, y: members[0].cy };
+    const points = members.map((c) => c.visualCenter());
+    const minX = Math.min(...points.map((p) => p.x));
+    const maxX = Math.max(...points.map((p) => p.x));
+    const minY = Math.min(...points.map((p) => p.y));
+    const maxY = Math.max(...points.map((p) => p.y));
+    if (strips.every((c) => c.axis === "v")) {
+      return { x: (minX + maxX) / 2, y: minY - HUB_CLEAR };
+    }
+    return { x: minX - HUB_CLEAR, y: (minY + maxY) / 2 };
+  }
+
   /** Reposiciona el hub de un grupo (lo llama el propio grupo al moverse por el hub). */
   repositionHub(groupId: string, cx: number, cy: number): void {
     this.hubs.get(groupId)?.position(cx, cy);
+  }
+
+  // ------------------------------------------------------------ modo aro/tira
+
+  /** Siguiente estado del ciclo: aro → tira horizontal → tira vertical → aro. */
+  private static nextMode(mode: ChipMode, axis: StripAxis): { mode: ChipMode; axis: StripAxis } {
+    if (mode === "ring") return { mode: "strip", axis: "h" };
+    if (axis === "h") return { mode: "strip", axis: "v" };
+    return { mode: "ring", axis: "h" };
+  }
+
+  /** Cicla solo el aro de `chip` (todos sus trozos: mismo grupo+nivel). */
+  cycleRingMode(chip: RadialChip): void {
+    const ring = this.ring(chip);
+    if (ring.length === 0) return;
+    const next = RadialChips.nextMode(ring[0].mode, ring[0].axis);
+    for (const c of ring) c.setLayout(next.mode, next.axis);
+    this.afterLayoutChange();
+  }
+
+  /**
+   * Cicla TODO el grupo: si todos sus aros están en el mismo estado, avanza el ciclo;
+   * si están mezclados (alguno convertido por su cuenta), los unifica primero en
+   * horizontal. Así el botón del núcleo siempre lleva a un estado conocido y los
+   * carriles quedan paralelos.
+   */
+  cycleGroupMode(groupId: string): void {
+    const members = this.groupMembers(groupId);
+    if (members.length === 0) return;
+    const first = members[0];
+    const uniform = members.every((m) => m.mode === first.mode && m.axis === first.axis);
+    const next = uniform
+      ? RadialChips.nextMode(first.mode, first.axis)
+      : { mode: "strip" as ChipMode, axis: "h" as StripAxis };
+    for (const m of members) m.setLayout(next.mode, next.axis);
+    this.afterLayoutChange();
+  }
+
+  /** Estado de presentación del grupo para el botón del núcleo. */
+  private groupLayout(members: RadialChip[]): { mode: ChipMode; axis: StripAxis; mixed: boolean } {
+    const first = members[0];
+    const uniform = members.every((m) => m.mode === first.mode && m.axis === first.axis);
+    return uniform
+      ? { mode: first.mode, axis: first.axis, mixed: false }
+      : { mode: "strip", axis: "h", mixed: true };
+  }
+
+  /** Repinta tras un cambio de modo y programa el guardado. */
+  private afterLayoutChange(): void {
+    for (const c of this.chips.values()) c.render();
+    this.refreshHandles();
+    this.scheduleSave();
   }
 
   /** Alterna el "modo limpio" de un grupo y repinta sus controles. */
@@ -483,7 +698,30 @@ export class RadialChips implements ChipHost, HubHost {
       const chip = this.createChip(rec, node);
       chip.reveal(); // ya estaba: aparece sin la animación de nacimiento
     }
+    this.normalizeRingModes();
     this.refreshHandles();
+  }
+
+  /**
+   * Un aro es UNA cosa: sus trozos comparten modo y eje. Si un registro viejo (sin
+   * `mode`) o corrupto trae un aro mezclado, gana el primer trozo; así la geometría
+   * de la tira siempre se puede derivar sin ambigüedad.
+   */
+  private normalizeRingModes(): void {
+    const rings = new Map<string, RadialChip[]>();
+    for (const c of this.chips.values()) {
+      const key = `${c.groupId}|${c.level}`;
+      const arr = rings.get(key) ?? [];
+      arr.push(c);
+      rings.set(key, arr);
+    }
+    for (const arr of rings.values()) {
+      const first = arr[0];
+      for (const c of arr) {
+        c.mode = first.mode;
+        c.axis = first.axis;
+      }
+    }
   }
 
   private save(): void {
@@ -510,8 +748,13 @@ export class RadialChips implements ChipHost, HubHost {
  * viaja por trozo, se DERIVA de su nivel concéntrico dentro del grupo (`r0`/`r1` son
  * getters de `level`), así todos los trozos miden lo mismo. Guarda su grupo
  * (`groupId`, comparte centro), su nivel (`level`), su centro virtual (`cx,cy`) y sus
- * ángulos (`a0,a1`) en coordenadas de viewport. Lleva dos punticos de materia
- * (rotar / mover) y, si es un dial, el relleno + la aguja que lo hacen un slider.
+ * ángulos (`a0,a1`) en coordenadas de viewport. Lleva tres punticos de materia
+ * (rotar / modo / mover) y, si es un dial, el relleno + la aguja que lo hacen un slider.
+ *
+ * Un aro puede estar en modo `ring` (tajada curva) o `strip` (baldosa recta): el
+ * botón de modo cicla aro → tira horizontal → tira vertical → aro. En tira los
+ * trozos del aro se linearizan en su orden angular; los niveles concéntricos del
+ * grupo pasan a carriles paralelos. El modo se guarda por aro (grupo+nivel).
  */
 class RadialChip {
   readonly id: string;
@@ -525,6 +768,10 @@ class RadialChip {
   cy: number;
   a0: number;
   a1: number;
+  /** Modo del aro: tajada curva o baldosa recta. */
+  mode: ChipMode = "ring";
+  /** Eje de la tira (solo en modo `strip`). */
+  axis: StripAxis = "h";
 
   /** Radio interior, derivado del nivel (baldosas idénticas por nivel). */
   get r0(): number {
@@ -554,18 +801,25 @@ class RadialChip {
   private label: HTMLElement;
   private rotateDot: HTMLElement;
   private moveDot: HTMLElement;
+  private modeDot: HTMLElement;
+  /** Origen (viewport) del elemento: `left/top` puestos en el último render. */
+  private originX = 0;
+  private originY = 0;
   /** Partículas propias de cada puntico: al ocultarse/mostrarse (modo limpio, o al
       reformar el aro) se juntan/dispersan como en el menú radial, no de golpe. */
   readonly rotateFx: MateriaFx;
   readonly moveFx: MateriaFx;
+  readonly modeFx: MateriaFx;
   /** Estado visible actual de cada puntico y si ya hubo un primer `updateHandles`
       (el primero fija el estado sin animar: el chip nace/restaura con su propia
       materia, animar los punticos encima sería un doble parpadeo). */
   private rotateShown = true;
   private moveShown = true;
+  private modeShown = true;
   private handlesInit = false;
   private rotateAnimTimer = 0;
   private moveAnimTimer = 0;
+  private modeAnimTimer = 0;
   private dial: { fill: SVGPathElement; thumb: SVGPathElement } | null = null;
   private closing = false;
   /** En "modo limpio" (grupo bloqueado desde el hub): sin cierre por pulsación. */
@@ -583,6 +837,8 @@ class RadialChip {
     this.cy = rec.cy;
     this.a0 = rec.a0;
     this.a1 = rec.a1;
+    this.mode = rec.mode === "strip" ? "strip" : "ring";
+    this.axis = rec.axis === "v" ? "v" : "h";
     this.node = node;
     this.host = host;
 
@@ -598,6 +854,7 @@ class RadialChip {
       new MateriaFx({ coreSize: 84, reach: 44, dots: 7, solidCore: false, gatherMs: 300, scatterMs: 260 });
     this.rotateFx = dotFx();
     this.moveFx = dotFx();
+    this.modeFx = dotFx();
 
     this.svg = document.createElementNS(NS, "svg") as SVGSVGElement;
     this.svg.setAttribute("class", "rm-chip-svg");
@@ -618,11 +875,13 @@ class RadialChip {
     }
 
     this.label = el("div", { class: "rm-chip-label" });
-    // Dos punticos de materia en los bordes rectos del sector: rotar (borde a0,
-    // "izquierda") y mover (borde a1, "derecha"). Rotar y mover operan sobre todo el
-    // ARO (mismo grupo+nivel). No hay botón de cerrar: se cierra manteniéndolo pulsado
-    // quieto ~3 s, el mismo gesto con que se arrancó.
+    // Tres punticos de materia. Rotar y mover operan sobre todo el ARO (mismo
+    // grupo+nivel); el de modo cicla ese mismo aro entre aro, tira horizontal y tira
+    // vertical. Aparecen en los extremos del aro (rotar/mover) y el de modo en el
+    // trozo inicial, junto a ellos. No hay botón de cerrar: se cierra manteniéndolo
+    // pulsado quieto ~3 s, el mismo gesto con que se arrancó.
     this.rotateDot = el("button", { class: "rm-chip-dot rm-chip-rotate materia-blob", type: "button", title: "Rotar", html: icon("rotate") });
+    this.modeDot = el("button", { class: "rm-chip-dot rm-chip-mode materia-blob", type: "button", title: "Tira horizontal", html: icon("circle") });
     this.moveDot = el("button", { class: "rm-chip-dot rm-chip-move materia-blob", type: "button", title: "Mover", html: icon("grip") });
 
     // Nace oculto (materia-hidden): las partículas lo forman antes de que entre.
@@ -630,6 +889,7 @@ class RadialChip {
       this.svg as unknown as HTMLElement,
       this.label,
       this.rotateDot,
+      this.modeDot,
       this.moveDot,
     ]);
 
@@ -663,6 +923,7 @@ class RadialChip {
 
   private wireEvents(): void {
     this.rotateDot.addEventListener("pointerdown", (e) => this.beginRotate(e));
+    this.modeDot.addEventListener("pointerdown", (e) => this.beginModeCycle(e));
     this.moveDot.addEventListener("pointerdown", (e) => this.beginMove(e));
 
     // El sector: además de su gesto propio (arrastrar dial / tocar acción / reabrir
@@ -689,7 +950,10 @@ class RadialChip {
       empieza también el arrastre del slider. Tocar (acción/submenú) va por `click`. */
   private onSectorDown(e: PointerEvent): void {
     this.armClose(e);
-    if (this.node.kind === "dial") this.beginDialDrag(e);
+    if (this.node.kind === "dial") {
+      if (this.mode === "strip") this.beginStripDialDrag(e);
+      else this.beginDialDrag(e);
+    }
   }
 
   /** Mantener pulsado quieto ~3 s cierra el trozo (con `.is-arming` de realimentación,
@@ -721,67 +985,141 @@ class RadialChip {
     window.addEventListener("pointercancel", cancel);
   }
 
-  /** Ajusta el `<svg>` al tamaño de la banda actual (lado = 2·r1, centro en r1). */
+/** Pulsación sobre el puntico de modo: cicla el aro entre aro → tira H → tira V → aro.
+      Un tap corto basta; no necesita long-press ni arrastre. */
+  private beginModeCycle(_e: PointerEvent): void {
+    this.host.cycleRingMode(this);
+  }
+
+  /** Semilargo de la baldosa recta (media longitud a lo largo del eje). */
+  get halfLen(): number {
+    return Math.max(CHIP_BAND * 0.85, ((this.a1 - this.a0) * this.mid) / 2);
+  }
+
+  /** Semiancho de la banda recta (perpendicular al eje). */
+  get halfBand(): number {
+    return CHIP_BAND / 2;
+  }
+
+  /** Ajusta el `<svg>` al tamaño actual: lado 2·r1 en aro, caja de la baldosa en tira. */
   private applySvgSize(): void {
+    if (this.mode === "strip") {
+      const w = 2 * this.halfLen + STRIP_PAD * 2;
+      const h = 2 * this.halfBand + STRIP_PAD * 2;
+      // Origen del viewBox en el centro de la baldosa: `tilePathD` trabaja en
+      // coordenadas locales centradas y el SVG las mapea directo.
+      this.svg.setAttribute("viewBox", `${-w / 2} ${-h / 2} ${w} ${h}`);
+      this.svg.setAttribute("width", String(w));
+      this.svg.setAttribute("height", String(h));
+      return;
+    }
     const size = 2 * this.r1;
     this.svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
     this.svg.setAttribute("width", String(size));
     this.svg.setAttribute("height", String(size));
   }
 
-  /** Repinta el trozo: posición del elemento, tajada, dial (si lo es), punticos y
-      etiqueta, según `cx,cy,r0,r1,a0,a1` y el valor actual. */
+  /** Repinta el trozo: posición del elemento, tajada (o baldosa), dial, punticos y
+      etiqueta, según modo/eje/geometría y el valor actual. */
   render(): void {
     this.applySvgSize();
-    this.el.style.left = `${this.cx - this.r1}px`;
-    this.el.style.top = `${this.cy - this.r1}px`;
+    this.updateModeDot();
+    this.el.classList.toggle("is-strip", this.mode === "strip");
+    this.el.classList.toggle("is-strip-v", this.mode === "strip" && this.axis === "v");
 
-    const spec = {
-      cx: this.r1,
-      cy: this.r1,
-      innerR: this.r0,
-      outerR: this.r1,
-      a0: this.a0,
-      a1: this.a1,
-      gapPx: CHIP_GAP_PX,
-    };
-    this.sectorPath.setAttribute("d", arcPathD(spec));
+    const center = this.visualCenter();
+    if (this.mode === "strip") {
+      const w = 2 * this.halfLen + STRIP_PAD * 2;
+      const h = 2 * this.halfBand + STRIP_PAD * 2;
+      this.originX = center.x - w / 2;
+      this.originY = center.y - h / 2;
+    } else {
+      this.originX = this.cx - this.r1;
+      this.originY = this.cy - this.r1;
+    }
+    this.el.style.left = `${this.originX}px`;
+    this.el.style.top = `${this.originY}px`;
 
-    if (this.dial && this.node.kind === "dial") {
-      const node = this.node;
-      const t = dialTFromValue(node);
-      const aVal = this.a0 + t * (this.a1 - this.a0);
-      this.dial.fill.setAttribute("d", t <= 0.002 ? "" : arcPathD({ ...spec, a1: aVal }));
-      this.dial.thumb.setAttribute("d", needlePathD(this.r1, this.r1, this.r0, this.r1, aVal));
-      this.label.textContent = dialText(node, false);
+    if (this.mode === "strip") {
+      const spec: TileSpec = {
+        vertical: this.axis === "v",
+        halfLen: this.halfLen,
+        halfBand: this.halfBand,
+        from: 0,
+        to: 1,
+        gapPx: CHIP_GAP_PX,
+      };
+      this.sectorPath.setAttribute("d", tilePathD(spec));
+
+      if (this.dial && this.node.kind === "dial") {
+        const node = this.node;
+        const t = dialTFromValue(node);
+        this.dial.fill.setAttribute("d", t <= 0.002 ? "" : tilePathD({ ...spec, to: t }));
+        this.dial.thumb.setAttribute("d", tileNeedleD(spec, t));
+        this.label.textContent = dialText(node, false);
+      }
+    } else {
+      const spec = {
+        cx: this.r1,
+        cy: this.r1,
+        innerR: this.r0,
+        outerR: this.r1,
+        a0: this.a0,
+        a1: this.a1,
+        gapPx: CHIP_GAP_PX,
+      };
+      this.sectorPath.setAttribute("d", arcPathD(spec));
+
+      if (this.dial && this.node.kind === "dial") {
+        const node = this.node;
+        const t = dialTFromValue(node);
+        const aVal = this.a0 + t * (this.a1 - this.a0);
+        this.dial.fill.setAttribute("d", t <= 0.002 ? "" : arcPathD({ ...spec, a1: aVal }));
+        this.dial.thumb.setAttribute("d", needlePathD(this.r1, this.r1, this.r0, this.r1, aVal));
+        this.label.textContent = dialText(node, false);
+      }
     }
 
     this.positionHandles();
     this.positionLabel();
   }
 
-  /** Coloca los dos punticos en los bordes RECTOS del sector: rotar en el borde
-      inicial (a0) y mover en el final (a1), a media banda y empujados un poco hacia
-      afuera del sector (perpendicular al borde). Así, al reformar un anillo, quedan
-      en los extremos libres del conjunto. Coordenadas locales del elemento. */
-  private positionHandles(): void {
-    const off = 20;
-    // Borde a0: la perpendicular que sale del sector apunta a (sin a0, −cos a0).
-    const rx = this.r1 + Math.cos(this.a0) * this.mid + Math.sin(this.a0) * off;
-    const ry = this.r1 + Math.sin(this.a0) * this.mid - Math.cos(this.a0) * off;
-    this.rotateDot.style.left = `${rx}px`;
-    this.rotateDot.style.top = `${ry}px`;
-    // Borde a1: la perpendicular que sale del sector apunta a (−sin a1, cos a1).
-    const mx = this.r1 + Math.cos(this.a1) * this.mid - Math.sin(this.a1) * off;
-    const my = this.r1 + Math.sin(this.a1) * this.mid + Math.cos(this.a1) * off;
-    this.moveDot.style.left = `${mx}px`;
-    this.moveDot.style.top = `${my}px`;
+  /** Icono y título del puntico de modo, según el estado actual del aro. */
+  private updateModeDot(): void {
+    const dot = this.modeDot;
+    dot.classList.toggle("is-strip", this.mode === "strip");
+    dot.classList.toggle("is-strip-v", this.mode === "strip" && this.axis === "v");
+    if (this.mode === "ring") {
+      dot.title = "Tira horizontal";
+      dot.innerHTML = icon("circle");
+    } else if (this.axis === "h") {
+      dot.title = "Tira vertical";
+      dot.innerHTML = icon("flatten");
+    } else {
+      dot.title = "Volver a aro";
+      dot.innerHTML = icon("flatten");
+    }
   }
 
-  /** Enseña rotar/mover solo en los extremos del conjunto: suelto, el trozo es sus
-      dos extremos (enseña ambos); conectado, solo el del extremo inicial enseña rotar
-      y solo el del final enseña mover. Lo llama el gestor tras cualquier cambio. */
-  updateHandles(showRotate: boolean, showMove: boolean): void {
+  /** Coloca los tres punticos en coordenadas locales del elemento. En aro van a los
+      bordes del sector (rotar en a0, mover en a1) y el de modo en el centro angular;
+      en tira van a los extremos de la baldosa (rotar en el inicio, mover en el final)
+      y el de modo en el centro, los tres sobre el lado exterior de la banda. */
+  private positionHandles(): void {
+    const place = (dot: HTMLElement, p: { x: number; y: number }): void => {
+      dot.style.left = `${p.x - this.originX}px`;
+      dot.style.top = `${p.y - this.originY}px`;
+    };
+    place(this.rotateDot, this.handlePoint("rotate"));
+    place(this.modeDot, this.handlePoint("mode"));
+    place(this.moveDot, this.handlePoint("move"));
+  }
+
+  /** Enseña rotar/mover/modo solo en los extremos del conjunto: suelto, el trozo es
+      sus dos extremos (enseña ambos); conectado, solo el del extremo inicial enseña
+      rotar y modo, y solo el del final enseña mover. Lo llama el gestor tras cualquier
+      cambio. */
+  updateHandles(showRotate: boolean, showMove: boolean, showMode: boolean): void {
     // El primer `updateHandles` (nacimiento/restauración) fija el estado sin animar:
     // el chip ya llega con su propia materia y animar los punticos encima parpadearía.
     // Después, cada cambio (bloqueo del grupo, reformar el aro) juega las partículas.
@@ -791,21 +1129,24 @@ class RadialChip {
       !prefersReducedMotion();
     this.setHandle("rotate", showRotate, animate);
     this.setHandle("move", showMove, animate);
+    this.setHandle("mode", showMode, animate);
     this.handlesInit = true;
   }
 
   /** Muestra u oculta un puntico. Sin cambio real, no hace nada. Con `animate`, las
       partículas se juntan (mostrar) o se dispersan (ocultar) como en el menú radial;
       sin él, alterna `is-hidden` al instante. */
-  private setHandle(which: "rotate" | "move", show: boolean, animate: boolean): void {
-    const isRotate = which === "rotate";
-    const dot = isRotate ? this.rotateDot : this.moveDot;
-    const fx = isRotate ? this.rotateFx : this.moveFx;
-    const prev = isRotate ? this.rotateShown : this.moveShown;
+  private setHandle(which: "rotate" | "move" | "mode", show: boolean, animate: boolean): void {
+    const dot = which === "rotate" ? this.rotateDot : which === "move" ? this.moveDot : this.modeDot;
+    const fx = which === "rotate" ? this.rotateFx : which === "move" ? this.moveFx : this.modeFx;
+    const prev = which === "rotate" ? this.rotateShown : which === "move" ? this.moveShown : this.modeShown;
     if (this.handlesInit && show === prev) return;
-    if (isRotate) this.rotateShown = show;
-    else this.moveShown = show;
-    window.clearTimeout(isRotate ? this.rotateAnimTimer : this.moveAnimTimer);
+    if (which === "rotate") this.rotateShown = show;
+    else if (which === "move") this.moveShown = show;
+    else this.modeShown = show;
+    window.clearTimeout(
+      which === "rotate" ? this.rotateAnimTimer : which === "move" ? this.moveAnimTimer : this.modeAnimTimer,
+    );
 
     if (!animate) {
       dot.classList.remove("is-appearing", "is-vanishing");
@@ -837,15 +1178,41 @@ class RadialChip {
         fx.clear();
       }, fx.scatterMs);
     }
-    if (isRotate) this.rotateAnimTimer = timer;
-    else this.moveAnimTimer = timer;
+    if (which === "rotate") this.rotateAnimTimer = timer;
+    else if (which === "move") this.moveAnimTimer = timer;
+    else this.modeAnimTimer = timer;
   }
 
-  /** Centro de un puntico en coordenadas de viewport (para posicionar sus partículas,
-      que viven en la capa a pantalla completa). Deriva de `positionHandles` sumando el
-      origen del chip (`cx − r1`, `cy − r1`). */
-  private handlePoint(which: "rotate" | "move"): { x: number; y: number } {
-    const off = 20;
+/** Centro de un puntico en coordenadas de viewport (para posicionar sus partículas,
+      que viven en la capa a pantalla completa). En aro deriva del ángulo/radio; en
+      tira, de los extremos del eje (rotar/mover en los cabos, modo en el centro),
+      siempre sobre la línea central de la banda para que los dots queden alineados
+      en recta cuando varios trozos se ensamblan. */
+  private handlePoint(which: "rotate" | "move" | "mode"): { x: number; y: number } {
+    const off = HANDLE_OFF;
+    if (this.mode === "strip") {
+      const c = this.visualCenter();
+      const along = this.halfLen + off;
+      // El puntico de modo se asoma justo fuera del borde ancho de la tira para
+      // que no quede tapado por la etiqueta central. Rotar y mover siguen sobre
+      // el eje para que los dots se alineen en recta entre trozos contiguos.
+      const cross = this.halfBand + off;
+      if (this.axis === "v") {
+        const y = which === "rotate" ? c.y - along : which === "move" ? c.y + along : c.y;
+        const x = which === "mode" ? c.x + cross : c.x;
+        return { x, y };
+      }
+      const x = which === "rotate" ? c.x - along : which === "move" ? c.x + along : c.x;
+      const y = which === "mode" ? c.y + cross : c.y;
+      return { x, y };
+    }
+    if (which === "mode") {
+      const amid = (this.a0 + this.a1) / 2;
+      return {
+        x: this.cx + Math.cos(amid) * this.mid + Math.sin(amid) * off,
+        y: this.cy + Math.sin(amid) * this.mid - Math.cos(amid) * off,
+      };
+    }
     if (which === "rotate") {
       return {
         x: this.cx + Math.cos(this.a0) * this.mid + Math.sin(this.a0) * off,
@@ -866,8 +1233,17 @@ class RadialChip {
     this.el.classList.toggle("is-locked", locked);
   }
 
-  /** Coloca la etiqueta (valor/icono) en el medio del arco (coords locales). */
+/** Coloca la etiqueta (valor/icono) en el centro visual del trozo. En aro usa
+      coordenadas polares (el centro del SVG está en cx−r1, cy−r1); en tira el
+      centro de la baldosa coincide con el origen local del SVG centrado. */
   private positionLabel(): void {
+    if (this.mode === "strip") {
+      // El SVG de la tira ya está centrado en visualCenter(); la etiqueta va
+      // en el centro de la caja local (mitad del ancho/alto del viewBox).
+      this.label.style.left = `${this.halfLen + STRIP_PAD}px`;
+      this.label.style.top = `${this.halfBand + STRIP_PAD}px`;
+      return;
+    }
     const amid = (this.a0 + this.a1) / 2;
     this.label.style.left = `${this.r1 + Math.cos(amid) * this.mid}px`;
     this.label.style.top = `${this.r1 + Math.sin(amid) * this.mid}px`;
@@ -910,6 +1286,40 @@ class RadialChip {
     while (a < this.a0 - Math.PI) a += TAU;
     while (a > this.a0 + Math.PI) a -= TAU;
     const t = clamp((a - this.a0) / (this.a1 - this.a0 || 1), 0, 1);
+    const v = dialValueFromT(node, t);
+    if (v !== node.value) {
+      node.value = v;
+      node.onInput(v);
+    }
+    this.render();
+  }
+
+  /** Arrastre del dial en tira recta: mapea la coordenada lineal del cursor a lo
+      largo del eje de la baldosa (X si horizontal, Y si vertical) a t∈[0,1]. */
+  private beginStripDialDrag(e: PointerEvent): void {
+    if (this.node.kind !== "dial") return;
+    e.preventDefault();
+    this.isDragging = true;
+    this.el.classList.add("is-active");
+    this.applyStripDialDrag(e);
+    const move = (ev: PointerEvent): void => this.applyStripDialDrag(ev);
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      this.isDragging = false;
+      this.el.classList.remove("is-active");
+      this.host.scheduleSave();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  private applyStripDialDrag(e: PointerEvent): void {
+    const node = this.node as DialNode;
+    const c = this.visualCenter();
+    // Proyecta el cursor sobre el eje de la tira, relativo al centro visual.
+    const along = this.axis === "v" ? e.clientY - c.y : e.clientX - c.x;
+    const t = clamp((along + this.halfLen) / (2 * this.halfLen), 0, 1);
     const v = dialValueFromT(node, t);
     if (v !== node.value) {
       node.value = v;
@@ -1058,7 +1468,30 @@ class RadialChip {
       cy: this.cy,
       a0: this.a0,
       a1: this.a1,
+      mode: this.mode,
+      axis: this.axis,
     };
+  }
+
+  /** Cambia el modo de presentación del chip (aro ↔ tira) y repinta. Lo llama el
+      gestor al ciclar un aro o un grupo entero. */
+  setLayout(mode: ChipMode, axis: StripAxis): void {
+    this.mode = mode;
+    this.axis = axis;
+    this.render();
+  }
+
+  /** Centro visual del chip: en aro es el centro virtual compartido (`cx, cy`);
+      en tira es el centro geométrico de la baldosa recta, desplazado desde `cx,cy`
+      según el eje para que los carriles paralelos no se solapen. */
+  visualCenter(): { x: number; y: number } {
+    if (this.mode === "ring") return { x: this.cx, y: this.cy };
+    // En tira, cx/cy siguen siendo el centro virtual del grupo. La baldosa se
+    // coloca perpendicularmente al eje según su nivel para que los carriles
+    // queden paralelos sin solaparse.
+    const offset = this.level * (CHIP_BAND + LEVEL_GAP);
+    if (this.axis === "v") return { x: this.cx - offset, y: this.cy };
+    return { x: this.cx, y: this.cy - offset };
   }
 }
 
@@ -1074,6 +1507,7 @@ class RingHub {
   readonly el: HTMLElement;
   private moveHalf: HTMLElement;
   private rotateHalf: HTMLElement;
+  private modeHalf: HTMLElement;
   private groupId: string;
   private host: HubHost;
   /** Timer del long-press sobre MOVER que alterna el modo limpio del grupo. */
@@ -1082,14 +1516,16 @@ class RingHub {
   constructor(groupId: string, host: HubHost) {
     this.groupId = groupId;
     this.host = host;
-    // Un solo círculo de materia (como el hub de la rueda); dentro, mover arriba y
-    // rotar abajo, sin corte ni división. El ondulado lo pone el CSS de .rm-hub con su
-    // propio patrón de deformación para que el borde no mute idéntico al hub de la rueda.
+    // Un solo círculo de materia (como el hub de la rueda); dentro, tres botones
+    // apilados sin corte ni división: MOVER arriba, ROTAR en medio, MODO abajo.
+    // El ondulado lo pone el CSS de .rm-hub con su propio patrón de deformación.
     this.moveHalf = el("button", { class: "rm-hub-half rm-hub-move", type: "button", title: "Mover grupo", html: icon("grip") });
     this.rotateHalf = el("button", { class: "rm-hub-half rm-hub-rotate", type: "button", title: "Rotar grupo", html: icon("rotate") });
-    this.el = el("div", { class: "rm-hub" }, [this.moveHalf, this.rotateHalf]);
+    this.modeHalf = el("button", { class: "rm-hub-half rm-hub-mode", type: "button", title: "Cambiar modo", html: icon("circle") });
+    this.el = el("div", { class: "rm-hub" }, [this.moveHalf, this.rotateHalf, this.modeHalf]);
     this.moveHalf.addEventListener("pointerdown", (e) => this.beginMove(e));
     this.rotateHalf.addEventListener("pointerdown", (e) => this.beginRotate(e));
+    this.modeHalf.addEventListener("click", () => this.host.cycleGroupMode(this.groupId));
   }
 
   /** Coloca el hub en el centro compartido del grupo (coords de viewport). */
@@ -1098,9 +1534,23 @@ class RingHub {
     this.el.style.top = `${cy}px`;
   }
 
-  /** Refleja si el grupo está en modo limpio (marca el hub para el usuario). */
+/** Refleja si el grupo está en modo limpio (marca el hub para el usuario). */
   setLocked(locked: boolean): void {
     this.el.classList.toggle("is-locked", locked);
+  }
+
+  /** Actualiza el icono y título del botón de modo según el estado del grupo. */
+  setLayout(layout: { mode: ChipMode; axis: StripAxis; mixed: boolean }): void {
+    if (layout.mode === "ring") {
+      this.modeHalf.title = "Tira horizontal";
+      this.modeHalf.innerHTML = icon("circle");
+    } else if (layout.axis === "h") {
+      this.modeHalf.title = "Tira vertical";
+      this.modeHalf.innerHTML = icon("flatten");
+    } else {
+      this.modeHalf.title = "Volver a aro";
+      this.modeHalf.innerHTML = icon("circle");
+    }
   }
 
   destroy(): void {
