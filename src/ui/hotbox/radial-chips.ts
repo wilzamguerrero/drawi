@@ -79,6 +79,16 @@ function levelR0(level: number): number {
   return CHIP_R0_BASE + level * (CHIP_BAND + LEVEL_GAP);
 }
 
+/** Semilargo de una baldosa recta a partir de su ancho angular y el radio donde se
+    midió. El suelo evita que un trozo muy estrecho quede invisible. */
+function stripHalfLenFor(angleWidth: number, radius: number): number {
+  return Math.max(CHIP_BAND * 0.85, (angleWidth * radius) / 2);
+}
+
+/** Radio al que se mide el ancho angular de una baldosa recta: el del nivel 0. Es fijo
+    a propósito, para que el largo de la tira no dependa del carril (ver `halfLen`). */
+const STRIP_REF_MID = levelR0(0) + CHIP_BAND / 2;
+
 /** Lo que se guarda de cada trozo en localStorage. */
 interface ChipRecord {
   id: string;
@@ -119,6 +129,8 @@ interface ChipHost {
   group(chip: RadialChip): RadialChip[];
   /** Cicla el modo del aro de `chip`: aro → tira horizontal → tira vertical → aro. */
   cycleRingMode(chip: RadialChip): void;
+  /** Saca `chip` de su grupo y lo deja como grupo propio, en el sitio donde se ve. */
+  detachChip(chip: RadialChip): void;
 }
 
 /** Puertos que el núcleo (hub) usa para operar sobre todo su grupo. */
@@ -634,6 +646,41 @@ this.renormalizeLevels(gid);
   }
 
   /**
+   * Saca UN trozo de su grupo (Ctrl+click) y lo deja suelto, donde se ve.
+   *
+   * Hasta ahora solo se podía sacar un NIVEL entero (arrastrando el MOVER del aro), así
+   * que un trozo pegado en medio de una fila de cuatro no tenía salida: los botones
+   * mueven el aro completo. Esto es la vía directa para uno solo.
+   *
+   * Se conserva la posición VISUAL: el chip suelto nace en el punto donde estaba, sin
+   * saltar, así que en tira hay que trasladar el centro virtual para que `visualCenter`
+   * siga dando el mismo sitio (en aro `visualCenter` es `cx,cy` y no hace falta).
+   * Si el grupo se queda con un solo miembro, ese también deja de tener sentido como
+   * grupo: se renormaliza y, sin núcleo, quedan los dos sueltos.
+   */
+  detachChip(chip: RadialChip): void {
+    const oldGroup = chip.groupId;
+    const members = this.groupMembers(oldGroup);
+    if (members.length < 2) return; // ya está suelto: no hay nada que separar
+
+    const at = chip.visualCenter();
+    chip.groupId = this.newGroupId();
+    chip.adoptCenter(at.x, at.y);
+    // Suelto, el trozo es su propio nivel 0 y su propio carril: el slot deja de tener
+    // sentido (no hay fila con la que ordenarse) y `alongPos` vuelve a 0 para que el
+    // centro virtual sea el visual (si no, en tira el chip saltaría por su offset).
+    chip.setLevel(0);
+    chip.alongPos = 0;
+    chip.slot = 0;
+    chip.slotSet = false;
+
+    this.renormalizeLevels(oldGroup);
+    this.renormalizeLevels(chip.groupId);
+    this.refreshHandles();
+    this.scheduleSave();
+  }
+
+  /**
    * Refresca los controles. Regla:
    * - Por cada ARO (grupo+nivel): rotar en el extremo inicial (menor a0) y mover en el
    *   extremo final (mayor a1). El mover se mantiene SIEMPRE, también en grupos
@@ -1146,14 +1193,14 @@ class RadialChip {
     this.sectorPath.addEventListener("pointerdown", (e) => this.onSectorDown(e));
 
     if (this.node.kind === "action") {
-      this.sectorPath.addEventListener("click", () => {
-        if (this.closing) return;
+      this.sectorPath.addEventListener("click", (e: PointerEvent) => {
+        if (this.closing || e.ctrlKey || e.metaKey) return;
         if (this.node.kind === "action" && !this.node.disabled) this.node.run();
       });
     } else if (this.node.kind === "submenu") {
       // Submenú: el trozo es una etiqueta-arco que reabre el menú expandido aquí.
-      this.sectorPath.addEventListener("click", () => {
-        if (this.closing) return;
+      this.sectorPath.addEventListener("click", (e: PointerEvent) => {
+        if (this.closing || e.ctrlKey || e.metaKey) return;
         const m = this.arcMidPoint();
         this.host.reopenMenu(this.path, m.x, m.y);
       });
@@ -1163,6 +1210,15 @@ class RadialChip {
   /** Pulsación sobre el sector: arma el cierre por pulsación larga y, si es un dial,
       empieza también el arrastre del slider. Tocar (acción/submenú) va por `click`. */
   private onSectorDown(e: PointerEvent): void {
+    // Ctrl+click (o Cmd en macOS) SACA este trozo de su grupo. Es la vía para separar
+    // UNO solo: los botones de mover sacan el aro/nivel entero, así que un trozo en
+    // medio de una fila de cuatro no tenía cómo salir. No se arma nada más: no debe
+    // abrir el menú, ni mover el dial, ni empezar el cierre por pulsación larga.
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      this.host.detachChip(this);
+      return;
+    }
     this.armClose(e);
     if (this.node.kind === "dial") {
       if (this.mode === "strip") this.beginStripDialDrag(e);
@@ -1199,12 +1255,22 @@ class RadialChip {
     window.addEventListener("pointercancel", cancel);
   }
 
-/** Semilargo de la baldosa recta (media longitud a lo largo del eje). */
+/**
+   * Semilargo de la baldosa recta (media longitud a lo largo del eje).
+   *
+   * En TIRA todos los niveles miden lo MISMO: el largo no crece con el nivel. Por eso
+   * se mide el ancho angular contra un radio de REFERENCIA (el del nivel 0) y no contra
+   * `mid`, que en aro crece con el nivel: con `mid`, enderezar un aro del nivel 2 daba
+   * baldosas más largas que uno del nivel 0, y subir un trozo de carril lo estiraba solo.
+   * El ancho angular sí se conserva, así que un aro de trozos desiguales sigue dando una
+   * fila de largos desiguales — pero iguales entre carriles.
+   */
   get halfLen(): number {
-    return Math.max(CHIP_BAND * 0.85, ((this.a1 - this.a0) * this.mid) / 2);
+    return stripHalfLenFor(this.a1 - this.a0, STRIP_REF_MID);
   }
 
-  /** Semiancho de la banda recta (perpendicular al eje). */
+  /** Semiancho de la banda recta (perpendicular al eje). Igual en todos los niveles:
+      la banda es una constante, no deriva del radio del aro. */
   get halfBand(): number {
     return CHIP_BAND / 2;
   }

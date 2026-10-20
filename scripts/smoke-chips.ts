@@ -16,7 +16,7 @@
  * decide donde cae cada baldosa, que es justo lo que se rompia.
  */
 
-import { readFileSync } from "node:fs";
+import chipsCss from "../src/styles-radial-chips.css?raw";
 import { App } from "../src/ui/app";
 import { buildRoot } from "../src/ui/hotbox/menu";
 
@@ -194,6 +194,33 @@ ok("los carriles son paralelos (cada nivel a su altura)", laneY.size === 2, [...
 
 const dy = Math.abs(ring[0].visualCenter().y - lanes[0].visualCenter().y);
 ok("los carriles estan separados una banda + hueco", Math.abs(dy - (46 + 14)) < 1.0, `${dy.toFixed(2)}px`);
+
+// En los CARRILES el tamaño no crece con el nivel: una tira del carril 1 mide lo mismo
+// que una del carril 0. En el aro la banda sí crece con el nivel (es lo que hace el
+// anillo), pero al enderezar esa diferencia tiene que desaparecer: el largo se mide
+// contra un radio de referencia fijo, no contra el `mid` del nivel.
+{
+  const byLevel = new Map<number, number>();
+  for (const c of [...ring, ...lanes]) byLevel.set(c.level, 2 * c.halfLen);
+  const lens = [...byLevel.values()];
+  ok(
+    "en tira todos los carriles miden lo mismo (el tamaño no crece por nivel)",
+    new Set(lens.map((l) => Math.round(l))).size === 1,
+    `nivel 0: ${lens[0].toFixed(1)}px, nivel 1: ${(lens[1] ?? lens[0]).toFixed(1)}px`,
+  );
+
+  // Y no depende del carril en que esté: subir un trozo de nivel no lo estira.
+  const probe = lanes[0];
+  const before = 2 * probe.halfLen;
+  probe.setLevel(0);
+  const atLevel0 = 2 * probe.halfLen;
+  probe.setLevel(1);
+  ok(
+    "el largo de un trozo no cambia al moverlo de carril",
+    Math.abs(atLevel0 - before) < 1e-9,
+    `${before.toFixed(1)}px → ${atLevel0.toFixed(1)}px`,
+  );
+}
 
 // -------------------------------------------------- baldosas de anchos distintos
 // Un aro real puede tener trozos de anchos distintos (cada sector mide lo que
@@ -531,10 +558,10 @@ ok(
 // dos casos SOLO se mueve el contorno: si la animación tocara width/height, los dos
 // botones de dentro (hijos flex) se recolocarían y parecería que se mueven solos.
 {
-  // El paquete de la suite vive en node_modules/.drawi-smoke, asi que se resuelve
-  // desde la raiz del proyecto (el corredor ejecuta con cwd = raiz) y no desde
-  // import.meta.url, que apuntaria al bundle.
-  const css = readFileSync(`${process.cwd()}/src/styles-radial-chips.css`, "utf8");
+  // El paquete de la suite vive en node_modules/.drawi-smoke, asi que la CSS del
+  // proyecto se trae con el import `?raw` de Vite (resuelto al empaquetar) en vez de
+  // leerla con node:fs, que arrastraria los tipos de Node a un proyecto sin ellos.
+  const css = chipsCss;
 
   // Saca el cuerpo de un @keyframes por nombre, contando llaves para no cortar en la
   // primera que aparezca dentro.
@@ -594,6 +621,60 @@ ok(
     /\.rm-hub\s*\{[^}]*border-radius:\s*50%/.test(reduced),
     "redondo",
   );
+}
+
+// ------------------------------------------- sacar UN trozo de su grupo (Ctrl+click)
+// Los botones de mover sacan el ARO/NIVEL entero, así que un trozo en medio de una
+// fila de cuatro no tenía ninguna vía para salir solo. Ctrl+click lo separa.
+{
+  const detId = "grp-detach";
+  const row = spawnRing(4, 0, { groupId: detId, cx: 1800, cy: 900, level: 0 });
+  spawnRing(2, 0, { groupId: detId, cx: 1800, cy: 900, level: 1 });
+  chips.cycleGroupMode(detId); // todo el grupo a tiras horizontales
+  chips.refreshHandles();
+  ok("el grupo de cuatro pasó a una fila", row.every((c: any) => c.mode === "strip"), `${row[0].mode}/${row[0].axis}`);
+
+  // El del MEDIO (no un extremo): es el caso que no tenía salida.
+  const victim = row[1];
+  const beforeAt = victim.visualCenter();
+  const beforeGroup = victim.groupId;
+
+  const ctrlDown = (chip: any): void => {
+    const ev = new (globalThis.PointerEvent)("pointerdown", {
+      clientX: beforeAt.x, clientY: beforeAt.y, ctrlKey: true,
+    });
+    const sector = chip.sectorPath as any;
+    for (const [n, ty, fn] of globalThis.__listeners) if (ty === "pointerdown" && n === sector) fn(ev);
+  };
+  ctrlDown(victim);
+
+  ok("Ctrl+click saca el trozo a un grupo propio", victim.groupId !== beforeGroup, victim.groupId);
+  ok("y el grupo viejo conserva el resto (4 de la fila + 2 del otro carril)", chips.groupMembers(beforeGroup).length === 5, `${chips.groupMembers(beforeGroup).length} (eran 6)`);
+  ok("el suelto queda en su propio nivel 0", victim.level === 0, `nivel ${victim.level}`);
+
+  // Lo importante: NO salta. Se queda exactamente donde el usuario lo veía.
+  const afterAt = victim.visualCenter();
+  ok(
+    "el trozo suelto se queda donde estaba (no salta)",
+    Math.abs(afterAt.x - beforeAt.x) < 1 && Math.abs(afterAt.y - beforeAt.y) < 1,
+    `(${beforeAt.x.toFixed(0)}, ${beforeAt.y.toFixed(0)}) → (${afterAt.x.toFixed(0)}, ${afterAt.y.toFixed(0)})`,
+  );
+
+  // Los que quedan se recompactan: no dejan hueco donde estaba el sacado.
+  const rest = chips.groupMembers(beforeGroup).filter((c: any) => c.level === 0);
+  const boxes = rest
+    .map((c: any) => ({ p: c.visualCenter(), half: c.halfLen }))
+    .sort((a: any, b: any) => a.p.x - b.p.x);
+  let worst = Infinity;
+  for (let i = 1; i < boxes.length; i++) {
+    worst = Math.min(worst, boxes[i].p.x - boxes[i].half - (boxes[i - 1].p.x + boxes[i - 1].half));
+  }
+  ok("la fila restante se recompacta sin hueco", worst >= 6.9, `hueco mínimo ${worst.toFixed(2)}px`);
+
+  // Ctrl+click sobre un trozo ya suelto no hace nada (no hay nada que separar).
+  const aloneGroup = victim.groupId;
+  ctrlDown(victim);
+  ok("Ctrl+click sobre un trozo ya suelto no lo rompe", victim.groupId === aloneGroup, "sigue igual");
 }
 
 // -------------------------------------------------- anclaje del núcleo (hub)
